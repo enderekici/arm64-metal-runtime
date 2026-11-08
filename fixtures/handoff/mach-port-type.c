@@ -93,6 +93,13 @@ int main(void) {
   const int invalid_task = failure_untouched(MACH_PORT_NULL, task,
                                               MACH_SEND_INVALID_DEST);
   const int host_not_task = failure_untouched(host, task, MACH_SEND_INVALID_DEST);
+  kern_return_t null_name_null_output = raw_type(task, MACH_PORT_NULL, NULL);
+  kern_return_t unknown_name_null_output = raw_type(task, 0xdeadbeefU, NULL);
+  mach_port_type_t bad_task_null_name_type = TYPE_SENTINEL;
+  kern_return_t bad_task_null_name = raw_type(MACH_PORT_NULL, MACH_PORT_NULL,
+                                               &bad_task_null_name_type);
+  const int bad_task_precedes_name = bad_task_null_name == MACH_SEND_INVALID_DEST &&
+                                     bad_task_null_name_type == TYPE_SENTINEL;
   kern_return_t invalid_output = raw_type(task, task, NULL);
 
   mach_port_t clock = MACH_PORT_NULL;
@@ -122,13 +129,15 @@ int main(void) {
   printf("dead_names right=0x%08x/%d sentinel=0x%08x/%d released=%d\n",
          TYPE_DEAD_NAME, dead_name, TYPE_DEAD_NAME, dead_sentinel, dead_released);
   printf("errors null=%d/%d unknown=%d/%d invalid_task=0x%08x/%d "
-         "host_as_task=0x%08x/%d invalid_output=%d\n",
+         "host_as_task=0x%08x/%d null_name_null_output=%d "
+         "unknown_null_output=%d bad_task_precedence=%d invalid_output=%d\n",
          null_result, null_type == TYPE_SENTINEL, unknown_result,
          unknown_type == TYPE_SENTINEL, MACH_SEND_INVALID_DEST,
          invalid_task_result == MACH_SEND_INVALID_DEST &&
              invalid_task_type == TYPE_SENTINEL,
          MACH_SEND_INVALID_DEST,
          host_task_result == MACH_SEND_INVALID_DEST && host_task_type == TYPE_SENTINEL,
+         null_name_null_output, unknown_name_null_output, bad_task_precedes_name,
          invalid_output);
   printf("services clock=0x%08x/%d bootstrap=0x%08x/%d "
          "bootstrap_released_invalid=%d kernel_flags_absent=%d\n",
@@ -140,6 +149,8 @@ int main(void) {
   return task_send && host_send && thread_send && receive_only && send_receive &&
          send_removed && destroyed_name && dead_name && dead_sentinel && dead_released &&
          null_name && unknown_name && invalid_task && host_not_task &&
+         null_name_null_output == KERN_INVALID_NAME &&
+         unknown_name_null_output == KERN_INVALID_NAME && bad_task_precedes_name &&
          invalid_output == KERN_MEMORY_ERROR && clock_send && bootstrap_send &&
          bootstrap_released_invalid ? 0 : 1;
 }

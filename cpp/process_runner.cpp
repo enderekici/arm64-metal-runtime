@@ -6670,11 +6670,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 }
                 if (result == 0) {
-                    try {
-                        auto* output = guestMemory.buffer(registers[2], sizeof(type), true);
-                        std::memcpy(output, &type, sizeof(type));
-                    } catch (const std::exception&) {
+                    if (registers[2] == 0) {
                         result = kernMemoryError;
+                    } else {
+                        try {
+                            auto* output = guestMemory.buffer(registers[2], sizeof(type), true);
+                            std::memcpy(output, &type, sizeof(type));
+                        } catch (const std::exception&) {
+                            result = kernMemoryError;
+                        }
                     }
                 }
                 registers[0] = result;

@@ -448,13 +448,15 @@ Native normalized output:
 special_ports task=0x00010000/1 host=0x00010000/1 thread=0x00010000/1
 local_rights receive=0x00020000/1 send_receive=0x00030000/1 after_send_release=0x00020000/1 destroyed_name=1
 dead_names right=0x00100000/1 sentinel=0x00100000/1 released=1
-errors null=15/1 unknown=15/1 invalid_task=0x10000003/1 host_as_task=0x10000003/1 invalid_output=10
+errors null=15/1 unknown=15/1 invalid_task=0x10000003/1 host_as_task=0x10000003/1 null_name_null_output=15 unknown_null_output=15 bad_task_precedence=1 invalid_output=10
 services clock=0x00010000/1 bootstrap=0x00010000/1 bootstrap_released_invalid=1 kernel_flags_absent=1
 ```
 
 Status is 0. Error outputs use a sentinel and remain unchanged for invalid
 names and task destinations; a null output pointer returns `KERN_MEMORY_ERROR`
-(10). The guest maps these queries only through its synthetic right namespace;
+(10). Task validation precedes name validation, which precedes output copyout;
+invalid task/name results therefore take precedence over a null output pointer.
+The guest maps these queries only through its synthetic right namespace;
 clock and bootstrap host send rights are kept in host-owned maps and are never
 returned as guest names. Fixture `host-clock-service.c` is the existing end to
 end clock-right query/release control.
