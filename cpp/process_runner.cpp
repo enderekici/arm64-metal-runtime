@@ -5287,21 +5287,31 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-28))) {
-                constexpr std::uint64_t kernInvalidAddress = 1;
+                registers[0] = guestMachTaskPort;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-29))) {
+                registers[0] = guestMachHostPort;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-46))) {
                 constexpr std::uint64_t kernInvalidTask = 5;
                 if (static_cast<std::uint32_t>(registers[0]) != guestMachTaskPort) {
                     registers[0] = kernInvalidTask;
-                } else if (registers[1] == 0) {
-                    registers[0] = kernInvalidAddress;
                 } else {
-                    try {
-                        auto* output = guestMemory.buffer(registers[1], sizeof(std::int32_t), true);
-                        const auto processId = static_cast<std::int32_t>(getpid());
-                        std::memcpy(output, &processId, sizeof(processId));
-                        registers[0] = 0;
-                    } catch (const std::exception&) {
-                        registers[0] = kernInvalidAddress;
+                    if (registers[1] >= bootstrap.pageSize) {
+                        try {
+                            auto* output = guestMemory.buffer(
+                                registers[1], sizeof(std::int32_t), true);
+                            const auto processId = static_cast<std::int32_t>(getpid());
+                            std::memcpy(output, &processId, sizeof(processId));
+                        } catch (const std::exception&) {
+                            // Native pid_for_task ignores failed copyouts.
+                        }
                     }
+                    registers[0] = 0;
                 }
                 registers[34] = 0;
                 continue;

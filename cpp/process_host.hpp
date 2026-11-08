@@ -31,6 +31,7 @@ inline constexpr std::size_t guestTokenStart = 880;
 inline constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
 inline constexpr std::uint64_t guestInitialTokenCapacity = 4096;
 inline constexpr std::uint64_t guestMachTaskPort = 0x103;
+inline constexpr std::uint64_t guestMachHostPort = 0x104;
 inline constexpr std::uint64_t guestMainThreadID = 1;
 inline constexpr std::uint64_t guestThreadLocalPrefixBytes = 0x100;
 
