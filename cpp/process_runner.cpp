@@ -7128,7 +7128,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (registers[1] != 0x2'0000'0003ULL ||
                         static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
                         (registers[2] >> 32) != requestSize ||
-                        (registers[3] >> 32) != 0 ||
+                        (registers[3] >> 32) != reply ||
                         static_cast<std::uint32_t>(registers[4]) != 0 ||
                         (registers[4] >> 32) != messageId ||
                         static_cast<std::uint32_t>(registers[5]) != 0 ||
@@ -7136,6 +7136,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        if (progressTrace.enabled()) {
+                            std::cerr << "arm64-metal trace mach-vm-reclaim-reject"
+                                      << " reason=scalar-shape pc=0x"
+                                      << hexadecimal(registers[33])
+                                      << " r1=0x" << hexadecimal(registers[1])
+                                      << " r2=0x" << hexadecimal(registers[2])
+                                      << " r3=0x" << hexadecimal(registers[3])
+                                      << " r4=0x" << hexadecimal(registers[4])
+                                      << " r5=0x" << hexadecimal(registers[5])
+                                      << " r6=0x" << hexadecimal(registers[6])
+                                      << " r7=0x" << hexadecimal(registers[7]) << '\n';
+                        }
                         registers[0] = machSendInvalidData;
                         registers[34] = 0;
                         continue;
@@ -7159,6 +7171,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         requestHeader.msgh_voucher_port != MACH_PORT_NULL ||
                         requestHeader.msgh_id != static_cast<mach_msg_id_t>(messageId) ||
                         std::memcmp(&requestNdr, &NDR_record, sizeof(requestNdr)) != 0) {
+                        if (progressTrace.enabled()) {
+                            std::cerr << "arm64-metal trace mach-vm-reclaim-reject"
+                                      << " reason=request-header pc=0x"
+                                      << hexadecimal(registers[33])
+                                      << " bits=0x" << hexadecimal(requestHeader.msgh_bits)
+                                      << " remote=0x" << hexadecimal(
+                                             requestHeader.msgh_remote_port)
+                                      << " local=0x" << hexadecimal(
+                                             requestHeader.msgh_local_port)
+                                      << " voucher=0x" << hexadecimal(
+                                             requestHeader.msgh_voucher_port)
+                                      << " id=" << requestHeader.msgh_id << '\n';
+                        }
                         registers[0] = machSendInvalidData;
                         registers[34] = 0;
                         continue;
@@ -7188,6 +7213,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     response.returnCode = result;
                     std::memcpy(guestMemory.buffer(registers[0], replySize, true),
                                 &response, sizeof(response));
+                    if (progressTrace.enabled()) {
+                        std::cerr << "arm64-metal trace mach-vm-reclaim-reply"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " len=" << length << " max=" << maxLength
+                                  << " result=0x" << hexadecimal(
+                                         static_cast<std::uint32_t>(result)) << '\n';
+                    }
                     registers[0] = 0;
                     registers[34] = 0;
                     continue;
