@@ -403,6 +403,24 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter signed scalar-memory packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadLiteral) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto displacement = static_cast<std::int32_t>(operation[3]);
+            const auto address = static_cast<std::int64_t>(packet.pc) + displacement;
+            const auto kind = operation[4];
+            const auto bytes = kind == 1U ? 8U : 4U;
+            if (operation[1] > 31 || operation[2] != 0 || kind > 2U ||
+                (kind == 0U ? operation[5] != 32U : operation[5] != 64U) ||
+                displacement < -(1 << 20) || displacement > ((1 << 20) - 4) ||
+                (displacement & 3) != 0 || address < 0 ||
+                static_cast<std::uint64_t>(address) >= guestCodeLimit ||
+                bytes > guestCodeLimit - static_cast<std::uint64_t>(address) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter scalar literal-load packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
@@ -420,7 +438,8 @@ Result Interpreter::dispatch(const Backend& backend,
          initialOpcode == translate_core::Opcode::StorePair ||
          initialOpcode == translate_core::Opcode::LoadUnscaledWriteback ||
          initialOpcode == translate_core::Opcode::StoreUnscaledWriteback ||
-         initialOpcode == translate_core::Opcode::LoadSignedScalar) &&
+         initialOpcode == translate_core::Opcode::LoadSignedScalar ||
+         initialOpcode == translate_core::Opcode::LoadLiteral) &&
         initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
         throw std::invalid_argument(

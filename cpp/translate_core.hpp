@@ -47,6 +47,7 @@ enum class Opcode : std::uint32_t {
   Bitfield = 33,
   IntegerBitOperation = 34,
   IntegerDivide = 35,
+  LoadLiteral = 38,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -66,6 +67,9 @@ enum class Opcode : std::uint32_t {
 // Signed scalar loads use destination=Rt, source=Rn, immediate=byte offset,
 // shift=(target-is-X << 2) | mode (0=scaled unsigned, 1=unscaled, 2=post,
 // 3=pre), and width=8/16/32 access bits.
+// Scalar literal loads use destination=Rt, source=0, immediate=signed byte
+// displacement from the instruction PC, shift=0 (LDR W), 1 (LDR X), or
+// 2 (LDRSW X), and width=32 for W or 64 for X results.
 // BranchCondition uses source for the condition and immediate for byte offset.
 // TestBitBranch uses destination for bit index, source for Rt, immediate for
 // TBNZ sense, shift for signed byte displacement, and width for W/X form.

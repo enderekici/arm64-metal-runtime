@@ -1697,5 +1697,57 @@ int main() {
              1U, 0x80000000ULL, 0xffffffffULL, 32U) == 0x80000000ULL);
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "integer_divide_apply") != std::string_view::npos);
+  const auto literalW = decode_operation(0x18000281U);
+  assert(literalW && literalW->opcode == Opcode::LoadLiteral &&
+         literalW->destination == 1U && literalW->source == 0U &&
+         static_cast<std::int32_t>(literalW->immediate) == 80 &&
+         literalW->shift == 0U && literalW->width == 32U);
+  assert((serialize_operation(*literalW) ==
+          arm64metal::translate_core::OperationPacket{38, 1, 0, 80, 0, 32}));
+  const auto literalX = decode_operation(0x58000221U);
+  assert(literalX && literalX->opcode == Opcode::LoadLiteral &&
+         literalX->destination == 1U &&
+         static_cast<std::int32_t>(literalX->immediate) == 68 &&
+         literalX->shift == 1U && literalX->width == 64U);
+  const auto literalSigned = decode_operation(0x98000181U);
+  assert(literalSigned && literalSigned->opcode == Opcode::LoadLiteral &&
+         literalSigned->destination == 1U &&
+         static_cast<std::int32_t>(literalSigned->immediate) == 48 &&
+         literalSigned->shift == 2U && literalSigned->width == 64U);
+  const auto literalBackward = decode_operation(0x18ffffe1U);
+  assert(literalBackward &&
+         static_cast<std::int32_t>(literalBackward->immediate) == -4);
+  assert(!decode_operation(0xd8000000U).has_value());  // PRFM.
+  assert(!decode_operation(0x1c000000U).has_value());  // SIMD literal load.
+  const auto literalLowered = make_operation_instruction(
+      *literalSigned, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48, 0x1000);
+  assert(literalLowered.operation &&
+         literalLowered.operation->opcode == Opcode::LoadLiteral &&
+         literalLowered.code[1].find("load_guest_word(memory + 4144ul, 4ul)") !=
+             std::string::npos);
+  bool invalidLiteralAddressRejected = false;
+  try {
+    (void)make_operation_instruction(
+        *literalBackward, {4}, LoweringMode::Process,
+        std::uint64_t{1} << 48, 0);
+  } catch (const std::invalid_argument&) {
+    invalidLiteralAddressRejected = true;
+  }
+  assert(invalidLiteralAddressRejected);
+  const auto processLiteral = arm64metal::decode_process(
+      0x18000281U, 0x1000, {}, {}, false);
+  assert(processLiteral.operation &&
+         processLiteral.operation->opcode == Opcode::LoadLiteral &&
+         processLiteral.next == std::vector<std::int64_t>{0x1004} &&
+         processLiteral.code[1].find("load_guest_word(memory + 4176ul, 4)") !=
+             std::string::npos);
+  bool processLiteralAddressRejected = false;
+  try {
+    (void)arm64metal::decode_process(0x18ffffe1U, 0, {}, {}, false);
+  } catch (const std::runtime_error&) {
+    processLiteralAddressRejected = true;
+  }
+  assert(processLiteralAddressRejected);
   return 0;
 }

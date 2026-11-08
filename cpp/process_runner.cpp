@@ -433,9 +433,12 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::StoreUnscaledWriteback;
             const bool signedScalarMemoryOpcode =
                 opcode == translate_core::Opcode::LoadSignedScalar;
+            const bool scalarLiteralMemoryOpcode =
+                opcode == translate_core::Opcode::LoadLiteral;
             const bool memoryOpcode = unsignedMemoryOpcode || pairMemoryOpcode ||
                                       indexedScalarMemoryOpcode ||
-                                      signedScalarMemoryOpcode;
+                                      signedScalarMemoryOpcode ||
+                                      scalarLiteralMemoryOpcode;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
                 opcode == translate_core::Opcode::SubImmediate ||
@@ -524,6 +527,23 @@ ProcessKernelPlan plan_process_kernel(
                             signedScalarOffset <= 255) &&
                  (signedScalarMode < 2 || operation.source == 31 ||
                   operation.source != operation.destination));
+            const auto literalDisplacement =
+                static_cast<std::int32_t>(operation.immediate);
+            const auto literalBytes = operation.shift == 1U ? 8U : 4U;
+            const auto literalAddress = pc + literalDisplacement;
+            constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
+            const bool validScalarLiteralMemoryOperation =
+                !scalarLiteralMemoryOpcode ||
+                (operation.destination <= 31 && operation.source == 0 &&
+                 operation.shift <= 2U &&
+                 (operation.shift == 0U ? operation.width == 32U
+                                        : operation.width == 64U) &&
+                 literalDisplacement >= -(1 << 20) &&
+                 literalDisplacement <= ((1 << 20) - 4) &&
+                 (literalDisplacement & 3) == 0 && literalAddress >= 0 &&
+                 static_cast<std::uint64_t>(literalAddress) < guestCodeLimit &&
+                 literalBytes <= guestCodeLimit -
+                     static_cast<std::uint64_t>(literalAddress));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
@@ -635,6 +655,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
+                !validScalarLiteralMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
                 !validAddSubCarryRegister ||
@@ -6396,14 +6417,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         opcode == translate_core::Opcode::LoadUnscaledWriteback ||
                         opcode == translate_core::Opcode::StoreUnscaledWriteback ||
                         opcode == translate_core::Opcode::LoadSignedScalar;
-                    const auto expectedWidth = faultPacket->operation[5] / 8U *
-                        (pairAccess ? 2U : 1U);
-                    if ((!scalarAccess && !pairAccess) ||
-                        faultPacket->operation[5] % 8U != 0 ||
-                        (faultPacket->operation[5] / 8U != 1 &&
-                         faultPacket->operation[5] / 8U != 2 &&
-                         faultPacket->operation[5] / 8U != 4 &&
-                         faultPacket->operation[5] / 8U != 8) ||
+                    const bool literalAccess =
+                        opcode == translate_core::Opcode::LoadLiteral;
+                    const auto expectedWidth = literalAccess
+                        ? (faultPacket->operation[4] == 1U ? 8U : 4U)
+                        : faultPacket->operation[5] / 8U * (pairAccess ? 2U : 1U);
+                    const auto accessWidth = literalAccess
+                        ? expectedWidth : faultPacket->operation[5] / 8U;
+                    if ((!scalarAccess && !pairAccess && !literalAccess) ||
+                        (!literalAccess && faultPacket->operation[5] % 8U != 0) ||
+                        (!literalAccess && accessWidth != 1U && accessWidth != 2U &&
+                         accessWidth != 4U && accessWidth != 8U) ||
                         width != expectedWidth) {
                         throw std::runtime_error(
                             "Interpreter cache retry does not match its memory packet");

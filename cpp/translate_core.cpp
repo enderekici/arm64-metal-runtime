@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -77,6 +78,16 @@ bool Instruction::ends_block_at(std::int64_t pc) const {
 std::optional<Operation> decode_operation(std::uint32_t bits) {
   if (bits == 0xd65f03c0) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
+  }
+
+  if ((bits & 0x3f000000U) == 0x18000000U) {
+    const auto kind = field(bits, 30, 2);
+    if (kind == 3U) return std::nullopt;  // PRFM is intentionally not typed.
+    const auto displacement = signed_field(field(bits, 5, 19), 19) * 4;
+    const auto resultWidth = kind == 0U ? 32U : 64U;
+    return Operation{Opcode::LoadLiteral, field(bits, 0, 5), 0,
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     kind, resultWidth};
   }
 
   if ((bits & 0x7e000000) == 0x34000000) {
@@ -450,7 +461,44 @@ Instruction make_operation_instruction(Operation operation,
                                        std::uint64_t guest_code_limit,
                                        std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::IntegerBitOperation) {
+  if (operation.opcode == Opcode::LoadLiteral) {
+    const auto displacement = static_cast<std::int32_t>(operation.immediate);
+    const auto bytes = operation.shift == 1U ? 8U : 4U;
+    if (operation.destination > 31 || operation.source != 0 || operation.shift > 2U ||
+        (operation.shift == 0U && operation.width != 32U) ||
+        (operation.shift != 0U && operation.width != 64U) ||
+        displacement < -(1 << 20) || displacement > ((1 << 20) - 4) ||
+        (displacement & 3) != 0 ||
+        guest_pc > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+      throw std::invalid_argument("Typed scalar literal-load operands are invalid");
+    }
+    const auto base = static_cast<std::int64_t>(guest_pc);
+    if ((displacement < 0 && base < -static_cast<std::int64_t>(displacement)) ||
+        (displacement > 0 && base >
+            std::numeric_limits<std::int64_t>::max() - displacement)) {
+      throw std::invalid_argument("Typed scalar literal-load address is invalid");
+    }
+    const auto address = base + displacement;
+    if (address < 0 || (guest_code_limit != 0 &&
+        (static_cast<std::uint64_t>(address) >= guest_code_limit ||
+         bytes > guest_code_limit - static_cast<std::uint64_t>(address)))) {
+      throw std::invalid_argument("Typed scalar literal-load address is invalid");
+    }
+    const auto literalAddress = std::to_string(address) + "ul";
+    const auto load = "load_guest_word(memory + " + literalAddress + ", " +
+                      std::to_string(bytes) + "ul)";
+    code.push_back("if (" + literalAddress + " > size || " +
+                   std::to_string(bytes) + "ul > size - " + literalAddress +
+                   ") { x[33] = " + std::to_string(guest_pc) +
+                   "ul; x[874] = " + literalAddress +
+                   "; x[34] = 2; return; }");
+    if (operation.destination != 31) {
+      const auto value = operation.shift == 2U
+          ? "ulong(long(int(" + load + ")))" : load;
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = " + value + ";");
+    }
+  } else if (operation.opcode == Opcode::IntegerBitOperation) {
     if (operation.destination > 31 || operation.source > 31 ||
         operation.immediate > 3U || operation.shift != 0 ||
         (operation.width != 32 && operation.width != 64)) {

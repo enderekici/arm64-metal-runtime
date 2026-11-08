@@ -4,6 +4,7 @@
 #include "guest_vector_crypto.hpp"
 #include "process_host.hpp"
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
@@ -243,7 +244,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       decodedOperation->opcode != translate_core::Opcode::StorePair &&
       decodedOperation->opcode != translate_core::Opcode::LoadUnscaledWriteback &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnscaledWriteback &&
-      decodedOperation->opcode != translate_core::Opcode::LoadSignedScalar) {
+      decodedOperation->opcode != translate_core::Opcode::LoadSignedScalar &&
+      decodedOperation->opcode != translate_core::Opcode::LoadLiteral) {
     const auto successors =
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
@@ -264,7 +266,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
          decodedOperation->opcode == translate_core::Opcode::StorePair ||
          decodedOperation->opcode == translate_core::Opcode::LoadUnscaledWriteback ||
          decodedOperation->opcode == translate_core::Opcode::StoreUnscaledWriteback ||
-         decodedOperation->opcode == translate_core::Opcode::LoadSignedScalar)) {
+         decodedOperation->opcode == translate_core::Opcode::LoadSignedScalar ||
+         decodedOperation->opcode == translate_core::Opcode::LoadLiteral)) {
       instruction.operation = *decodedOperation;
     }
     return instruction;
@@ -1713,19 +1716,27 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto scale = field(12, 1) == 1 ? ctz(width) : 0;
     return (std::string("(") + str(offset) + " << " + str(scale) + ")");
   };
-  if ((bits & 0x3f000000) == 0x18000000 && field(30, 2) != 3) {
-    const auto operation = field(30, 2);
-    const int width = operation == 1 ? 8 : 4;
-    const int64_t address = pc + sign_extend(field(5, 19), 19) * 4;
-    if (address < 0)
+  if (decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::LoadLiteral) {
+    const auto kind = decodedOperation->shift;
+    const auto bytes = kind == 1U ? 8U : 4U;
+    const auto displacement = static_cast<std::int32_t>(decodedOperation->immediate);
+    if ((displacement < 0 && pc < -static_cast<std::int64_t>(displacement)) ||
+        (displacement > 0 && pc >
+            std::numeric_limits<std::int64_t>::max() - displacement)) {
       throw GuestError("Invalid scalar literal load address");
+    }
+    const auto address = pc + displacement;
+    if (address < 0 || static_cast<std::uint64_t>(address) >= guestCodeLimit ||
+        bytes > guestCodeLimit - static_cast<std::uint64_t>(address)) {
+      throw GuestError("Invalid scalar literal load address");
+    }
     const auto logical = str(address) + "ul";
-    const auto pointer = physical(logical, width, true);
-    const auto loaded =
-        "load_guest_word(memory + " + pointer + ", " + str(width) + ")";
-    const auto value =
-        operation == 2 ? "ulong(long(int(" + loaded + ")))" : loaded;
-    return emit("if (" + outside(logical, width, true) + ") { x[" +
+    const auto pointer = physical(logical, bytes, true);
+    const auto loaded = "load_guest_word(memory + " + pointer + ", " +
+                        str(bytes) + ")";
+    const auto value = kind == 2U ? "ulong(long(int(" + loaded + ")))" : loaded;
+    return emit("if (" + outside(logical, bytes, true) + ") { x[" +
                     str(guestFaultAddress) + "] = " + logical +
                     "; x[34] = 2; return; }",
                 rd == 31 ? "" : reg(rd) + " = " + value + ";");
