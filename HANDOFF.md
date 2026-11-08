@@ -302,3 +302,19 @@ metallib SHA-256 was
 promoted archive SHA-256 is
 `6ba7f7e0db14a498107d2476fa6365a0f712ca18d00bc89f069a19644bffd80a`.
 Receipts: `/tmp/metal-csel-scalar-typed-release.JUQhu9`.
+
+## Shifted-register arithmetic interpreter release
+
+Source `c1c0ff8` adds typed W/X shifted-register ADD/SUB, flag updates, and
+CMP/CMN aliases. Strict demand-cache/interpreter gates and full regression
+exited 0. The extracted package fixture exited 42 after one 72-packet
+interpreter dispatch with no translated compile fallback. Runtime and metallib
+hashes were stable across the gate: `c3168cb33edcad2a70227b642c8cb5a6c44c0ce8ff02a6db607dd763053a1618`
+and `a8af3e1098d69750a1f2609d1c30a56e14017652b2fd459a480ffdf9f229da34`.
+The promoted archive SHA-256 is
+`65e9e4b1f2e70f8799fcfdabdd6e86394c928bd590fcb8c28b28fc82575c90c9`.
+Receipts: `/tmp/metal-shifted-release.hc5bf0`.
+
+An isolated SDK-bridge candidate changes the Java first stop from null access
+to raw `open_nocancel` syscall 398. Exact no-cache SDK replay is pending, so
+this is a narrowed diagnostic frontier, not an SDK compatibility result.
