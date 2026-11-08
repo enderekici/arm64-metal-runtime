@@ -301,6 +301,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::SubImmediate ||
                 opcode == translate_core::Opcode::AddImmediateSetFlags ||
                 opcode == translate_core::Opcode::SubImmediateSetFlags;
+            const bool conditionalSelectOpcode =
+                opcode == translate_core::Opcode::ConditionalSelect;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !unsignedMemoryOpcode ||
@@ -332,9 +334,15 @@ ProcessKernelPlan plan_process_kernel(
                  operation.immediate <= 0xfff &&
                  (operation.width == 32 || operation.width == 64) &&
                  (operation.shift == 0 || operation.shift == 12));
-            if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode) ||
+            const bool validConditionalSelect =
+                !conditionalSelectOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 && operation.shift <= 63 &&
+                 (operation.width == 32 || operation.width == 64));
+            if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
+                 !conditionalSelectOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
-                !validAddSubImmediate ||
+                !validAddSubImmediate || !validConditionalSelect ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

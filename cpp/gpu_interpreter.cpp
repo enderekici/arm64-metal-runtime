@@ -127,6 +127,14 @@ Result Interpreter::dispatch(const Backend& backend,
                 packet.successor1 != packet.pc + 4) {
                 throw std::invalid_argument("Interpreter B.cond packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::ConditionalSelect) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                operation[4] > 63 || (operation[5] != 32 && operation[5] != 64) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument("Interpreter conditional-select packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::MoveWideZero ||
                    opcode == translate_core::Opcode::MoveWideNot ||
                    opcode == translate_core::Opcode::MoveWideKeep) {

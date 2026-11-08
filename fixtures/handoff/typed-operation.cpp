@@ -13,6 +13,63 @@ using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
 int main() {
+  constexpr std::uint32_t selectBases[] = {
+      0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};
+  for (std::uint32_t variant = 0; variant < 4; ++variant) {
+    for (const std::uint32_t width : {32U, 64U}) {
+      for (std::uint32_t condition = 0; condition < 16; ++condition) {
+        const auto bits = selectBases[variant] | (width == 64 ? 0x80000000U : 0U) |
+                          (2U << 16U) | (1U << 5U) | (condition << 12U) | 3U;
+        const auto operation = decode_operation(bits);
+        assert(operation.has_value() && operation->opcode == Opcode::ConditionalSelect);
+        assert(operation->destination == 3 && operation->source == 1 &&
+               operation->immediate == 2 &&
+               operation->shift == (variant << 4U) + condition &&
+               operation->width == width);
+        assert((serialize_operation(*operation) ==
+                arm64metal::translate_core::OperationPacket{
+                    16, 3, 1, 2, (variant << 4U) + condition, width}));
+      }
+    }
+  }
+  const auto cselWide = decode_operation(0x9a820020U);
+  assert(cselWide.has_value());
+  const auto cselWideLowered = make_operation_instruction(
+      *cselWide, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(cselWideLowered.code == std::vector<std::string>{
+      "x[0] = conditional_select_apply(0u, x[1], x[2], 0u, "
+      "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | (uint(c) << 3u)), 64u);"});
+  const auto csincWord = decode_operation(0x1a851483U);
+  assert(csincWord.has_value() && csincWord->shift == 17 &&
+         csincWord->width == 32);
+  const auto csincWordLowered = make_operation_instruction(
+      *csincWord, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(csincWordLowered.code[0].find("conditional_select_apply(1u,") !=
+         std::string::npos);
+  const auto cselZero = decode_operation(0x9a9f03ffU);
+  assert(cselZero.has_value() && cselZero->destination == 31 &&
+         cselZero->source == 31 && cselZero->immediate == 31);
+  assert(make_operation_instruction(*cselZero, {0x1004}, LoweringMode::Process,
+                                    std::uint64_t{1} << 48).code.empty());
+  for (std::uint32_t flags = 0; flags < 16; ++flags) {
+    for (std::uint32_t condition = 0; condition < 16; ++condition) {
+      const bool takeLeft = arm64metal::arm64_condition_holds(condition, flags);
+      for (std::uint32_t variant = 0; variant < 4; ++variant) {
+        const std::uint64_t lhs = 0x123456789abcdef0ULL;
+        const std::uint64_t rhs = 0xfedcba9876543210ULL;
+        const std::uint64_t fallback =
+            variant == 1 ? rhs + 1U : variant == 2 ? ~rhs
+                                         : variant == 3 ? 0U - rhs : rhs;
+        assert(arm64metal::conditional_select_apply(
+                   variant, lhs, rhs, condition, flags, 64) ==
+               (takeLeft ? lhs : fallback));
+      }
+    }
+  }
+  assert(arm64metal::conditional_select_apply(1, 7, 0xffffffffU, 1, 1, 32) == 0);
+
   const auto branchEqual = decode_operation(0x54000040);
   assert(branchEqual.has_value());
   assert(branchEqual->opcode == Opcode::BranchCondition);

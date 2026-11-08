@@ -78,11 +78,33 @@ inline AddSubImmediateResult add_sub_immediate_apply(
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
+inline ulong conditional_select_apply(uint variant, ulong lhs, ulong rhs,
+                                      uint condition, uint flags, uint width) {
+    ulong selected = lhs;
+    if (!arm64_condition_holds(condition, flags)) {
+        if (variant == 1u) selected = rhs + 1ul;
+        else if (variant == 2u) selected = ~rhs;
+        else if (variant == 3u) selected = 0ul - rhs;
+        else selected = rhs;
+    }
+    return width == 32u ? ulong(uint(selected)) : selected;
+}
 #else
 namespace arm64metal {
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
+}
+inline constexpr std::uint64_t conditional_select_apply(
+    std::uint32_t variant, std::uint64_t lhs, std::uint64_t rhs,
+    std::uint32_t condition, std::uint32_t flags, std::uint32_t width) {
+  const auto selected = arm64_condition_holds(condition, flags)
+      ? lhs
+      : variant == 1U ? rhs + 1U
+      : variant == 2U ? ~rhs
+      : variant == 3U ? 0U - rhs
+                      : rhs;
+  return width == 32U ? static_cast<std::uint32_t>(selected) : selected;
 }
 inline constexpr char typed_integer_msl_source[] =
     "inline ulong move_wide_apply(uint opcode, ulong previous, uint immediate, "
@@ -105,7 +127,15 @@ inline constexpr char typed_integer_msl_source[] =
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
-    "; }\n";
+    "; }\n"
+    "inline ulong conditional_select_apply(uint variant, ulong lhs, ulong rhs, "
+    "uint condition, uint flags, uint width) { ulong selected = lhs; "
+    "if (!arm64_condition_holds(condition, flags)) { "
+    "if (variant == 1u) selected = rhs + 1ul; "
+    "else if (variant == 2u) selected = ~rhs; "
+    "else if (variant == 3u) selected = 0ul - rhs; "
+    "else selected = rhs; } "
+    "return width == 32u ? ulong(uint(selected)) : selected; }\n";
 }  // namespace arm64metal
 #endif
 

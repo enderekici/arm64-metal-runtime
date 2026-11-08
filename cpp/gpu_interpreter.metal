@@ -172,6 +172,46 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 leftBlock = true;
                 break;
             }
+            if (opcode == 16u) {
+                const uint rd = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint rm = instruction.operation[3];
+                const uint packed = instruction.operation[4];
+                const uint variant = packed >> 4u;
+                const uint condition = packed & 15u;
+                const uint width = instruction.operation[5];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rd > 31u || rn > 31u || rm > 31u || variant > 3u ||
+                    (width != 32u && width != 64u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong lhs = rn == 31u ? 0ul : state[rn];
+                const ulong rhs = rm == 31u ? 0ul : state[rm];
+                const ulong value = conditional_select_apply(
+                    variant, lhs, rhs, condition, uint(state[32]), width);
+                if (rd < 31u) state[rd] = value;
+                if (blockEnd) {
+                    if (instruction.successorCount != 1u) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 6u || opcode == 7u) {
                 const uint rt = instruction.operation[1];
                 const uint rn = instruction.operation[2];

@@ -67,6 +67,26 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      0, 64};
   }
 
+  const auto selectEncoding = bits & 0x7fe00c00U;
+  std::uint32_t selectVariant;
+  if (selectEncoding == 0x1a800000U) {
+    selectVariant = 0;
+  } else if (selectEncoding == 0x1a800400U) {
+    selectVariant = 1;
+  } else if (selectEncoding == 0x5a800000U) {
+    selectVariant = 2;
+  } else if (selectEncoding == 0x5a800400U) {
+    selectVariant = 3;
+  } else {
+    selectVariant = 0;
+  }
+  if (selectEncoding == 0x1a800000U || selectEncoding == 0x1a800400U ||
+      selectEncoding == 0x5a800000U || selectEncoding == 0x5a800400U) {
+    return Operation{Opcode::ConditionalSelect, field(bits, 0, 5), field(bits, 5, 5),
+                     field(bits, 16, 5), (selectVariant << 4U) | field(bits, 12, 4),
+                     field(bits, 31, 1) == 1 ? 64U : 32U};
+  }
+
   if ((bits & 0xfc000000) == 0x14000000) {
     const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
     return Operation{Opcode::Branch, 0, 0,
@@ -234,6 +254,23 @@ Instruction make_operation_instruction(Operation operation,
                    std::to_string(operation.source) + "u, " + flags + ") ? " +
                    pc_literal(next[0], "ul") + " : " +
                    pc_literal(next[1], "ul") + "; break;");
+  } else if (operation.opcode == Opcode::ConditionalSelect) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || operation.shift > 63 ||
+        (operation.width != 32 && operation.width != 64)) {
+      throw std::invalid_argument("Typed conditional select operands are invalid");
+    }
+    if (operation.destination != 31) {
+      const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                         "(uint(c) << 3u))";
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = conditional_select_apply(" +
+                     std::to_string(operation.shift >> 4U) + "u, " +
+                     reg(operation.source, operation.width == 64) + ", " +
+                     reg(operation.immediate, operation.width == 64) + ", " +
+                     std::to_string(operation.shift & 15U) + "u, " + flags + ", " +
+                     std::to_string(operation.width) + "u);");
+    }
   } else {
     throw std::invalid_argument("Unknown typed ARM64 operation");
   }

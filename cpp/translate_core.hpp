@@ -28,6 +28,7 @@ enum class Opcode : std::uint32_t {
   LoadPair = 13,
   StorePair = 14,
   BranchCondition = 15,
+  ConditionalSelect = 16,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -39,6 +40,8 @@ enum class Opcode : std::uint32_t {
 // Pair memory uses destination=Rt, source=Rn, immediate=signed byte offset,
 // shift=(addressing mode << 5) | Rt2 (1=post, 2=offset, 3=pre), and width=32 or 64.
 // BranchCondition uses source for the condition and immediate for byte offset.
+// Conditional select uses destination=Rd, source=Rn, immediate=Rm,
+// shift=(variant << 4) | condition, and width=32 or 64.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
