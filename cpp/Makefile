@@ -712,13 +712,16 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		"$(INTERPRETER_BL_UNPLANNED_NATIVE)" >"$$run_dir/bl-unplanned.native.out" 2>"$$run_dir/bl-unplanned.native.err"; bl_unplanned_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_BL_UNPLANNED_MAIN)" >"$$run_dir/bl-unplanned.translated.out" 2>"$$run_dir/bl-unplanned.translated.err"; bl_unplanned_translated_rc=$$?; \
 		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_BL_UNPLANNED_MAIN)" >"$$run_dir/bl-unplanned.interpreter.out" 2>"$$run_dir/bl-unplanned.interpreter.err"; bl_unplanned_interpreter_rc=$$?; \
+		printf '%s\n' "$$bl_unplanned_native_rc" >"$$run_dir/bl-unplanned.native.rc"; \
+		printf '%s\n' "$$bl_unplanned_translated_rc" >"$$run_dir/bl-unplanned.translated.rc"; \
+		printf '%s\n' "$$bl_unplanned_interpreter_rc" >"$$run_dir/bl-unplanned.interpreter.rc"; \
 		set -e; \
 		test "$$bl_unplanned_native_rc" -eq 42 && test "$$bl_unplanned_translated_rc" -eq "$$bl_unplanned_native_rc" && \
 		test "$$bl_unplanned_interpreter_rc" -eq "$$bl_unplanned_native_rc" && \
 		cmp "$$run_dir/bl-unplanned.native.out" "$$run_dir/bl-unplanned.translated.out" && \
 		cmp "$$run_dir/bl-unplanned.native.out" "$$run_dir/bl-unplanned.interpreter.out" && \
 		cmp "$$run_dir/bl-unplanned.native.err" "$$run_dir/bl-unplanned.translated.err" && \
-		awk '/event=interpreter-dispatch pc=0x42d8/ { entry=1; next } entry && /event=interpreter-dispatch pc=0x42e8/ { target_dispatch=1; next } target_dispatch && /event=compile-start pc=0x4300/ { target_compile=1; next } target_compile && /event=compile-start pc=0x42f0/ { return_compile=1; exit } END { exit !return_compile }' "$$run_dir/bl-unplanned.interpreter.err" && \
+		awk '/event=interpreter-dispatch pc=0x42d8/ { entry=1; next } entry && /event=dispatch-done pc=0x4300/ { target_exit=1; next } target_exit && /event=compile-start pc=0x4300/ { target_compile=1; next } target_compile && /event=dispatch-done pc=0x42f0/ { return_exit=1; next } return_exit && /event=compile-start pc=0x42f0/ { return_compile=1; next } return_compile && /event=interpreter-dispatch pc=0x42e0/ { resumed=1; exit } END { exit !resumed }' "$$run_dir/bl-unplanned.interpreter.err" && \
 		sed '/^arm64-metal trace /d' "$$run_dir/bl-unplanned.interpreter.err" >"$$run_dir/bl-unplanned.interpreter.no-trace.err" && \
 		cmp "$$run_dir/bl-unplanned.native.err" "$$run_dir/bl-unplanned.interpreter.no-trace.err" || exit 1; \
 		set +e; \
