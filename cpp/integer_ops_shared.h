@@ -290,7 +290,7 @@ inline constexpr char typed_integer_msl_source[] =
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
         subtract, left, shifted, value, width, signBit))
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
-    "struct LogicalShiftedResult { ulong value; uint flags; };\\n"
+    "struct LogicalShiftedResult { ulong value; uint flags; };\n"
     "inline LogicalShiftedResult logical_shifted_apply(uint opc, uint invert, "
     "ulong lhs, ulong rhs, uint shiftType, uint amount, uint width, "
     "uint setFlags, uint previousFlags) { ulong mask = width == 32u ? "
@@ -308,7 +308,7 @@ inline constexpr char typed_integer_msl_source[] =
     "uint flags = previousFlags; if (setFlags != 0u) { ulong signBit = "
     "width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
     "flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u); } "
-    "return LogicalShiftedResult{value, flags}; }\\n"
+    "return LogicalShiftedResult{value, flags}; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

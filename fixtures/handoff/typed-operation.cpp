@@ -165,6 +165,14 @@ int main() {
              .code.size() == 8);
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "logical_shifted_apply") != std::string_view::npos);
+  const auto logicalMsl =
+      std::string_view(arm64metal::typed_integer_msl_source);
+  assert(logicalMsl.find("};\ninline LogicalShiftedResult") !=
+         std::string_view::npos);
+  assert(logicalMsl.find("flags}; }\ninline bool arm64_condition_holds") !=
+         std::string_view::npos);
+  assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==
+         std::string_view::npos);
 
   using arm64metal::logical_shifted_apply;
   assert(logical_shifted_apply(0, 0, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
