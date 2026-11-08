@@ -1020,9 +1020,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::int64_t, std::string> imports(image.imports.begin(), image.imports.end());
     if (image.cache_reader) {
         constexpr auto libdyldPath = "/usr/lib/system/libdyld.dylib";
-        constexpr auto tproFunction = "__dyld_call_with_writable_tpro_memory";
-        if (const auto resolved = image.cache_reader->resolveExport(libdyldPath, tproFunction)) {
-            imports.emplace(resolved->guest_address, tproFunction);
+        constexpr std::array cachedDyldServices{
+            "__dyld_call_with_writable_tpro_memory",
+            "_dyld_get_program_sdk_version_token",
+            "_dyld_get_program_minos_version_token",
+            "_dyld_version_token_get_platform",
+            "_dyld_version_token_at_least",
+        };
+        for (const auto* symbol : cachedDyldServices) {
+            if (const auto resolved = image.cache_reader->resolveExport(libdyldPath, symbol)) {
+                imports.emplace(resolved->guest_address, symbol);
+            }
         }
     }
     if (image.cache_reader &&
@@ -5259,6 +5267,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " result=" << (result > 0 ? 1 : 0) << '\n';
                 }
                 hostRegisters[0] = static_cast<std::uint64_t>(result > 0);
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service >= 189 && service <= 192) {
+                if (service == 189 || service == 190) {
+                    const bool sdkToken = service == 189;
+                    hostRegisters[0] = image.build_version
+                        ? image.build_version->token(sdkToken) : 0;
+                } else if (service == 191) {
+                    hostRegisters[0] = static_cast<std::uint32_t>(hostRegisters[0]);
+                } else {
+                    const auto result = guest_version_token_at_least(
+                        hostRegisters[0], hostRegisters[1]);
+                    if (result < 0) {
+                        throw std::runtime_error("Darwin version-set comparison is unavailable");
+                    }
+                    hostRegisters[0] = static_cast<std::uint64_t>(result);
+                }
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;

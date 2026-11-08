@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf 'Usage: %s RUNTIME RESULTS_ROOT CASE...\n' "$0" >&2
-    printf 'Cases: plutil tar libz-root libz-provider jni\n' >&2
+    printf 'Cases: dyld-sdk plutil tar libz-root libz-provider jni\n' >&2
     exit 2
 }
 
@@ -12,7 +12,7 @@ runtime=$1
 results_root=$2
 shift 2
 if [ "$#" -eq 1 ] && [ "$1" = all ]; then
-    set -- plutil tar libz-root libz-provider
+    set -- dyld-sdk plutil tar libz-root libz-provider
     if [ -n "${JDK_HOME:-}" ]; then
         set -- "$@" jni
     fi
@@ -99,6 +99,15 @@ compare() {
 
 for case_name do
     case "$case_name" in
+        dyld-sdk)
+            [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
+            xcrun clang -Wall -Wextra -Werror fixtures/handoff/dyld-sdk-at-least.c \
+                -o "$probe_dir/dyld-sdk-at-least"
+            xcrun clang -Wall -Wextra -Werror fixtures/handoff/dyld-sdk-at-least-direct.c \
+                -o "$probe_dir/dyld-sdk-at-least-direct"
+            compare dyld-sdk-dlsym 0 "$probe_dir/dyld-sdk-at-least"
+            compare dyld-sdk-direct 0 "$probe_dir/dyld-sdk-at-least-direct"
+            ;;
         plutil)
             plutil=/usr/bin/plutil
             [ -x "$plutil" ] || { printf 'Missing %s\n' "$plutil" >&2; exit 2; }
