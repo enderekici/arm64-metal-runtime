@@ -61,21 +61,25 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 return;
             }
             const uint opcode = instruction.operation[0];
-            if (opcode == 9u || opcode == 10u) {
+            if (opcode >= 9u && opcode <= 12u) {
                 const uint rd = instruction.operation[1];
                 const uint rn = instruction.operation[2];
                 const uint immediate = instruction.operation[3];
                 const uint shift = instruction.operation[4];
                 const uint width = instruction.operation[5];
-                if (rd >= 31u || rn >= 31u || immediate > 0xfffu ||
+                if (rd > 31u || rn > 31u || immediate > 0xfffu ||
                     (shift != 0u && shift != 12u) ||
                     (width != 32u && width != 64u)) {
                     state[33] = pc;
                     state[34] = 7;
                     return;
                 }
-                state[rd] = add_sub_immediate_apply(
-                    uint(opcode == 10u), state[rn], immediate, shift, width);
+                const bool setFlags = opcode >= 11u;
+                const AddSubImmediateResult result = add_sub_immediate_apply(
+                    uint(opcode == 10u || opcode == 12u), state[rn], immediate,
+                    shift, width, uint(setFlags), uint(state[32]));
+                if (!setFlags || rd != 31u) state[rd] = result.value;
+                state[32] = result.flags;
                 if ((instruction.flags & 2u) != 0u) {
                     if (instruction.successorCount != 1u) {
                         state[33] = pc;

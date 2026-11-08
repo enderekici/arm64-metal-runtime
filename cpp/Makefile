@@ -70,6 +70,8 @@ INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
 INTERPRETER_ADD_SUB_NATIVE := $(BUILD_DIR)/interpreter-add-sub-native
 INTERPRETER_ADD_SUB_MAIN := $(BUILD_DIR)/interpreter-add-sub-immediate-main
+INTERPRETER_ADD_SUB_FLAGS_NATIVE := $(BUILD_DIR)/interpreter-add-sub-flags-native
+INTERPRETER_ADD_SUB_SP_MAIN := $(BUILD_DIR)/interpreter-add-sub-sp-flags-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_MOVN_MOVK_MAIN := $(BUILD_DIR)/interpreter-movn-movk-main
 INTERPRETER_BRANCH_MAIN := $(BUILD_DIR)/interpreter-branch-main
@@ -112,6 +114,10 @@ $(INTERPRETER_ADD_SUB_NATIVE): ../fixtures/handoff/typed-add-sub-immediate.s ../
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
 
+$(INTERPRETER_ADD_SUB_FLAGS_NATIVE): ../fixtures/handoff/typed-add-sub-flags.s ../fixtures/handoff/typed-add-sub-flags-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
+
 $(INTERPRETER_MINIMAL_MAIN): ../fixtures/interpreter/minimal-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -121,6 +127,10 @@ $(INTERPRETER_MOVN_MOVK_MAIN): ../fixtures/interpreter/movn-movk-entry.s
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_ADD_SUB_MAIN): ../fixtures/interpreter/add-sub-immediate-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_ADD_SUB_SP_MAIN): ../fixtures/interpreter/add-sub-sp-flags-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -180,7 +190,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -188,8 +198,9 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" "$(APP)" interpreter-probe "$(abspath $(INTERPRETER_METALLIB))" >"$$run_dir/interpreter.gpu.out" 2>"$$run_dir/interpreter.gpu.err"; \
 		"$(INTERPRETER_MOVE_WIDE_NATIVE)" >"$$run_dir/interpreter.native.out"; \
 		"$(INTERPRETER_ADD_SUB_NATIVE)" >>"$$run_dir/interpreter.native.out"; \
+		"$(INTERPRETER_ADD_SUB_FLAGS_NATIVE)" >>"$$run_dir/interpreter.native.out"; \
 		cmp "$$run_dir/interpreter.native.out" "$$run_dir/interpreter.gpu.out"; \
-		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=29' "$$run_dir/interpreter.gpu.err"; \
+		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=39' "$$run_dir/interpreter.gpu.err"; \
 		set +e; \
 		"$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.native.out" 2>"$$run_dir/interpreter-process.native.err"; native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.translated.out" 2>"$$run_dir/interpreter-process.translated.err"; translated_rc=$$?; \
@@ -312,4 +323,21 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/add-sub.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_ADD_SUB_SP_MAIN)" >"$$run_dir/add-sub-sp.native.out" 2>"$$run_dir/add-sub-sp.native.err"; add_sub_sp_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_ADD_SUB_SP_MAIN)" >"$$run_dir/add-sub-sp.translated.out" 2>"$$run_dir/add-sub-sp.translated.err"; add_sub_sp_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_ADD_SUB_SP_MAIN)" >"$$run_dir/add-sub-sp.interpreter.out" 2>"$$run_dir/add-sub-sp.interpreter.err"; add_sub_sp_interpreter_rc=$$?; \
+		printf '%s\n' "$$add_sub_sp_native_rc" >"$$run_dir/add-sub-sp.native.rc"; \
+		printf '%s\n' "$$add_sub_sp_translated_rc" >"$$run_dir/add-sub-sp.translated.rc"; \
+		printf '%s\n' "$$add_sub_sp_interpreter_rc" >"$$run_dir/add-sub-sp.interpreter.rc"; \
+		set -e; \
+		test "$$add_sub_sp_native_rc" -eq 42 && test "$$add_sub_sp_translated_rc" -eq "$$add_sub_sp_native_rc" && \
+		test "$$add_sub_sp_interpreter_rc" -eq "$$add_sub_sp_native_rc" && \
+		cmp "$$run_dir/add-sub-sp.native.out" "$$run_dir/add-sub-sp.translated.out" && \
+		cmp "$$run_dir/add-sub-sp.native.out" "$$run_dir/add-sub-sp.interpreter.out" && \
+		cmp "$$run_dir/add-sub-sp.native.err" "$$run_dir/add-sub-sp.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
+		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/add-sub-sp.interpreter.err"; \
 		echo "verify-interpreter receipts: $$run_dir"

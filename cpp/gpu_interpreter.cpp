@@ -125,9 +125,11 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument("Interpreter move-wide packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::AddImmediate ||
-                   opcode == translate_core::Opcode::SubImmediate) {
+                   opcode == translate_core::Opcode::SubImmediate ||
+                   opcode == translate_core::Opcode::AddImmediateSetFlags ||
+                   opcode == translate_core::Opcode::SubImmediateSetFlags) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
-            if (operation[1] >= 31 || operation[2] >= 31 ||
+            if (operation[1] > 31 || operation[2] > 31 ||
                 operation[3] > 0xfff ||
                 (operation[4] != 0 && operation[4] != 12) ||
                 (operation[5] != 32 && operation[5] != 64) ||

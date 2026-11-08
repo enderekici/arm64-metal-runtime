@@ -148,13 +148,30 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror \
 
 Expected output is
 `add=123005,10000 sub=2332d000,1221d000 nzcv=20000000`.
-The typed interpreter slice accepts non-flag-setting forms with X/W registers
-0–30 and immediate shifts 0 or 12. SP/ZR encodings and ADDS/SUBS remain outside
-this typed packet slice.
+The native edge fixture also checks X/W overflow, carry and borrow, CMP/CMN
+aliases, and SP/WSP updates. Non-flag-setting ADD/SUB uses SP for encoded
+register 31 as either operand; flag-setting forms use SP for Rn=31 and discard
+the result for Rd=31, matching CMP/CMN. The common helper preserves NZCV for
+non-flag-setting forms and applies W-result zero-extension.
+
+The flag and stack-pointer native control is built with:
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  fixtures/handoff/typed-add-sub-flags.s \
+  fixtures/handoff/typed-add-sub-flags-main.c \
+  -o .build/handoff-probes/typed-add-sub-flags
+.build/handoff-probes/typed-add-sub-flags
+```
+
+Expected output is
+`adds=90000000,60000000 subs=80000000,80000000 cmp=60000000 cmn=60000000 cmpsp=20000000 wz=0 sp=2000,fffffffffffff000,80000001`.
 
 `fixtures/interpreter/add-sub-immediate-main.s` is the repeatable process-entry
 probe: MOVZ W0, ADD W0, SUB W0, RET must exit 42 with a four-operation
-interpreter dispatch.
+interpreter dispatch. `fixtures/interpreter/add-sub-sp-flags-main.s` adds SP
+round-tripping and CMP-to-ZR followed by a conditional branch, and must exit
+42 after a four-operation interpreter block and translated branch fallback.
 
 ## Multi-allocation Mach VM deallocation
 

@@ -85,12 +85,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     const auto setFlags = field(bits, 29, 1) != 0;
     const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
     const auto shiftField = field(bits, 22, 1);
-    if (setFlags || field(bits, 23, 1) != 0 || destination == 31 ||
-        source == 31) {
+    if (field(bits, 23, 1) != 0) {
       return std::nullopt;
     }
-    return Operation{field(bits, 30, 1) == 0 ? Opcode::AddImmediate
-                                            : Opcode::SubImmediate,
+    const auto subtract = field(bits, 30, 1) != 0;
+    const auto opcode = setFlags
+        ? (subtract ? Opcode::SubImmediateSetFlags : Opcode::AddImmediateSetFlags)
+        : (subtract ? Opcode::SubImmediate : Opcode::AddImmediate);
+    return Operation{opcode,
                      destination, source, field(bits, 10, 12),
                      shiftField * 12u, width};
   }
@@ -133,14 +135,35 @@ Instruction make_operation_instruction(Operation operation,
                      std::to_string(operation.width) + "u);");
     }
   } else if (operation.opcode == Opcode::AddImmediate ||
-             operation.opcode == Opcode::SubImmediate) {
-    const auto subtract = operation.opcode == Opcode::SubImmediate ? "1u" : "0u";
+             operation.opcode == Opcode::SubImmediate ||
+             operation.opcode == Opcode::AddImmediateSetFlags ||
+             operation.opcode == Opcode::SubImmediateSetFlags) {
+    const bool setFlags = operation.opcode == Opcode::AddImmediateSetFlags ||
+                          operation.opcode == Opcode::SubImmediateSetFlags;
+    const auto subtract = operation.opcode == Opcode::SubImmediate ||
+                          operation.opcode == Opcode::SubImmediateSetFlags;
     const auto lhs = "x[" + std::to_string(operation.source) + "]";
-    code.push_back("x[" + std::to_string(operation.destination) +
-                   "] = add_sub_immediate_apply(" + subtract + ", " + lhs +
-                   ", " + std::to_string(operation.immediate) + "u, " +
-                   std::to_string(operation.shift) + "u, " +
-                   std::to_string(operation.width) + "u);");
+    code.push_back("{");
+    code.push_back("const uint previous_flags = uint(z) | (uint(n) << 1u) | "
+                   "(uint(v) << 2u) | (uint(c) << 3u);");
+    code.push_back("const AddSubImmediateResult add_sub_result = "
+                   "add_sub_immediate_apply(" + std::string(subtract ? "1u" : "0u") +
+                   ", " + lhs + ", " + std::to_string(operation.immediate) +
+                   "u, " + std::to_string(operation.shift) + "u, " +
+                   std::to_string(operation.width) + "u, " +
+                   std::string(setFlags ? "1u" : "0u") + ", previous_flags);");
+    if (!setFlags || operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = add_sub_result.value;");
+    }
+    code.push_back("z = (add_sub_result.flags & 1u) != 0u;");
+    code.push_back("n = (add_sub_result.flags & 2u) != 0u;");
+    code.push_back("v = (add_sub_result.flags & 4u) != 0u;");
+    code.push_back("c = (add_sub_result.flags & 8u) != 0u;");
+    if (mode == LoweringMode::Process) {
+      code.push_back("x[32] = add_sub_result.flags;");
+    }
+    code.push_back("}");
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {
       code = {"returns[id] = uint(x[0]); status[id] = 0; return;"};

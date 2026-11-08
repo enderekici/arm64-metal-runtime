@@ -195,8 +195,9 @@ int main() {
   const auto addWideLowered = make_operation_instruction(
       *addWide, {0x1004}, LoweringMode::Process,
       std::uint64_t{1} << 48);
-  assert(addWideLowered.code == std::vector<std::string>{
-      "x[0] = add_sub_immediate_apply(0u, x[0], 291u, 12u, 64u);"});
+  assert(addWideLowered.code[2] ==
+         "const AddSubImmediateResult add_sub_result = "
+         "add_sub_immediate_apply(0u, x[0], 291u, 12u, 64u, 0u, previous_flags);");
 
   const auto subWide = decode_operation(0xd1448c00);
   assert(subWide.has_value() && subWide->opcode == Opcode::SubImmediate);
@@ -210,11 +211,56 @@ int main() {
   assert(addWord.has_value() && addWord->opcode == Opcode::AddImmediate);
   assert(addWord->width == 32 && addWord->immediate == 1 &&
          addWord->shift == 0);
-  assert(!decode_operation(0x910003ff).has_value());
-  assert(!decode_operation(0x910003e0).has_value());
-  assert(!decode_operation(0x9100001f).has_value());
-  assert(!decode_operation(0xb1000400).has_value());
-  assert(!decode_operation(0xf100003f).has_value());
+  const auto addSpSp = decode_operation(0x910003ff);
+  assert(addSpSp.has_value() && addSpSp->opcode == Opcode::AddImmediate);
+  assert(addSpSp->destination == 31 && addSpSp->source == 31);
+  const auto addFromSp = decode_operation(0x91400be0);
+  assert(addFromSp.has_value() && addFromSp->destination == 0 &&
+         addFromSp->source == 31 && addFromSp->shift == 12);
+  const auto addToSp = decode_operation(0x9100003f);
+  assert(addToSp.has_value() && addToSp->destination == 31 &&
+         addToSp->source == 1);
+  const auto cmn = decode_operation(0xb100043f);
+  assert(cmn.has_value() && cmn->opcode == Opcode::AddImmediateSetFlags);
+  assert(cmn->destination == 31 && cmn->source == 1);
+  assert((serialize_operation(*cmn) ==
+          arm64metal::translate_core::OperationPacket{11, 31, 1, 1, 0, 64}));
+  const auto cmp = decode_operation(0xf100043f);
+  assert(cmp.has_value() && cmp->opcode == Opcode::SubImmediateSetFlags);
+  assert(cmp->destination == 31 && cmp->source == 1);
+  const auto cmpLowered = make_operation_instruction(
+      *cmp, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(cmpLowered.code.size() == 9);
+  assert(cmpLowered.code[2] ==
+         "const AddSubImmediateResult add_sub_result = "
+         "add_sub_immediate_apply(1u, x[1], 1u, 0u, 64u, 1u, previous_flags);");
+  assert(cmpLowered.code[3] == "z = (add_sub_result.flags & 1u) != 0u;");
+  const auto functionCmp = arm64metal::translate_core::decode(0xf100043f, 0x1000);
+  assert(functionCmp.operation.has_value() &&
+         functionCmp.operation->opcode == Opcode::SubImmediateSetFlags);
+  assert(functionCmp.code.size() == 8);
+  assert(functionCmp.code[2] == cmpLowered.code[2]);
+  assert(functionCmp.code[3] == cmpLowered.code[3]);
+  assert(functionCmp.code.back() == "}");
+  const auto functionAddSp = arm64metal::translate_core::decode(0x910003ff, 0x2000);
+  assert(functionAddSp.operation.has_value() &&
+         functionAddSp.operation->destination == 31 &&
+         functionAddSp.operation->source == 31);
+  assert(functionAddSp.code[3] == "x[31] = add_sub_result.value;");
+  const auto cmpSp = decode_operation(0xf10003ff);
+  assert(cmpSp.has_value() && cmpSp->opcode == Opcode::SubImmediateSetFlags);
+  assert(cmpSp->destination == 31 && cmpSp->source == 31);
+  const auto cmnShifted = decode_operation(0xb140043f);
+  assert(cmnShifted.has_value() &&
+         cmnShifted->opcode == Opcode::AddImmediateSetFlags &&
+         cmnShifted->destination == 31 && cmnShifted->source == 1 &&
+         cmnShifted->shift == 12);
+  const auto addsWord = decode_operation(0x31000420);
+  assert(addsWord.has_value() &&
+         addsWord->opcode == Opcode::AddImmediateSetFlags &&
+         addsWord->width == 32 && addsWord->destination == 0);
+  assert(!decode_operation(0x91800000).has_value());
 
   bool invalidShiftRejected = false;
   try {

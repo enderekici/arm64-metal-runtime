@@ -183,6 +183,34 @@ int run_command(const std::vector<std::string>& args,
          packet(0xd65f03c0u, 0xd008, blockEnd)},
         {packet(0x52a24680u, 0xe000, blockStart), packet(0x51448c00u, 0xe004),
          packet(0xd65f03c0u, 0xe008, blockEnd)}};
+    const std::vector<std::vector<InstructionPacket>> addSubFlagPrograms{
+        {packet(0xb100043fu, 0xf000, blockStart),
+         packet(0xd65f03c0u, 0xf004, blockEnd)},
+        {packet(0xf100043fu, 0x10000, blockStart),
+         packet(0xd65f03c0u, 0x10004, blockEnd)},
+        {packet(0xf140043fu, 0x11000, blockStart),
+         packet(0xd65f03c0u, 0x11004, blockEnd)},
+        {packet(0xb140043fu, 0x12000, blockStart),
+         packet(0xd65f03c0u, 0x12004, blockEnd)},
+        {packet(0x3100043fu, 0x13000, blockStart),
+         packet(0xd65f03c0u, 0x13004, blockEnd)},
+        {packet(0x7100043fu, 0x14000, blockStart),
+         packet(0xd65f03c0u, 0x14004, blockEnd)}};
+    const std::vector<InstructionPacket> stackPointerProgram{
+        packet(0x91400be0u, 0x15000, blockStart),
+        packet(0xd10043ffu, 0x15004),
+        packet(0xd65f03c0u, 0x15008, blockEnd)};
+    const std::vector<InstructionPacket> wordStackPointerProgram{
+        packet(0x52b0000au, 0x16000, blockStart),
+        packet(0x1100015fu, 0x16004),
+        packet(0x910003e0u, 0x16008),
+        packet(0xd65f03c0u, 0x1600c, blockEnd)};
+    const std::vector<InstructionPacket> addWordFlagsProgram{
+        packet(0x31000420u, 0x17000, blockStart),
+        packet(0xd65f03c0u, 0x17004, blockEnd)};
+    const std::vector<InstructionPacket> compareStackPointerProgram{
+        packet(0xf10003ffu, 0x18000, blockStart),
+        packet(0xd65f03c0u, 0x18004, blockEnd)};
     const std::vector<InstructionPacket> branchProgram{
         packet(0xd28000e0u, 0x5000, blockStart),
         packet(0x14000002u, 0x5004, blockEnd, 1, 0x500c),
@@ -231,15 +259,19 @@ int run_command(const std::vector<std::string>& args,
       throw std::runtime_error("AOT interpreter load counters mismatch");
     }
 
-    const auto execute = [&backend, &interpreter](const auto& packets,
-                                                  std::uint64_t flags = 0) {
-      ProcessState initial{};
+    const auto runFrom = [&backend, &interpreter](
+                             const auto& packets, ProcessState initial) {
       initial[arm64metal::gpu_interpreter::returnRegisterIndex] =
           arm64metal::gpu_interpreter::noReturnAddress;
       initial[33] = packets.front().pc;
-      initial[32] = flags;
       initial[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
       return interpreter.run(backend, packets, initial);
+    };
+    const auto execute = [&runFrom](const auto& packets,
+                                    std::uint64_t flags = 0) {
+      ProcessState initial{};
+      initial[32] = flags;
+      return runFrom(packets, initial);
     };
     const auto first = execute(firstProgram);
     const auto second = execute(secondProgram);
@@ -253,6 +285,32 @@ int run_command(const std::vector<std::string>& args,
     for (const auto& program : addSubImmediatePrograms) {
       addSubImmediateResults.push_back(execute(program, 8));
     }
+    std::vector<arm64metal::gpu_interpreter::Result> addSubFlagResults;
+    addSubFlagResults.reserve(addSubFlagPrograms.size());
+    const std::array<std::uint64_t, 6> flagInputs{
+        0x7fffffffffffffffull, 0, 0x1000, 0xfffffffffffff000ull,
+        0xffffffffull, 0};
+    for (std::size_t index = 0; index < addSubFlagPrograms.size(); ++index) {
+      ProcessState initial{};
+      initial[1] = flagInputs[index];
+      addSubFlagResults.push_back(runFrom(addSubFlagPrograms[index], initial));
+    }
+    ProcessState stackPointerInitial{};
+    stackPointerInitial[31] = 0x100000;
+    const auto stackPointerResult = runFrom(
+        stackPointerProgram, stackPointerInitial);
+    ProcessState wordStackPointerInitial{};
+    wordStackPointerInitial[31] = 0x100000000ull;
+    const auto wordStackPointerResult = runFrom(
+        wordStackPointerProgram, wordStackPointerInitial);
+    ProcessState addWordFlagsInitial{};
+    addWordFlagsInitial[1] = 0xffffffffull;
+    const auto addWordFlagsResult = runFrom(
+        addWordFlagsProgram, addWordFlagsInitial);
+    ProcessState compareStackPointerInitial{};
+    compareStackPointerInitial[31] = 0x100000;
+    const auto compareStackPointerResult = runFrom(
+        compareStackPointerProgram, compareStackPointerInitial);
     ProcessState continuationState{};
     continuationState[arm64metal::gpu_interpreter::returnRegisterIndex] = 0x3004;
     continuationState[33] = 0x3000;
@@ -300,7 +358,7 @@ int run_command(const std::vector<std::string>& args,
           backend, conditionalProgram(test.bits), initial));
     }
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 29 ||
+    if (compiled != 1 || dispatches != 39 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
         moveWideResults[0].state[34] != 0 ||
@@ -327,6 +385,28 @@ int run_command(const std::vector<std::string>& args,
         addSubImmediateResults[1].state[32] != 8 ||
         addSubImmediateResults[2].state[32] != 8 ||
         addSubImmediateResults[3].state[32] != 8 ||
+        addSubFlagResults[0].state[32] != 6 ||
+        addSubFlagResults[0].state[34] != 0 ||
+        addSubFlagResults[1].state[32] != 2 ||
+        addSubFlagResults[1].state[34] != 0 ||
+        addSubFlagResults[2].state[32] != 9 ||
+        addSubFlagResults[2].state[34] != 0 ||
+        addSubFlagResults[3].state[32] != 9 ||
+        addSubFlagResults[3].state[34] != 0 ||
+        addSubFlagResults[4].state[32] != 9 ||
+        addSubFlagResults[4].state[34] != 0 ||
+        addSubFlagResults[5].state[32] != 2 ||
+        addSubFlagResults[5].state[34] != 0 ||
+        stackPointerResult.state[0] != 0x102000 ||
+        stackPointerResult.state[31] != 0xff000 ||
+        stackPointerResult.state[34] != 0 ||
+        wordStackPointerResult.state[31] != 0x80000000ull ||
+        wordStackPointerResult.state[0] != 0x80000001ull ||
+        wordStackPointerResult.state[34] != 0 ||
+        addWordFlagsResult.state[0] != 0 ||
+        addWordFlagsResult.state[32] != 9 || addWordFlagsResult.state[34] != 0 ||
+        compareStackPointerResult.state[32] != 8 ||
+        compareStackPointerResult.state[34] != 0 ||
         continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
         zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99 ||
         branch.state[34] != 0 || branch.state[0] != 7 || branch.state[36] != 0 ||
@@ -360,6 +440,18 @@ int run_command(const std::vector<std::string>& args,
               << addSubImmediateResults[1].state[0] << ','
               << addSubImmediateResults[3].state[0] << " nzcv="
               << architecturalNzcv(addSubImmediateResults[0].state[32]) << '\n';
+    std::cout << "adds=" << std::hex
+              << architecturalNzcv(addSubFlagResults[0].state[32]) << ','
+              << architecturalNzcv(addWordFlagsResult.state[32]) << " subs="
+              << architecturalNzcv(addSubFlagResults[1].state[32]) << ','
+              << architecturalNzcv(addSubFlagResults[5].state[32]) << " cmp="
+              << architecturalNzcv(addSubFlagResults[2].state[32]) << " cmn="
+              << architecturalNzcv(addSubFlagResults[3].state[32]) << " cmpsp="
+              << architecturalNzcv(compareStackPointerResult.state[32]) << " wz="
+              << addWordFlagsResult.state[0] << " sp="
+              << (stackPointerResult.state[0] - 0x100000ull) << ','
+              << (stackPointerResult.state[31] - 0x100000ull) << ','
+              << wordStackPointerResult.state[0] << '\n';
     return 0;
   }
 

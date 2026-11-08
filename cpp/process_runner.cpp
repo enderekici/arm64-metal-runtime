@@ -285,7 +285,9 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::StoreUnsignedImmediate;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
-                opcode == translate_core::Opcode::SubImmediate;
+                opcode == translate_core::Opcode::SubImmediate ||
+                opcode == translate_core::Opcode::AddImmediateSetFlags ||
+                opcode == translate_core::Opcode::SubImmediateSetFlags;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !memoryOpcode ||
@@ -295,7 +297,7 @@ ProcessKernelPlan plan_process_kernel(
                  operation.shift == (operation.width == 32 ? 2U : 3U));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
-                (operation.destination < 31 && operation.source < 31 &&
+                (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 0xfff &&
                  (operation.width == 32 || operation.width == 64) &&
                  (operation.shift == 0 || operation.shift == 12));
