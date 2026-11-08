@@ -174,6 +174,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                            decodedOperation->opcode == translate_core::Opcode::Branch;
   const bool typedBranchZero = decodedOperation &&
                                decodedOperation->opcode == translate_core::Opcode::BranchZero;
+  const bool typedBranchCondition = decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::BranchCondition;
   if (typedBranch) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
     if (!imports.count(target) && !guestStubs.count(target)) {
@@ -188,7 +190,13 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
         guestCodeLimit);
   }
-  if (decodedOperation && !typedBranch && !typedBranchZero &&
+  if (typedBranchCondition) {
+    const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
+    return translate_core::make_operation_instruction(
+        *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
+        guestCodeLimit);
+  }
+  if (decodedOperation && !typedBranch && !typedBranchZero && !typedBranchCondition &&
       decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnsignedImmediate) {
     const auto successors =

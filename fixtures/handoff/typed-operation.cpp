@@ -1,4 +1,5 @@
 #include "translate_core.hpp"
+#include "integer_ops_shared.h"
 
 #include <cassert>
 #include <cstdint>
@@ -12,6 +13,48 @@ using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
 int main() {
+  const auto branchEqual = decode_operation(0x54000040);
+  assert(branchEqual.has_value());
+  assert(branchEqual->opcode == Opcode::BranchCondition);
+  assert(branchEqual->source == 0 && branchEqual->immediate == 8);
+  assert((serialize_operation(*branchEqual) ==
+          arm64metal::translate_core::OperationPacket{15, 0, 0, 8, 0, 64}));
+  const auto branchEqualLowered = make_operation_instruction(
+      *branchEqual, {0x1008, 0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(branchEqualLowered.code == std::vector<std::string>{
+      "pc = arm64_condition_holds(0u, (uint(z) | (uint(n) << 1u) | "
+      "(uint(v) << 2u) | (uint(c) << 3u))) ? 4104ul : 4100ul; break;"});
+  const auto expectedCondition = [](std::uint32_t condition, std::uint32_t flags) {
+    const bool z = (flags & 1U) != 0;
+    const bool n = (flags & 2U) != 0;
+    const bool v = (flags & 4U) != 0;
+    const bool c = (flags & 8U) != 0;
+    switch (condition) {
+      case 0: return z;
+      case 1: return !z;
+      case 2: return c;
+      case 3: return !c;
+      case 4: return n;
+      case 5: return !n;
+      case 6: return v;
+      case 7: return !v;
+      case 8: return c && !z;
+      case 9: return !c || z;
+      case 10: return n == v;
+      case 11: return n != v;
+      case 12: return !z && n == v;
+      case 13: return z || n != v;
+      default: return true;
+    }
+  };
+  for (std::uint32_t flags = 0; flags < 16; ++flags) {
+    for (std::uint32_t condition = 0; condition < 16; ++condition) {
+      assert(arm64metal::arm64_condition_holds(condition, flags) ==
+             expectedCondition(condition, flags));
+    }
+  }
+
   const auto wide = decode_operation(0xd2a24680);
   assert(wide.has_value());
   assert(wide->opcode == Opcode::MoveWideZero);

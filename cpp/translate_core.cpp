@@ -60,6 +60,13 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      width};
   }
 
+  if ((bits & 0xff000010U) == 0x54000000U) {
+    const auto displacement = signed_field(field(bits, 5, 19), 19) * 4;
+    return Operation{Opcode::BranchCondition, 0, field(bits, 0, 4),
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     0, 64};
+  }
+
   if ((bits & 0xfc000000) == 0x14000000) {
     const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
     return Operation{Opcode::Branch, 0, 0,
@@ -194,6 +201,16 @@ Instruction make_operation_instruction(Operation operation,
     code.push_back("pc = (" + condition + ") ? " +
                    pc_literal(next[0], "ul") + " : " +
                    pc_literal(next[1], "ul") + "; break;");
+  } else if (operation.opcode == Opcode::BranchCondition) {
+    if (operation.source > 15 || next.size() != 2 || operation.width != 64) {
+      throw std::invalid_argument("Typed B.cond needs a condition and two resolved guest edges");
+    }
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("pc = arm64_condition_holds(" +
+                   std::to_string(operation.source) + "u, " + flags + ") ? " +
+                   pc_literal(next[0], "ul") + " : " +
+                   pc_literal(next[1], "ul") + "; break;");
   } else {
     throw std::invalid_argument("Unknown typed ARM64 operation");
   }
@@ -225,6 +242,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
     } else if (operation->opcode == Opcode::BranchZero) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->shift));
+      successors.push_back(following);
+    } else if (operation->opcode == Opcode::BranchCondition) {
+      successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
       successors.push_back(following);
     } else if (operation->opcode != Opcode::Return) {
       successors.push_back(following);

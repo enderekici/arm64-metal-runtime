@@ -152,6 +152,25 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 leftBlock = true;
                 break;
             }
+            if (opcode == 15u) {
+                if ((instruction.flags & 2u) == 0u ||
+                    instruction.successorCount != 2u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const uint condition = instruction.operation[2];
+                const uint flags = uint(state[32]);
+                if (condition > 15u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                pc = arm64_condition_holds(condition, flags)
+                    ? instruction.successor0 : instruction.successor1;
+                leftBlock = true;
+                break;
+            }
             if (opcode == 6u || opcode == 7u) {
                 const uint rt = instruction.operation[1];
                 const uint rn = instruction.operation[2];

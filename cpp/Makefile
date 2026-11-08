@@ -74,6 +74,7 @@ INTERPRETER_ADD_SUB_NATIVE := $(BUILD_DIR)/interpreter-add-sub-native
 INTERPRETER_ADD_SUB_MAIN := $(BUILD_DIR)/interpreter-add-sub-immediate-main
 INTERPRETER_ADD_SUB_FLAGS_NATIVE := $(BUILD_DIR)/interpreter-add-sub-flags-native
 INTERPRETER_ADD_SUB_SP_MAIN := $(BUILD_DIR)/interpreter-add-sub-sp-flags-main
+INTERPRETER_BCOND_MAIN := $(BUILD_DIR)/interpreter-bcond-nzcv-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_MOVN_MOVK_MAIN := $(BUILD_DIR)/interpreter-movn-movk-main
 INTERPRETER_BRANCH_MAIN := $(BUILD_DIR)/interpreter-branch-main
@@ -139,6 +140,10 @@ $(INTERPRETER_ADD_SUB_MAIN): ../fixtures/interpreter/add-sub-immediate-main.s
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_ADD_SUB_SP_MAIN): ../fixtures/interpreter/add-sub-sp-flags-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_BCOND_MAIN): ../fixtures/interpreter/bcond-nzcv-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -211,7 +216,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -363,6 +368,23 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		     /event=dispatch-done/ && dispatched && !completed { completed=1; endpc=$$5; if ($$5 != "pc=0x42ec") bad=1 } \
 		     /event=compile-start/ && completed && !compiled { compiled=1; if ($$5 != endpc) bad=1 } \
 		     END { if (!ready || !dispatched || !completed || !compiled || bad) exit 1 }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_BCOND_MAIN)" >"$$run_dir/bcond.native.out" 2>"$$run_dir/bcond.native.err"; bcond_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_BCOND_MAIN)" >"$$run_dir/bcond.translated.out" 2>"$$run_dir/bcond.translated.err"; bcond_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_BCOND_MAIN)" >"$$run_dir/bcond.interpreter.out" 2>"$$run_dir/bcond.interpreter.err"; bcond_interpreter_rc=$$?; \
+		printf '%s\n' "$$bcond_native_rc" >"$$run_dir/bcond.native.rc"; \
+		printf '%s\n' "$$bcond_translated_rc" >"$$run_dir/bcond.translated.rc"; \
+		printf '%s\n' "$$bcond_interpreter_rc" >"$$run_dir/bcond.interpreter.rc"; \
+		set -e; \
+		test "$$bcond_native_rc" -eq 42 && test "$$bcond_translated_rc" -eq "$$bcond_native_rc" && \
+		test "$$bcond_interpreter_rc" -eq "$$bcond_native_rc" && \
+		cmp "$$run_dir/bcond.native.out" "$$run_dir/bcond.translated.out" && \
+		cmp "$$run_dir/bcond.native.out" "$$run_dir/bcond.interpreter.out" && \
+		cmp "$$run_dir/bcond.native.err" "$$run_dir/bcond.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/bcond.interpreter.err" && \
+		grep -q 'interpreter-block-ready' "$$run_dir/bcond.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/bcond.interpreter.err" && \
+		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit found }' "$$run_dir/bcond.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_METALLIB)

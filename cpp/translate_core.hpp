@@ -25,6 +25,7 @@ enum class Opcode : std::uint32_t {
   SubImmediate = 10,
   AddImmediateSetFlags = 11,
   SubImmediateSetFlags = 12,
+  BranchCondition = 15,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -33,6 +34,7 @@ enum class Opcode : std::uint32_t {
 // full-width target and fallthrough PCs are carried in Instruction::next.
 // Add/Sub immediate uses destination/source/immediate/shift/width fields.
 // The set-flags variants use Rd=31 for the CMP/CMN aliases and Rn=31 as SP.
+// BranchCondition uses source for the condition and immediate for byte offset.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

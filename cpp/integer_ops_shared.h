@@ -1,6 +1,10 @@
 #ifndef ARM64METAL_INTEGER_OPS_SHARED_H
 #define ARM64METAL_INTEGER_OPS_SHARED_H
 
+#ifndef __METAL_VERSION__
+#include <cstdint>
+#endif
+
 #define ARM64METAL_MOVE_WIDE_VALUE(opcode, previous, immediate, shift)             \
   ((opcode) == 1u ? (ulong(immediate) << (shift))                                 \
    : (opcode) == 3u ? ~(ulong(immediate) << (shift))                              \
@@ -29,6 +33,21 @@
                                : (value) < (lhs)))                              \
     << 3u))
 
+#define ARM64METAL_CONDITION_HOLDS(condition, flags)                             \
+  ((condition) >= 14u                                                          \
+       ? true                                                                   \
+       : ((((condition) >> 1u) == 0u ? (((flags) & 1u) != 0u)                  \
+           : ((condition) >> 1u) == 1u ? (((flags) & 8u) != 0u)                \
+           : ((condition) >> 1u) == 2u ? (((flags) & 2u) != 0u)                \
+           : ((condition) >> 1u) == 3u ? (((flags) & 4u) != 0u)                \
+           : ((condition) >> 1u) == 4u ? ((((flags) & 8u) != 0u) &&            \
+                                          (((flags) & 1u) == 0u))                \
+           : ((condition) >> 1u) == 5u ? ((((flags) & 2u) != 0u) ==             \
+                                          (((flags) & 4u) != 0u))                \
+           : ((((flags) & 1u) == 0u) &&                                       \
+              ((((flags) & 2u) != 0u) == (((flags) & 4u) != 0u))))              \
+          != (((condition) & 1u) != 0u)))
+
 #define ARM64METAL_STRINGIFY_INNER(value) #value
 #define ARM64METAL_STRINGIFY(value) ARM64METAL_STRINGIFY_INNER(value)
 
@@ -56,8 +75,15 @@ inline AddSubImmediateResult add_sub_immediate_apply(
         : previousFlags;
     return AddSubImmediateResult{value, flags};
 }
+inline bool arm64_condition_holds(uint condition, uint flags) {
+    return ARM64METAL_CONDITION_HOLDS(condition, flags);
+}
 #else
 namespace arm64metal {
+inline constexpr bool arm64_condition_holds(std::uint32_t condition,
+                                            std::uint32_t flags) {
+  return ARM64METAL_CONDITION_HOLDS(condition, flags);
+}
 inline constexpr char typed_integer_msl_source[] =
     "inline ulong move_wide_apply(uint opcode, ulong previous, uint immediate, "
     "uint shift, uint width) { ulong value = "
@@ -76,7 +102,10 @@ inline constexpr char typed_integer_msl_source[] =
     "uint flags = setFlags != 0u ? "
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
         subtract, left, right, value, width, signBit))
-    " : previousFlags; return AddSubImmediateResult{value, flags}; }\n";
+    " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
+    "inline bool arm64_condition_holds(uint condition, uint flags) { return "
+    ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
+    "; }\n";
 }  // namespace arm64metal
 #endif
 
