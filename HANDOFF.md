@@ -60,9 +60,12 @@ Commpage parity is integrated at 144a70d. Its focused fixture compares both
 page-shift bytes with native value 14. The final libz-root replay used the
 exact 144a70d runtime. Native exited 0; guest exited 1 with a guest memory
 access fault at address 0, PC 0x100466370, width 0, x10=0, tp=0x500df50.
-Both page-shift reads passed. The failure is recorded in
-/tmp/metal-integrated-final.dah4mT/app-root-correct. Libz-root and provider
-behavior remain unverified.
+The normalized PC 0x180466370 is in __dyld_call_with_writable_tpro_memory.
+The preceding x0 load reads dyld4::gAPIs. Both page-shift reads passed. The
+failure is recorded in /tmp/metal-integrated-final.dah4mT/app-root-correct.
+Next compare native callback and permission behavior, then test the existing
+guest callback machinery. Do not invent a vtable layout. Libz-root/provider
+behavior remains unverified.
 
 The JIT candidate is isolated at 0399c77. Native and Metal both returned
 first=42 second=73 wx=13/13, exit 0, and empty stderr for the RW-to-RX call
