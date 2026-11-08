@@ -194,7 +194,8 @@ struct HostServiceState {
     std::uint64_t heapEnd = 0;
     std::function<bool(GuestMemory&, std::size_t minimumSize)> growGuestMemory;
     std::function<std::uint32_t(std::uint64_t size, std::uint64_t alignment,
-                                bool writable, std::uint32_t maximumProtection,
+                                std::uint32_t currentProtection,
+                                std::uint32_t maximumProtection,
                                 std::uint64_t& guestAddress)> machVmAllocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;

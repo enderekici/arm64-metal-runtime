@@ -39,3 +39,19 @@ make verify-apps
 ```
 
 The default cases are valid and malformed `plutil`, deterministic `tar -tf`, and cache-only/dynamic-provider libz loading. Select a subset with `APP_VERIFY_CASES`, for example `make verify-apps APP_VERIFY_CASES='plutil tar'`. Add `jni` when qualifying an installed JDK by setting `JDK_HOME` to its home directory and including `jni` in the case list. `APP_VERIFY_RUNTIME` selects the frozen C++ launcher, and `APP_VERIFY_RESULTS` selects the parent directory for unique per-run receipts. Set `APP_VERIFY_TIMEOUT_SECONDS` to change the per-process timeout. The gate compares stdout, stderr, and exit status, stores the runtime SHA-256, and fails on timeout or runtime mutation.
+
+## Generated-code permission and rewrite probe
+
+The JIT probe writes a two-instruction ARM64 function into an anonymous mapping,
+switches it from RW to RX, executes it, switches back to RW, rewrites its return
+value, and executes it again. It also checks that RWX `mmap` and `mprotect`
+requests fail with `EACCES`.
+
+```sh
+src=fixtures/handoff/jit-rewrite.c
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o .build/handoff-probes/jit-rewrite
+.build/handoff-probes/jit-rewrite
+.build/cpp/arm64-metal launch .build/handoff-probes/jit-rewrite
+```
+
+Expected output from both runs is `first=42 second=73 wx=13/13`, with exit status 0.

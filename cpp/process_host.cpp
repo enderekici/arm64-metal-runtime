@@ -1845,6 +1845,8 @@ HostServiceResult dispatch_guest_host_service(
         case 121:  // dyld_is_memory_immutable
             registers[0] = memory.is_readonly(registers[0], registers[1]) ? 1U : 0U;
             break;
+        case 122:  // sys_icache_invalidate, code is refreshed when mappings become executable
+            break;
         case 112:  // mach_vm_allocate / vm_allocate
         case 114: {  // mach_vm_map (anonymous guest mapping only)
             constexpr std::uint32_t kernSuccess = 0;
@@ -1874,7 +1876,10 @@ HostServiceResult dispatch_guest_host_service(
                             memory.buffer(registers[31] + sizeof(currentProtection),
                                           sizeof(maximumProtection)),
                             sizeof(maximumProtection));
-                if ((currentProtection != 1 && currentProtection != 3) ||
+                const bool currentWriteExecute = (currentProtection & 2U) != 0 &&
+                                                 (currentProtection & 4U) != 0;
+                if ((currentProtection & ~7U) != 0 || currentWriteExecute ||
+                    (maximumProtection & ~7U) != 0 ||
                     (currentProtection & ~maximumProtection) != 0) {
                     registers[0] = kernInvalidArgument;
                     break;
@@ -1900,8 +1905,8 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             std::uint64_t address = 0;
-            const auto result = state.machVmAllocate(size, alignment,
-                (currentProtection & 2U) != 0, maximumProtection, address);
+            const auto result = state.machVmAllocate(size, alignment, currentProtection,
+                                                     maximumProtection, address);
             if (result == kernSuccess) std::memcpy(output, &address, sizeof(address));
             registers[0] = result;
             break;
@@ -1929,8 +1934,13 @@ HostServiceResult dispatch_guest_host_service(
             const auto page = bootstrap.pageSize;
             if (page == 0 || (page & (page - 1)) != 0 || address % page != 0 ||
                 size > std::numeric_limits<std::uint64_t>::max() - (page - 1) ||
-                (protection != 0 && protection != 1 && protection != 3)) {
+                (protection & ~7U) != 0) {
                 set_errno(EINVAL);
+                registers[0] = std::numeric_limits<std::uint32_t>::max();
+                break;
+            }
+            if ((protection & 2U) != 0 && (protection & 4U) != 0) {
+                set_errno(EACCES);
                 registers[0] = std::numeric_limits<std::uint32_t>::max();
                 break;
             }
@@ -2382,7 +2392,41 @@ HostServiceResult dispatch_guest_host_service(
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
             break;
         }
-        case 107: {  // read-only shared mmap, backed by guest heap memory
+        case 107: {  // anonymous guest mappings and read-only file-backed mappings
+            const auto page_size = bootstrap.pageSize;
+            const auto flags = static_cast<std::uint32_t>(registers[3]);
+            if (flags == (MAP_PRIVATE | MAP_ANON)) {
+                const auto protection = static_cast<std::uint32_t>(registers[2]);
+                if (page_size == 0 || (page_size & (page_size - 1)) != 0 ||
+                    registers[0] != 0 || registers[1] == 0 ||
+                    registers[1] > std::numeric_limits<std::uint64_t>::max() - (page_size - 1) ||
+                    (protection & ~7U) != 0 ||
+                    static_cast<std::int32_t>(registers[4]) != -1 || registers[5] != 0) {
+                    set_errno(EINVAL);
+                    registers[0] = failure;
+                    break;
+                }
+                if ((protection & 2U) != 0 && (protection & 4U) != 0) {
+                    set_errno(EACCES);
+                    registers[0] = failure;
+                    break;
+                }
+                if (!state.machVmAllocate) {
+                    set_errno(ENOMEM);
+                    registers[0] = failure;
+                    break;
+                }
+                const auto length = (registers[1] + page_size - 1) & ~(page_size - 1);
+                std::uint64_t address = 0;
+                const auto result = state.machVmAllocate(length, page_size, protection, 7, address);
+                if (result != 0) {
+                    set_errno(ENOMEM);
+                    registers[0] = failure;
+                    break;
+                }
+                registers[0] = address;
+                break;
+            }
             const auto descriptor = static_cast<std::int32_t>(registers[4]);
             const auto file_offset = static_cast<std::int64_t>(registers[5]);
             if (!owns_descriptor(descriptor)) {
@@ -2390,7 +2434,6 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = failure;
                 break;
             }
-            const auto page_size = bootstrap.pageSize;
             if (registers[0] != 0 || registers[1] == 0 ||
                 registers[1] > std::numeric_limits<std::size_t>::max() ||
                 registers[2] != PROT_READ || registers[3] != MAP_SHARED || file_offset < 0 ||
@@ -2437,6 +2480,16 @@ HostServiceResult dispatch_guest_host_service(
             break;
         }
         case 108: {  // munmap
+            const auto page_size = bootstrap.pageSize;
+            if (page_size != 0 && (page_size & (page_size - 1)) == 0 && registers[1] != 0 &&
+                registers[1] <= std::numeric_limits<std::uint64_t>::max() - (page_size - 1) &&
+                state.machVmDeallocate) {
+                const auto length = (registers[1] + page_size - 1) & ~(page_size - 1);
+                if (state.machVmDeallocate(registers[0], length) == 0) {
+                    registers[0] = 0;
+                    break;
+                }
+            }
             const auto found = state.mappedFiles.find(registers[0]);
             if (found == state.mappedFiles.end() || found->second.size != registers[1]) {
                 set_errno(EINVAL);

@@ -93,6 +93,7 @@ const std::unordered_map<std::string, int>& host_service_ids() {
         {"_mach_vm_allocate", 112}, {"_vm_allocate", 112}, {"_mach_vm_deallocate", 113},
         {"_vm_deallocate", 113}, {"_mach_vm_map", 114}, {"__dyld_get_image_slide", 115},
         {"_mprotect", 116}, {"_NSVersionOfLinkTimeLibrary", 117}, {"_gettimeofday", 118},
+        {"_sys_icache_invalidate", 122},
         {"___commpage_gettimeofday", 119}, {"_getentropy", 120},
         {"__dyld_is_memory_immutable", 121}, {"__dyld_get_lib_msg_send_offsets", 122},
         {"__dyld_register_func_for_add_image", 123}, {"__dyld_lookup_section_info", 124},
@@ -983,6 +984,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t>(elapsed));
         return kernel;
     };
+    bool processCodeCacheInvalidated = false;
     const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
     if (state[33] > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::runtime_error("Guest entry address exceeds the supported code range");
@@ -1520,6 +1522,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t backing;
         bool readable;
         bool writable;
+        bool executable;
     };
     struct VmAllocation {
         std::uint64_t begin;
@@ -1529,6 +1532,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<VmRegion> regions;
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
+    std::set<std::uint64_t> dynamicCodeRegionStarts;
     struct GuestReceiveRight { std::uint32_t flags; std::uint64_t context; };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
@@ -2387,6 +2391,46 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         cachedReadWindows.emplace(lower, upper);
         return true;
     };
+    const auto replaceDynamicCodeRegions = [&](std::uint64_t begin, std::uint64_t end,
+                                               const std::vector<VmRegion>& regions) {
+        bool changedExecutableRegions = false;
+        for (auto iter = dynamicCodeRegionStarts.begin(); iter != dynamicCodeRegionStarts.end();) {
+            if (*iter < begin || *iter >= end) {
+                ++iter;
+                continue;
+            }
+            const auto start = static_cast<std::int64_t>(*iter);
+            image.runtime_local_images.erase(std::remove_if(
+                image.runtime_local_images.begin(), image.runtime_local_images.end(),
+                [start](const RuntimeLocalImageBytes& runtimeImage) {
+                    return runtimeImage.guest_header == static_cast<std::uint64_t>(start);
+                }), image.runtime_local_images.end());
+            image.text_regions.erase(std::remove_if(image.text_regions.begin(),
+                image.text_regions.end(), [start](const auto& range) { return range.first == start; }),
+                image.text_regions.end());
+            iter = dynamicCodeRegionStarts.erase(iter);
+            changedExecutableRegions = true;
+        }
+        auto* backingBytes = static_cast<const std::uint8_t*>(memoryBuffer.data());
+        for (const auto& region : regions) {
+            if (!region.executable) continue;
+            if (region.begin > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+                region.end > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("Dynamic guest code exceeds the translated address range");
+            }
+            RuntimeLocalImageBytes runtimeImage;
+            runtimeImage.guest_header = region.begin;
+            runtimeImage.bytes.assign(backingBytes + region.backing,
+                                      backingBytes + region.backing + (region.end - region.begin));
+            runtimeImage.executable_ranges.emplace_back(region.begin, region.end);
+            image.runtime_local_images.push_back(std::move(runtimeImage));
+            image.text_regions.emplace_back(static_cast<std::int64_t>(region.begin),
+                                            static_cast<std::int64_t>(region.end));
+            dynamicCodeRegionStarts.insert(region.begin);
+            changedExecutableRegions = true;
+        }
+        processCodeCacheInvalidated = processCodeCacheInvalidated || changedExecutableRegions;
+    };
     const auto publishVmRegion = [&](const VmRegion& region) {
         if (resident[0] >= residentCapacity) {
             throw std::runtime_error("Guest resident map capacity exceeded by VM mapping");
@@ -2495,7 +2539,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto bytes = cache.bytes(cache.originalAddress(address), length);
         std::copy(bytes.begin(), bytes.end(),
                   static_cast<std::uint8_t*>(memoryBuffer.data()) + backing);
-        publishVmRegion({static_cast<std::uint64_t>(address), end, backing, true, writable});
+        publishVmRegion({static_cast<std::uint64_t>(address), end, backing, true, writable, false});
         syncResidentTable();
     };
     constexpr std::uint64_t guestMappingBase = std::uint64_t{1} << 45U;
@@ -2507,7 +2551,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::optional<std::size_t> kdebugTypeFilterBacking;
     std::uint64_t kdebugTypeFilterLogicalCursor = guestMappingBase + (std::uint64_t{1} << 32U);
     hostServiceState.machVmAllocate = [&](std::uint64_t size, std::uint64_t alignment,
-                                           bool writable, std::uint32_t maximumProtection,
+                                           std::uint32_t currentProtection,
+                                           std::uint32_t maximumProtection,
                                            std::uint64_t& guestAddress) {
         if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 ||
             alignment > 16U * 1024U * 1024U ||
@@ -2528,11 +2573,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
                     static_cast<std::size_t>(size));
-        VmRegion region{address, address + size, backing, true, writable};
+        VmRegion region{address, address + size, backing,
+                        (currentProtection & 1U) != 0,
+                        (currentProtection & 2U) != 0,
+                        (currentProtection & 4U) != 0};
         VmAllocation allocation{address, address + size, backing, maximumProtection, {region}};
         try {
             publishVmRegion(region);
             vmAllocations.emplace(address, std::move(allocation));
+            replaceDynamicCodeRegions(address, address + size, {region});
         } catch (...) {
             mappingHeap.release(*allocated);
             throw;
@@ -2641,15 +2690,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto middleBegin = std::max(region.begin, address);
             const auto middleEnd = std::min(region.end, end);
             if (region.begin < middleBegin) {
-                replacement.push_back({region.begin, middleBegin, region.backing, region.readable, region.writable});
+                replacement.push_back({region.begin, middleBegin, region.backing,
+                                       region.readable, region.writable, region.executable});
             }
             replacement.push_back({middleBegin, middleEnd,
                 region.backing + static_cast<std::size_t>(middleBegin - region.begin),
-                (protection & 1U) != 0, (protection & 2U) != 0});
+                (protection & 1U) != 0, (protection & 2U) != 0,
+                (protection & 4U) != 0});
             if (middleEnd < region.end) {
                 replacement.push_back({middleEnd, region.end,
                     region.backing + static_cast<std::size_t>(middleEnd - region.begin),
-                    region.readable, region.writable});
+                    region.readable, region.writable, region.executable});
             }
             covered += middleEnd - middleBegin;
         }
@@ -2661,6 +2712,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         current.regions = std::move(replacement);
         try {
             for (const auto& region : current.regions) publishVmRegion(region);
+            replaceDynamicCodeRegions(current.begin, current.end, current.regions);
         } catch (...) {
             return kernNoSpace;
         }
@@ -2730,6 +2782,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (const auto signalExit = deliverPendingSignal()) return *signalExit;
         auto& callbackFrames = callbackFramesByThread[guestScheduler.current_id()];
         auto* registers = static_cast<std::uint64_t*>(stateBuffer.data());
+        if (processCodeCacheInvalidated) {
+            processCodeCacheInvalidated = false;
+            const auto continuation = registers[33];
+            kernels.clear();
+            decodeErrors.clear();
+            activeKernel = nullptr;
+            if (continuation != kNoFault) {
+                if (continuation > static_cast<std::uint64_t>(
+                                       std::numeric_limits<std::int64_t>::max())) {
+                    throw std::runtime_error("Guest continuation exceeds translated code range");
+                }
+                selectKernel(static_cast<std::int64_t>(continuation));
+            }
+        }
         const auto& currentThread = guestScheduler.current();
         registers[guestThreadPointer] = static_cast<std::uint64_t>(currentThread.tsdAddress);
         bootstrap.errnoSlot = static_cast<std::uint64_t>(currentThread.errnoAddress);
@@ -4397,7 +4463,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         const auto mappedAddress = kdebugTypeFilterLogicalCursor;
                         publishVmRegion({mappedAddress,
                             mappedAddress + bootstrap.pageSize,
-                            *kdebugTypeFilterBacking, true, false});
+                            *kdebugTypeFilterBacking, true, false, false});
                         syncResidentTable();
                         std::memcpy(output, &mappedAddress, sizeof(mappedAddress));
                         kdebugTypeFilterLogicalCursor += bootstrap.pageSize;
