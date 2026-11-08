@@ -1,6 +1,7 @@
 BUILD := .build
+SWIFT_RUNTIME := $(BUILD)/arm64-metal
 GUEST := $(BUILD)/workload.dylib
-RUNTIME := $(BUILD)/arm64-metal
+RUNTIME := $(SWIFT_RUNTIME)
 CONSOLE := $(BUILD)/console
 STREAMS := $(BUILD)/streams
 INDIRECT := $(BUILD)/indirect
@@ -137,7 +138,7 @@ $(BUILD):
 $(GUEST): workload.c | $(BUILD)
 	xcrun clang -arch arm64 -O2 -fno-vectorize -fno-slp-vectorize -fno-unroll-loops -dynamiclib "$<" -o "$@"
 
-$(RUNTIME): Translate.swift SharedCache.swift ImageLoader.swift Fixups.swift Exports.swift GuestFormat.swift GuestHeap.swift GuestSignals.swift GuestThreads.swift GuestStrings.swift GuestVectorCrypto.swift ProcessTranslation.swift Launch.swift main.swift $(SIGNAL_BRIDGE) SignalBridge.h | $(BUILD)
+$(SWIFT_RUNTIME): Translate.swift SharedCache.swift ImageLoader.swift Fixups.swift Exports.swift GuestFormat.swift GuestHeap.swift GuestSignals.swift GuestThreads.swift GuestStrings.swift GuestVectorCrypto.swift ProcessTranslation.swift Launch.swift main.swift $(SIGNAL_BRIDGE) SignalBridge.h | $(BUILD)
 	xcrun swiftc -O -warnings-as-errors -import-objc-header SignalBridge.h $(filter-out SignalBridge.h,$^) -o "$@"
 
 $(SIGNAL_BRIDGE): SignalBridge.c SignalBridge.h | $(BUILD)
