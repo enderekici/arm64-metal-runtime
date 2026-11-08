@@ -27,10 +27,15 @@ printf 'jdk=%s\nruntime=%s\nsha256=%s\nresults=%s\n' \
 
 "$jdk_home/bin/javac" --release 17 -d "$probe_dir/classes" \
     "$repo_root/fixtures/handoff/java/Workload.java" \
-    "$repo_root/fixtures/handoff/java/HotWorkload.java"
+    "$repo_root/fixtures/handoff/java/HotWorkload.java" \
+    "$repo_root/fixtures/handoff/java/ThreadedWorkload.java" \
+    "$repo_root/fixtures/handoff/java/JniSmoke.java"
 xcrun clang -Wall -Wextra -Werror -I "$jdk_home/include" \
     -I "$jdk_home/include/darwin" \
     "$repo_root/fixtures/handoff/jni-entry.c" -o "$probe_dir/jni-entry"
+xcrun clang -Wall -Wextra -Werror -I "$jdk_home/include" \
+    -I "$jdk_home/include/darwin" \
+    "$repo_root/fixtures/handoff/java/jni-vm-smoke.c" -o "$probe_dir/jni-vm-smoke"
 
 run_bounded() {
     run_label=$1
@@ -108,6 +113,46 @@ for mode in default xint c1 c2; do
         "$jdk_home/bin/java" "$@" -cp "$probe_dir/classes" HotWorkload
 done
 
+thread_marker='THREAD_OK started=true wait_notify=true joined=true finished=true iterations=500000 checksum=3152561776762913839'
+for mode in default xint c1 c2; do
+    set --
+    case "$mode" in
+        xint) set -- -Xint ;;
+        c1) set -- -XX:TieredStopAtLevel=1 -Xbatch ;;
+        c2) set -- -XX:TieredStopAtLevel=4 -Xbatch ;;
+    esac
+    thread_label=threaded-$mode
+    run_target "$thread_label.native" "$jdk_home/bin/java" "$@" \
+        -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+    run_target "$thread_label.guest" "$jdk_home/bin/java" "$@" \
+        -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+    cmp "$run_dir/$thread_label.native.status" "$run_dir/$thread_label.guest.status"
+    cmp "$run_dir/$thread_label.native.stdout" "$run_dir/$thread_label.guest.stdout"
+    sed '/^arm64-metal trace /d' "$run_dir/$thread_label.guest.stderr" \
+        > "$run_dir/$thread_label.guest.stderr.normalized"
+    cmp "$run_dir/$thread_label.native.stderr" \
+        "$run_dir/$thread_label.guest.stderr.normalized"
+    test "$(cat "$run_dir/$thread_label.native.status")" = 0
+    test "$(cat "$run_dir/$thread_label.native.stderr")" = "$thread_marker"
+done
+
+xint_label=threaded-xint-compilation-control
+run_target "$xint_label.native" "$jdk_home/bin/java" -Xint \
+    -XX:+PrintCompilation -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+run_target "$xint_label.guest" "$jdk_home/bin/java" -Xint \
+    -XX:+PrintCompilation -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+cmp "$run_dir/$xint_label.native.status" "$run_dir/$xint_label.guest.status"
+test "$(cat "$run_dir/$xint_label.native.status")" = 0
+test "$(cat "$run_dir/$xint_label.native.stderr")" = "$thread_marker"
+sed '/^arm64-metal trace /d' "$run_dir/$xint_label.guest.stderr" \
+    > "$run_dir/$xint_label.guest.stderr.normalized"
+test "$(cat "$run_dir/$xint_label.guest.stderr.normalized")" = "$thread_marker"
+if rg 'ThreadedWorkload::hotLoop' "$run_dir/$xint_label.native.stdout" \
+    "$run_dir/$xint_label.guest.stdout"; then
+    printf 'The -Xint control unexpectedly compiled hotLoop\n' >&2
+    exit 1
+fi
+
 for tier in c1 c2; do
     if [ "$tier" = c1 ]; then
         tier_level=1
@@ -169,8 +214,43 @@ PY
         'iterations=500000 checksum=4045347071'
 done
 
+for tier in c1 c2; do
+    if [ "$tier" = c1 ]; then
+        tier_level=1
+        compiler=c1
+    else
+        tier_level=4
+        compiler=c2
+    fi
+    set -- -XX:TieredStopAtLevel="$tier_level" -Xbatch \
+        -XX:+UnlockDiagnosticVMOptions -XX:+PrintCompilation -XX:+PrintNMethods \
+        -XX:CompileCommand=dontinline,ThreadedWorkload::hotLoop
+    profile_label=threaded-$tier-compiled
+    run_target "$profile_label.native" "$jdk_home/bin/java" "$@" \
+        -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+    run_target "$profile_label.guest" "$jdk_home/bin/java" "$@" \
+        -cp "$probe_dir/classes" ThreadedWorkload || exit 1
+    test "$(cat "$run_dir/$profile_label.native.status")" = 0
+    test "$(cat "$run_dir/$profile_label.guest.status")" = 0
+    python3 "$repo_root/fixtures/handoff/java/check-jit-trace.py" \
+        "$run_dir/$profile_label.native.stdout" \
+        "$run_dir/$profile_label.native.stderr" "$compiler" \
+        ThreadedWorkload hotLoop "$thread_marker" stderr 0
+    python3 "$repo_root/fixtures/handoff/java/check-jit-trace.py" \
+        "$run_dir/$profile_label.guest.stdout" \
+        "$run_dir/$profile_label.guest.stderr" "$compiler" \
+        ThreadedWorkload hotLoop "$thread_marker" stderr 1
+    sed '/^arm64-metal trace /d' "$run_dir/$profile_label.guest.stderr" \
+        > "$run_dir/$profile_label.guest.stderr.normalized"
+    test "$(cat "$run_dir/$profile_label.native.stderr")" = "$thread_marker"
+    test "$(cat "$run_dir/$profile_label.guest.stderr.normalized")" = "$thread_marker"
+done
+
 compare jni-entry 'args=0 version=65544 created=0 count=0' \
     "$probe_dir/jni-entry" "$jdk_home/lib/server/libjvm.dylib"
+compare jni-create-vm 'create=0 result=42 destroy=0' \
+    "$probe_dir/jni-vm-smoke" "$jdk_home/lib/server/libjvm.dylib" \
+    "$probe_dir/classes"
 
 final_hash=$(shasum -a 256 "$runtime" | awk '{print $1}')
 [ "$runtime_hash" = "$final_hash" ] || { printf 'Runtime changed during Java gate\n' >&2; exit 1; }
