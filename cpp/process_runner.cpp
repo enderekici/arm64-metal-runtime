@@ -2801,8 +2801,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return initializerTargets;
     };
-    hostServiceState.growGuestMemory = [&](GuestMemory& guestMemoryView,
-                                            std::size_t minimumSize) {
+    const auto resizeGuestBuffer = [&](GuestMemory& guestMemoryView,
+                                      std::size_t minimumSize, bool geometric) {
         const auto oldSize = guestMemoryView.size();
         const auto deviceLimit = backend.maxBufferLength();
         const auto linearLimit = static_cast<std::size_t>(SharedCache::guestBase - 1);
@@ -2814,7 +2814,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         const auto roundedMinimum = (minimumSize + pageSize - 1) & ~(pageSize - 1);
         const auto doubled = oldSize > maximum / 2 ? maximum : oldSize * 2;
-        auto targetSize = std::max(roundedMinimum, doubled);
+        auto targetSize = geometric ? std::max(roundedMinimum, doubled) : roundedMinimum;
         if (targetSize > maximum) targetSize = roundedMinimum;
         if (targetSize > maximum) return false;
         try {
@@ -2832,6 +2832,48 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         } catch (const std::exception&) {
             return false;
         }
+    };
+    hostServiceState.growGuestMemory = [&](GuestMemory& guestMemoryView,
+                                            std::size_t minimumSize) {
+        return resizeGuestBuffer(guestMemoryView, minimumSize, true);
+    };
+    const auto extendVmBacking = [&](std::uint64_t bytes) {
+        const auto oldSize = guestMemory.size();
+        if (bytes == 0 || oldSize != hostServiceState.heapEnd ||
+            oldSize > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) ||
+            bytes > std::numeric_limits<std::size_t>::max() - oldSize ||
+            resident[0] >= residentCapacity) {
+            return false;
+        }
+        const auto minimumSize = oldSize + static_cast<std::size_t>(bytes);
+        if (!resizeGuestBuffer(guestMemory, minimumSize, false)) return false;
+        const auto newSize = guestMemory.size();
+        if (newSize <= oldSize || newSize > static_cast<std::size_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+            return false;
+        }
+        try {
+            guestMemory.add_mapping({oldSize, newSize, oldSize, false, false});
+            try {
+                mappingHeap.extend({static_cast<std::int64_t>(oldSize),
+                                    static_cast<std::int64_t>(newSize)});
+            } catch (...) {
+                guestMemory.remove_mapping(oldSize);
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+        const auto row = 1 + 4 * static_cast<std::size_t>(resident[0]);
+        resident[row] = oldSize;
+        resident[row + 1] = newSize;
+        resident[row + 2] = oldSize;
+        resident[row + 3] = 2U;
+        ++resident[0];
+        hostServiceState.heapEnd = newSize;
+        std::memcpy(residentBuffer.data(), resident.data(),
+                    resident.size() * sizeof(std::uint64_t));
+        return true;
     };
     const auto allocateGuestHeap = [&](std::uint64_t size,
                                        std::uint64_t alignment = 16)
@@ -3975,8 +4017,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 } reclaimedRollback{mappingHeap, reclaimedBackings,
                                     static_cast<std::int64_t>(pageSize)};
-                const auto allocated = mappingHeap.allocate(
+                auto allocated = mappingHeap.allocate(
                     static_cast<std::int64_t>(end - begin), static_cast<std::int64_t>(pageSize));
+                if (!allocated && extendVmBacking(end - begin)) {
+                    progressTrace.event("vm-overwrite-grow-backing", begin, end - begin);
+                    allocated = mappingHeap.allocate(
+                        static_cast<std::int64_t>(end - begin),
+                        static_cast<std::int64_t>(pageSize));
+                }
                 if (!allocated) {
                     progressTrace.event("vm-overwrite-allocation-failed", begin, end - begin);
                     return kernNoSpace;

@@ -639,6 +639,15 @@ checks native full and partial overwrites, a valid hole mapping, address
 preservation and zero fill, the null-target error, and rejection of an
 unsupported flag.
 
+Sparse replacement now retries with bounded shared-buffer growth when retired
+backing leases still leave no single contiguous block. Growth copies the old
+buffer, reserves the appended range exclusively for VM mappings, advances the
+host heap start past it, and publishes an unreadable resident guard so appended
+backing cannot be reached as a linear guest address. The bound is the minimum
+of Metal's maximum buffer length, the guest linear-address limit, and the
+allocator's signed-offset limit. Guest regions remain individually contiguous,
+so existing CPU/GPU memory access rules do not span physical backing extents.
+
 ## Named Mach VM read and protect services
 
 `_mach_vm_protect` uses the same allocation and sparse-reservation callback as
