@@ -453,10 +453,13 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::LoadSignedScalar;
             const bool scalarLiteralMemoryOpcode =
                 opcode == translate_core::Opcode::LoadLiteral;
+            const bool unsignedMinMaxMemoryOpcode =
+                opcode == translate_core::Opcode::LoadUnsignedMinMax;
             const bool memoryOpcode = unsignedMemoryOpcode || pairMemoryOpcode ||
                                       indexedScalarMemoryOpcode ||
                                       signedScalarMemoryOpcode ||
-                                      scalarLiteralMemoryOpcode;
+                                      scalarLiteralMemoryOpcode ||
+                                      unsignedMinMaxMemoryOpcode;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
                 opcode == translate_core::Opcode::SubImmediate ||
@@ -562,6 +565,11 @@ ProcessKernelPlan plan_process_kernel(
                  static_cast<std::uint64_t>(literalAddress) < guestCodeLimit &&
                  literalBytes <= guestCodeLimit -
                      static_cast<std::uint64_t>(literalAddress));
+            const bool validUnsignedMinMaxMemoryOperation =
+                !unsignedMinMaxMemoryOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 && operation.shift <= 1 &&
+                 (operation.width == 32 || operation.width == 64));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
@@ -674,6 +682,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
                 !validScalarLiteralMemoryOperation ||
+                !validUnsignedMinMaxMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
                 !validAddSubCarryRegister ||
@@ -8438,7 +8447,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         opcode == translate_core::Opcode::StoreUnsignedImmediate ||
                         opcode == translate_core::Opcode::LoadUnscaledWriteback ||
                         opcode == translate_core::Opcode::StoreUnscaledWriteback ||
-                        opcode == translate_core::Opcode::LoadSignedScalar;
+                        opcode == translate_core::Opcode::LoadSignedScalar ||
+                        opcode == translate_core::Opcode::LoadUnsignedMinMax;
                     const bool literalAccess =
                         opcode == translate_core::Opcode::LoadLiteral;
                     const auto expectedWidth = literalAccess

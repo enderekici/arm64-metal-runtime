@@ -48,6 +48,7 @@ enum class Opcode : std::uint32_t {
   IntegerBitOperation = 34,
   IntegerDivide = 35,
   LoadLiteral = 38,
+  LoadUnsignedMinMax = 37,
   AuthenticatedReturn = 36,
 };
 
@@ -131,6 +132,10 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // UDIV/SDIV use destination=Rd, source=Rn, immediate=Rm, shift=0 for UDIV
 // or 1 for SDIV, and width=32 or 64. Register 31 reads as zero and discards
 // writes.
+// LDUMIN/LDUMAX use destination=Rt, source=Rn, immediate=Rs, shift=0 for
+// LDUMIN or 1 for LDUMAX, and width=32 or 64. Register 31 reads as zero for
+// the source and discards the old-value result. Only unordered variants are
+// typed in this slice.
 // Scalar FP uses destination=Fd, source=Rn/Fn, immediate=FMOV imm8 or FCMP Rm,
 // shift=(kind << 2) | detail, and width=32 or 64 for the FP format. Kinds are
 // integer conversion, FMOV immediate, FRINTP, FNEG, and FCMP/FCMPE. Kind 0

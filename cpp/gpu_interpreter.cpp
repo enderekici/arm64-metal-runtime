@@ -436,6 +436,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter scalar literal-load packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadUnsignedMinMax) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                operation[4] > 1 || (operation[5] != 32 && operation[5] != 64) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter unsigned min/max packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
@@ -460,7 +470,8 @@ Result Interpreter::dispatch(const Backend& backend,
          initialOpcode == translate_core::Opcode::LoadUnscaledWriteback ||
          initialOpcode == translate_core::Opcode::StoreUnscaledWriteback ||
          initialOpcode == translate_core::Opcode::LoadSignedScalar ||
-         initialOpcode == translate_core::Opcode::LoadLiteral) &&
+         initialOpcode == translate_core::Opcode::LoadLiteral ||
+         initialOpcode == translate_core::Opcode::LoadUnsignedMinMax) &&
         initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
         throw std::invalid_argument(

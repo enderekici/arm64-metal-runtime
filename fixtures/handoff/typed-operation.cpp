@@ -65,6 +65,34 @@ static std::uint64_t native_integer_divide(bool isSigned, std::uint32_t width,
   return width == 32U ? std::uint32_t(result) : result;
 }
 
+static std::uint64_t native_load_unsigned_minmax(std::uint64_t* address,
+                                                std::uint64_t source,
+                                                bool maximum,
+                                                std::uint32_t width) {
+  std::uint64_t oldValue;
+  if (width == 64U) {
+    if (maximum) {
+      asm volatile("ldumax %2, %0, [%1]"
+                   : "=&r"(oldValue) : "r"(address), "r"(source) : "memory");
+    } else {
+      asm volatile("ldumin %2, %0, [%1]"
+                   : "=&r"(oldValue) : "r"(address), "r"(source) : "memory");
+    }
+  } else {
+    std::uint32_t oldWord;
+    const auto sourceWord = static_cast<std::uint32_t>(source);
+    if (maximum) {
+      asm volatile("ldumax %w2, %w0, [%1]"
+                   : "=&r"(oldWord) : "r"(address), "r"(sourceWord) : "memory");
+    } else {
+      asm volatile("ldumin %w2, %w0, [%1]"
+                   : "=&r"(oldWord) : "r"(address), "r"(sourceWord) : "memory");
+    }
+    oldValue = oldWord;
+  }
+  return oldValue;
+}
+
 static std::uint64_t native_sbfm_wrap(std::uint64_t source) {
   std::uint64_t result;
   asm volatile("sbfm %0, %1, #60, #7" : "=r"(result) : "r"(source));
@@ -1802,5 +1830,55 @@ int main() {
     processLiteralAddressRejected = true;
   }
   assert(processLiteralAddressRejected);
+
+  const auto lduminW = decode_operation(0xb8217040U);  // ldumin w1, w0, [x2]
+  assert(lduminW && lduminW->opcode == Opcode::LoadUnsignedMinMax &&
+         lduminW->destination == 0U && lduminW->source == 2U &&
+         lduminW->immediate == 1U && lduminW->shift == 0U &&
+         lduminW->width == 32U);
+  assert((serialize_operation(*lduminW) ==
+          arm64metal::translate_core::OperationPacket{37, 0, 2, 1, 0, 32}));
+  const auto ldumaxX = decode_operation(0xf82460a3U);  // ldumax x4, x3, [x5]
+  assert(ldumaxX && ldumaxX->opcode == Opcode::LoadUnsignedMinMax &&
+         ldumaxX->destination == 3U && ldumaxX->source == 5U &&
+         ldumaxX->immediate == 4U && ldumaxX->shift == 1U &&
+         ldumaxX->width == 64U);
+  assert(!decode_operation(0xb8a17040U));  // LDUMIN with acquire ordering.
+  assert(!decode_operation(0xb8617040U));  // LDUMIN with release ordering.
+  const auto processLdumin = arm64metal::decode_process(
+      0xb8217040U, 0x1000, {}, {}, false);
+  std::string processLduminSource;
+  for (const auto& line : processLdumin.code) processLduminSource += line;
+  assert(processLdumin.operation &&
+         processLdumin.operation->opcode == Opcode::LoadUnsignedMinMax &&
+         processLdumin.code.size() >= 4 &&
+         processLduminSource.find("old < uint(x[1]) ? old : uint(x[1])") !=
+             std::string::npos);
+  const auto processOrderedLdumin = arm64metal::decode_process(
+      0xb8a17040U, 0x1000, {}, {}, false);
+  assert(!processOrderedLdumin.operation &&
+         processOrderedLdumin.code.size() >= 4);
+  const auto processLdumax = arm64metal::decode_process(
+      0xf82460a3U, 0x1000, {}, {}, false);
+  std::string processLdumaxSource;
+  for (const auto& line : processLdumax.code) processLdumaxSource += line;
+  assert(processLdumax.operation &&
+         processLdumax.operation->opcode == Opcode::LoadUnsignedMinMax &&
+         processLdumaxSource.find("old < x[4] ? x[4] : old") !=
+             std::string::npos);
+  std::uint64_t atomicWord = 0xffffffffULL;
+  assert(native_load_unsigned_minmax(&atomicWord, 0x80000000ULL, false, 32) ==
+         0xffffffffULL);
+  assert(atomicWord == 0x80000000ULL);
+  assert(native_load_unsigned_minmax(&atomicWord, 0xffffffffULL, true, 32) ==
+         0x80000000ULL);
+  assert(atomicWord == 0xffffffffULL);
+  atomicWord = 0xffffffffffffffffULL;
+  assert(native_load_unsigned_minmax(&atomicWord, 0x8000000000000000ULL,
+                                     false, 64) == 0xffffffffffffffffULL);
+  assert(atomicWord == 0x8000000000000000ULL);
+  assert(native_load_unsigned_minmax(&atomicWord, 0xffffffffffffffffULL,
+                                     true, 64) == 0x8000000000000000ULL);
+  assert(atomicWord == 0xffffffffffffffffULL);
   return 0;
 }

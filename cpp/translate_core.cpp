@@ -76,6 +76,16 @@ bool Instruction::ends_block_at(std::int64_t pc) const {
 }
 
 std::optional<Operation> decode_operation(std::uint32_t bits) {
+  // Typed unordered LDUMIN/LDUMAX. Keep acquire/release forms on the existing
+  // translator path until their memory-order contract is represented.
+  if ((bits & 0x3f20ec00U) == 0x38206000U &&
+      (bits & 0x00c00000U) == 0U) {
+    const auto width = 8U << field(bits, 30, 2);
+    if (width != 32U && width != 64U) return std::nullopt;
+    const auto variant = (bits & 0x1000U) != 0U ? 0U : 1U;
+    return Operation{Opcode::LoadUnsignedMinMax, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5), variant, width};
+  }
   if (bits == 0xd65f03c0) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
   }

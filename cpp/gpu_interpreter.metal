@@ -55,7 +55,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             (firstOpcode == 6u || firstOpcode == 7u ||
              firstOpcode == 13u || firstOpcode == 14u ||
              firstOpcode == 17u || firstOpcode == 18u ||
-             firstOpcode == 20u || firstOpcode == 38u) &&
+             firstOpcode == 20u || firstOpcode == 37u || firstOpcode == 38u) &&
             state[35] == (pc | 0x8000000000000000ul);
         if ((packets[firstIndex].flags & 1u) == 0u && !memoryRetry) {
             state[33] = pc;
@@ -918,6 +918,62 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 if (rt < 31u) state[rt] = signedValue;
                 if (mode >= 2u) state[rn] = base + ulong(displacement);
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
+            if (opcode == 37u) {
+                const uint rt = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint rs = instruction.operation[3];
+                const uint isMax = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                const uint bytes = width / 8u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rt > 31u || rn > 31u || rs > 31u || isMax > 1u ||
+                    (width != 32u && width != 64u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong address = state[rn];
+                if ((address & ulong(bytes - 1u)) != 0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                const ulong offset = guest_offset(address, bytes, size, writable,
+                                                   true, state, resident, config);
+                if (offset == ~0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                const ulong oldValue = load_guest_word(memory + offset, bytes);
+                const ulong sourceValue = width == 32u
+                    ? ulong(uint(rs == 31u ? 0ul : state[rs]))
+                    : (rs == 31u ? 0ul : state[rs]);
+                const ulong oldWidthValue = width == 32u
+                    ? ulong(uint(oldValue)) : oldValue;
+                const ulong newValue = isMax != 0u
+                    ? (oldWidthValue < sourceValue ? sourceValue : oldWidthValue)
+                    : (oldWidthValue < sourceValue ? oldWidthValue : sourceValue);
+                store_guest_word(memory + offset, newValue, bytes);
+                if (rt != 31u) state[rt] = oldWidthValue;
                 if (blockEnd) {
                     pc = instruction.successor0;
                     leftBlock = true;

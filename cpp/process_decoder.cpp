@@ -260,7 +260,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       decodedOperation->opcode != translate_core::Opcode::LoadUnscaledWriteback &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnscaledWriteback &&
       decodedOperation->opcode != translate_core::Opcode::LoadSignedScalar &&
-      decodedOperation->opcode != translate_core::Opcode::LoadLiteral) {
+      decodedOperation->opcode != translate_core::Opcode::LoadLiteral &&
+      decodedOperation->opcode != translate_core::Opcode::LoadUnsignedMinMax) {
     const auto successors =
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
@@ -1579,7 +1580,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       Map<std::string>{{0x38200000, (std::string("+"))},
                        {0x38201000, (std::string("& ~"))},
                        {0x38202000, (std::string("^"))},
-                       {0x38203000, (std::string("|"))}}[bits & 0x3f20fc00];
+                       {0x38203000, (std::string("|"))},
+                       {0x38206000, (std::string("umax"))},
+                       {0x38207000, (std::string("umin"))}}[bits & 0x3f20fc00];
   auto atomicSwap = (bits & 0x3f20fc00) == 0x38208000;
   auto atomicCompare = (bits & 0x3fa07c00) == 0x08a07c00;
   if ((bits & 0xbfa07c00) == 0x08207c00) {
@@ -1640,10 +1643,26 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     };
     Strings operation;
     if (atomicOperation) {
-      operation = Strings{get,
-                          store((std::string("old ") + str(atomicOperation) +
-                                 " " + str(source))),
-                          save(rd)};
+      const auto operand = width == 1 ? (std::string("uchar(") + str(source) + ")")
+          : width == 2 ? (std::string("ushort(") + str(source) + ")")
+          : width == 4 ? (std::string("uint(") + str(source) + ")")
+                       : str(source);
+      if (atomicOperation.value == "umax") {
+        operation = Strings{get,
+                            store((std::string("old < ") + operand +
+                                   " ? " + operand + " : old")),
+                            save(rd)};
+      } else if (atomicOperation.value == "umin") {
+        operation = Strings{get,
+                            store((std::string("old < ") + operand +
+                                   " ? old : " + operand)),
+                            save(rd)};
+      } else {
+        operation = Strings{get,
+                            store((std::string("old ") + str(atomicOperation) +
+                                   " " + str(source))),
+                            save(rd)};
+      }
     } else if (atomicSwap) {
       operation = Strings{get, store(source), save(rd)};
     } else if (atomicCompare) {
@@ -1656,11 +1675,16 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     } else {
       operation = Strings{store(reg(rd))};
     }
-    return make_instruction(
+    auto instruction = make_instruction(
         Strings{(std::string("{ ulong address = ") + str(address) + ";"),
                 bound} +
             operation + Strings{(std::string("}"))},
         PCs{next});
+    if (decodedOperation && decodedOperation->opcode ==
+                                translate_core::Opcode::LoadUnsignedMinMax) {
+      instruction.operation = *decodedOperation;
+    }
+    return instruction;
   }
   auto registers =
       Map<int>{{0x7, 1}, {0xa, 2}, {0x6, 3}, {0x2, 4}}[field(12, 4)];
