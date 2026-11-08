@@ -77,8 +77,12 @@ struct GuestMachReceiveWait {
     std::uint32_t port = 0;
     std::optional<std::uint64_t> deadline;
 };
+struct GuestUnixSocketReceiveWait {
+    std::int32_t descriptor = -1;
+};
 using GuestWait = std::variant<GuestJoinWait, GuestMutexWait, GuestConditionWait,
-                               GuestSleepWait, GuestSemaphoreWait, GuestMachReceiveWait>;
+                               GuestSleepWait, GuestSemaphoreWait, GuestMachReceiveWait,
+                               GuestUnixSocketReceiveWait>;
 
 // Guest thread bookkeeping only. `stack` and addresses are guest virtual
 // offsets; the runtime owns register save/restore and backing memory access.

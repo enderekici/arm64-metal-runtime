@@ -1080,6 +1080,78 @@ std::optional<std::string> guest_unix_socket_path(const GuestMemory& memory,
     }
 }
 
+bool copy_guest_unix_datagram(const HostServiceState::GuestUnixDatagram& datagram,
+        GuestMemory& memory, std::uint64_t bufferAddress, std::uint64_t bufferCapacity,
+        std::uint64_t sourceAddress, std::uint64_t sourceLengthAddress,
+        std::uint64_t& received, std::uint32_t& error) {
+    received = std::min<std::uint64_t>(bufferCapacity, datagram.payload.size());
+    std::uint8_t* payloadOutput = nullptr;
+    std::uint8_t* sourceOutput = nullptr;
+    std::uint8_t* sourceLengthOutput = nullptr;
+    std::uint32_t sourceCapacity = 0;
+    if (received != 0) {
+        if (!memory.is_guest_readable(bufferAddress, received)) {
+            error = EFAULT;
+            return false;
+        }
+        try {
+            payloadOutput = memory.buffer(bufferAddress, received, true);
+        } catch (const std::out_of_range&) {
+            error = EFAULT;
+            return false;
+        }
+    }
+    if (sourceAddress != 0) {
+        if (sourceLengthAddress == 0 || !memory.is_guest_readable(sourceLengthAddress,
+                sizeof(sourceCapacity))) {
+            error = EFAULT;
+            return false;
+        }
+        try {
+            const auto* sourceLengthInput = memory.buffer(sourceLengthAddress,
+                sizeof(sourceCapacity));
+            std::memcpy(&sourceCapacity, sourceLengthInput, sizeof(sourceCapacity));
+            sourceLengthOutput = memory.buffer(sourceLengthAddress,
+                sizeof(sourceCapacity), true);
+            const auto sourceBytes = std::min<std::uint64_t>(sourceCapacity,
+                datagram.sourceLength);
+            if (sourceBytes != 0) {
+                if (!memory.is_guest_readable(sourceAddress, sourceBytes)) {
+                    error = EFAULT;
+                    return false;
+                }
+                sourceOutput = memory.buffer(sourceAddress, sourceBytes, true);
+            }
+        } catch (const std::out_of_range&) {
+            error = EFAULT;
+            return false;
+        }
+    }
+
+    sockaddr_un source{};
+    source.sun_len = static_cast<unsigned char>(datagram.sourceLength);
+    source.sun_family = AF_UNIX;
+    if (datagram.sourcePath) {
+        const auto pathBytes = std::min(datagram.sourcePath->size(), sizeof(source.sun_path) - 1);
+        std::memcpy(source.sun_path, datagram.sourcePath->data(), pathBytes);
+        source.sun_path[pathBytes] = '\0';
+    }
+    if (payloadOutput != nullptr && received != 0) {
+        std::memcpy(payloadOutput, datagram.payload.data(), static_cast<std::size_t>(received));
+    }
+    if (sourceOutput != nullptr) {
+        const auto sourceBytes = std::min<std::uint64_t>(sourceCapacity,
+            datagram.sourceLength);
+        std::memcpy(sourceOutput, &source, static_cast<std::size_t>(sourceBytes));
+    }
+    if (sourceLengthOutput != nullptr) {
+        const auto actualLength = datagram.sourceLength;
+        std::memcpy(sourceLengthOutput, &actualLength, sizeof(actualLength));
+    }
+    error = 0;
+    return true;
+}
+
 std::string hexadecimal(std::uint64_t value) {
     std::ostringstream output;
     output << std::hex << value;
@@ -2148,8 +2220,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t buffer;
         std::uint32_t capacity;
     };
+    struct GuestUnixBlockedReceive {
+        std::int32_t descriptor;
+        std::uint64_t buffer;
+        std::uint64_t capacity;
+        std::uint64_t sourceAddress;
+        std::uint64_t sourceLengthAddress;
+    };
     std::map<std::uint32_t, std::deque<std::uint64_t>> guestMachReceiveWaiters;
     std::map<std::uint64_t, GuestMachBlockedReceive> guestMachBlockedReceives;
+    std::map<std::int32_t, std::deque<std::uint64_t>> guestUnixReceiveWaiters;
+    std::map<std::uint64_t, GuestUnixBlockedReceive> guestUnixBlockedReceives;
     const auto pruneGuestMachReceiveWaiters = [&]() {
         for (auto waiters = guestMachReceiveWaiters.begin();
              waiters != guestMachReceiveWaiters.end();) {
@@ -2177,6 +2258,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto expired = guestScheduler.expire_waiters(now);
         if (expired != 0) progressTrace.event("mach-waiters-expired", now, expired);
         pruneGuestMachReceiveWaiters();
+        for (auto waiters = guestUnixReceiveWaiters.begin();
+             waiters != guestUnixReceiveWaiters.end();) {
+            const auto descriptor = waiters->first;
+            auto& queue = waiters->second;
+            queue.erase(std::remove_if(queue.begin(), queue.end(), [&](std::uint64_t threadId) {
+                const auto blocked = guestUnixBlockedReceives.find(threadId);
+                const auto* thread = guestScheduler.find(threadId);
+                const auto* wait = thread != nullptr && thread->wait.has_value()
+                    ? std::get_if<GuestUnixSocketReceiveWait>(&*thread->wait) : nullptr;
+                const bool stale = blocked == guestUnixBlockedReceives.end() || wait == nullptr ||
+                    blocked->second.descriptor != descriptor || wait->descriptor != descriptor;
+                if (stale && blocked != guestUnixBlockedReceives.end() &&
+                    blocked->second.descriptor == descriptor) {
+                    guestUnixBlockedReceives.erase(blocked);
+                }
+                return stale;
+            }), queue.end());
+            if (queue.empty()) waiters = guestUnixReceiveWaiters.erase(waiters);
+            else ++waiters;
+        }
     };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
         std::vector<std::uint64_t> globalTail;
@@ -2434,6 +2535,52 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         } catch (const std::exception&) {
             return machReceiveInvalidData;
         }
+    };
+    const auto deliverGuestUnixDatagrams = [&](std::int32_t descriptor) {
+        const auto waiters = guestUnixReceiveWaiters.find(descriptor);
+        const auto socket = hostServiceState.guestUnixSockets.find(descriptor);
+        if (waiters == guestUnixReceiveWaiters.end() ||
+            socket == hostServiceState.guestUnixSockets.end()) return;
+        auto& queue = waiters->second;
+        while (!queue.empty() && !socket->second.receiveQueue.empty()) {
+            const auto threadId = queue.front();
+            queue.pop_front();
+            const auto blocked = guestUnixBlockedReceives.find(threadId);
+            auto* thread = guestScheduler.find(threadId);
+            const auto* wait = thread != nullptr && thread->wait.has_value()
+                ? std::get_if<GuestUnixSocketReceiveWait>(&*thread->wait) : nullptr;
+            if (blocked == guestUnixBlockedReceives.end() || wait == nullptr ||
+                blocked->second.descriptor != descriptor || wait->descriptor != descriptor) {
+                if (blocked != guestUnixBlockedReceives.end() &&
+                    blocked->second.descriptor == descriptor) {
+                    guestUnixBlockedReceives.erase(blocked);
+                }
+                continue;
+            }
+            std::uint64_t received = 0;
+            std::uint32_t error = 0;
+            const auto& datagram = socket->second.receiveQueue.front();
+            const bool copied = copy_guest_unix_datagram(datagram, guestMemory,
+                blocked->second.buffer, blocked->second.capacity,
+                blocked->second.sourceAddress, blocked->second.sourceLengthAddress,
+                received, error);
+            guestUnixBlockedReceives.erase(blocked);
+            if (copied) socket->second.receiveQueue.pop_front();
+            progressTrace.event("unix-datagram-wake", threadId,
+                copied ? received : error);
+            guestScheduler.wake(threadId, copied ? 0 : static_cast<std::int32_t>(error));
+            thread = guestScheduler.find(threadId);
+            if (thread != nullptr && thread->registers.size() > 32) {
+                if (copied) {
+                    thread->registers[0] = received;
+                    thread->registers[32] &= ~std::uint64_t{8};
+                } else {
+                    thread->registers[0] = error;
+                    thread->registers[32] |= std::uint64_t{8};
+                }
+            }
+        }
+        if (queue.empty()) guestUnixReceiveWaiters.erase(waiters);
     };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
         expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
@@ -6549,6 +6696,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         error = EADDRINUSE;
                                     } else {
                                         guestSocket->second.boundPath = std::move(*path);
+                                        guestSocket->second.boundAddressLength = addressLength;
                                         error = 0;
                                     }
                                 } catch (const std::bad_alloc&) {
@@ -6642,6 +6790,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 const auto* source = guestMemory.buffer(registers[1], byteCount);
                                 datagram.payload.assign(source, source + byteCount);
                             }
+                            if (!peer->second.captureSink) {
+                                datagram.sourcePath = socket->second.boundPath;
+                                datagram.sourceLength = socket->second.boundPath
+                                    ? socket->second.boundAddressLength : 16U;
+                            }
                             if (peer->second.captureSink) {
                                 constexpr std::size_t maximumCapturedDatagrams = 64;
                                 if (hostServiceState.guestSyslogCapture.size() ==
@@ -6667,6 +6820,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 }
                             } else {
                                 peer->second.receiveQueue.push_back(std::move(datagram));
+                                deliverGuestUnixDatagrams(peerDescriptor);
                             }
                             result = byteCount;
                         } catch (const std::out_of_range&) {
@@ -6676,29 +6830,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                 } else {
-                    if (registers[4] != 0 || registers[5] != 0) {
+                    const auto flags = static_cast<std::int32_t>(registers[3]);
+                    constexpr std::int32_t supportedReceiveFlags = MSG_DONTWAIT;
+                    if ((flags & ~supportedReceiveFlags) != 0) {
                         error = ENOTSUP;
+                    } else if (socket->second.receiveQueue.empty() &&
+                        (flags & MSG_DONTWAIT) != 0) {
+                        error = EAGAIN;
                     } else if (socket->second.receiveQueue.empty()) {
-                        // Blocking receive scheduling is not modeled by this datagram slice.
-                        error = ENOTSUP;
-                    } else if (registers[2] > std::numeric_limits<std::size_t>::max() ||
-                        (registers[2] != 0 && !guestMemory.is_guest_readable(
-                            registers[1], registers[2]))) {
-                        error = EFAULT;
-                    } else {
-                        try {
-                            const auto& datagram = socket->second.receiveQueue.front();
-                            const auto copied = std::min<std::uint64_t>(
-                                registers[2], datagram.payload.size());
-                            if (copied != 0) {
-                                auto* destination = guestMemory.buffer(registers[1], copied, true);
-                                std::memcpy(destination, datagram.payload.data(),
-                                    static_cast<std::size_t>(copied));
+                        const auto threadId = guestScheduler.current_id();
+                        auto& thread = guestScheduler.current();
+                        if (thread.wait.has_value()) {
+                            error = EALREADY;
+                        } else {
+                            bool blockedInserted = false;
+                            try {
+                                const auto inserted = guestUnixBlockedReceives.emplace(threadId,
+                                    GuestUnixBlockedReceive{descriptor, registers[1],
+                                        registers[2], registers[4], registers[5]});
+                                if (!inserted.second) {
+                                    error = EALREADY;
+                                } else {
+                                    blockedInserted = true;
+                                    guestUnixReceiveWaiters[descriptor].push_back(threadId);
+                                    thread.wait = GuestUnixSocketReceiveWait{descriptor};
+                                    registers[34] = 0;
+                                    std::vector<std::uint64_t> live(registers,
+                                        registers + stateBuffer.size() / sizeof(std::uint64_t));
+                                    if (!syncThreadSwitch(false, live)) {
+                                        throw std::runtime_error(
+                                            "Guest recvfrom has no runnable thread");
+                                    }
+                                    continue;
+                                }
+                            } catch (const std::bad_alloc&) {
+                                if (blockedInserted) guestUnixBlockedReceives.erase(threadId);
+                                auto waiting = guestUnixReceiveWaiters.find(descriptor);
+                                if (waiting != guestUnixReceiveWaiters.end()) {
+                                    auto& queue = waiting->second;
+                                    queue.erase(std::remove(queue.begin(), queue.end(), threadId),
+                                        queue.end());
+                                    if (queue.empty()) guestUnixReceiveWaiters.erase(waiting);
+                                }
+                                thread.wait.reset();
+                                error = ENOMEM;
                             }
-                            result = copied;
+                        }
+                    } else {
+                        const auto& datagram = socket->second.receiveQueue.front();
+                        if (copy_guest_unix_datagram(datagram, guestMemory, registers[1],
+                                registers[2], registers[4], registers[5], result, error)) {
                             socket->second.receiveQueue.pop_front();
-                        } catch (const std::out_of_range&) {
-                            error = EFAULT;
                         }
                     }
                 }

@@ -484,9 +484,8 @@ bool GuestMemory::is_guest_readable(std::uint64_t address,
                                     std::uint64_t length) const noexcept {
     if (length > std::numeric_limits<std::uint64_t>::max() - address) return false;
     for (const auto& mapping : mappings_) {
-        if (address >= mapping.logicalBegin && address < mapping.logicalEnd &&
-            mapping.readable && length <= mapping.logicalEnd - address) {
-            return true;
+        if (address >= mapping.logicalBegin && address < mapping.logicalEnd) {
+            return mapping.readable && length <= mapping.logicalEnd - address;
         }
     }
     return std::any_of(guestRanges_.begin(), guestRanges_.end(),

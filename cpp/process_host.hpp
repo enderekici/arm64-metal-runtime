@@ -194,10 +194,13 @@ struct HostServiceState {
     };
     struct GuestUnixDatagram {
         std::vector<std::uint8_t> payload;
+        std::optional<std::string> sourcePath;
+        std::uint32_t sourceLength = 16;
     };
     struct GuestUnixSocket {
         std::int32_t type = 0;
         std::optional<std::string> boundPath;
+        std::uint32_t boundAddressLength = 0;
         std::optional<std::int32_t> connectedPeer;
         bool connectedPeerClosed = false;
         bool captureSink = false;
