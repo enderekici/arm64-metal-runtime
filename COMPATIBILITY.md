@@ -22,7 +22,7 @@ HANDOFF.md for receipts and current proof boundaries.
 | Area | State at checkpoint | Source ownership | Next proof |
 |---|---|---|---|
 | ARM64 guest execution | **Proven, bounded.** Reachable guest blocks translate to Metal; unsupported instructions fail explicitly. No guest CPU fallback. The full ISA is not claimed. | [translate_core.cpp](cpp/translate_core.cpp), [process_decoder.cpp](cpp/process_decoder.cpp), [process_msl.cpp](cpp/process_msl.cpp), [process_runner.cpp](cpp/process_runner.cpp) | Turn each real app’s first unsupported opcode into a native/GPU fixture, then replay the unchanged app. |
-| Opt-in AOT GPU interpreter | **Proven for recorded typed operations and fallback.** CFG budget fallback source `1d9bffc` was released in `aba6a2c`; focused proof recorded 13 dispatches and extracted archive smoke returned branch 7 / mixed 42. | [gpu_interpreter.cpp](cpp/gpu_interpreter.cpp), [gpu_interpreter.metal](cpp/gpu_interpreter.metal), [main.cpp](cpp/main.cpp), [Makefile](Makefile) | Keep interpreter opt-in and qualify each newly supported operation against native and translated controls. |
+| Opt-in AOT GPU interpreter | **Proven for recorded typed operations, budget fallback, stack memory, and W/X CBZ/CBNZ fixtures.** Exact source `3c824ed` passed regression and `verify-interpreter`; native/translated/interpreter exit-42 parity, 25-operation branch dispatch, 2,048 native/GPU function matches, and package smoke exit 42. | [gpu_interpreter.cpp](cpp/gpu_interpreter.cpp), [gpu_interpreter.metal](cpp/gpu_interpreter.metal), [guest_memory_msl.hpp](cpp/guest_memory_msl.hpp), [process_decoder.cpp](cpp/process_decoder.cpp), [main.cpp](cpp/main.cpp), [Makefile](cpp/Makefile) | Keep interpreter opt-in. Read-only/unmapped controls check guest fault diagnostics but do not prove native signal parity or unchanged-app compatibility; demand-cache retry remains open. |
 | Registers, calls, stack, startup | **Proven for tested launch ABI.** LC_MAIN, argc/argv, bounded stack, direct/indirect calls, guest exit and host-call resume pass fixtures. | [process_runner.cpp](cpp/process_runner.cpp), [guest_state.cpp](cpp/guest_state.cpp) | Add an ABI fixture only when an unchanged target exposes a mismatch. |
 | SIMD and floating point | **Proven for named matrices and app paths**, including vector memory, conversions, comparisons, FRINTP, FDIV and status flags. Other opcodes and FPCR/FPSR behavior remain open. | [process_decoder.cpp](cpp/process_decoder.cpp), [process_msl.cpp](cpp/process_msl.cpp), [guest_vector_crypto.cpp](cpp/guest_vector_crypto.cpp) | Use the exact failing instruction and operands; compare result bits and flags with native. |
 | Syscall/import ABI | **Modeled, selective.** Known imports/services cross a numbered host boundary; unsupported requests fail with context. libc and environment behavior are partial. | [process_decoder.cpp](cpp/process_decoder.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp), [guest_format.cpp](cpp/guest_format.cpp) | Differential-probe the first missing import/service, including errors, carry and output buffers. |
@@ -59,10 +59,13 @@ HANDOFF.md for receipts and current proof boundaries.
 ## Interpreter and remaining qualification
 
 The released CFG budget-fallback source `1d9bffc` in `aba6a2c` recorded 13
-dispatches and extracted-archive branch 7 / mixed 42 results. The raw VM
-protection source `2136057` passed 42 launch comparisons, 2,048 function runs,
-and AOT/extracted archive smoke. These remain named-fixture proofs, not broad
-app qualification.
+dispatches and extracted-archive branch 7 / mixed 42 results. The combined
+interpreter memory/branch source `3c824ed` passed the regression gate,
+`verify-interpreter`, and packaged smoke; see HANDOFF.md for exact artifact
+hashes and receipts. Its explicit read-only-store/unmapped-load fault controls
+do not establish native signal parity. The raw VM protection source `2136057`
+passed 42 launch comparisons, 2,048 function runs, and AOT/extracted archive
+smoke. These remain named-fixture proofs, not broad app qualification.
 Astra's direction is a precompiled GPU interpreter as the eventual default,
 with translation retained during migration and for hot code. Share instruction
 semantics on GPU, compare native/translator/interpreter results, and expand one

@@ -61,9 +61,38 @@ is not implemented. Receipt: `/tmp/metal-ipc-combined-gate.W8VmaB`. Typed GPU
 memory helper work is in progress. Do not claim full libz or general Mach IPC
 compatibility from these focused cases.
 
-General unchanged-app compatibility remains open. The CFG, VM, and IPC results
-cover only named fixtures, exact runtime artifacts, and recorded launch
-configurations.
+## Combined interpreter memory and conditional-branch qualification
+
+The combined typed-memory and W/X `CBZ`/`CBNZ` work from `c153ae1` was
+repaired and verified at exact source `3c824ed`. The full regression gate
+exited 0 with 41 logged native parity lines, a direct data-auth positive
+control, and 2,048 native/GPU function matches. `verify-interpreter` exited 0.
+The typed stack-memory fixture and the 25-operation branch fixture matched
+native and translated output/status; each returned 42. The standalone AOT
+interpreter probe reported one pipeline compile, zero runtime source compiles,
+and 25 dispatches.
+
+Read-only-store and unmapped-load controls reached the interpreter checks and
+reported guest memory faults at PC `0x42e0` / address `0x42d8` and PC `0x42dc` /
+address `0x0`, respectively. These assert nonzero guest exits and the expected
+fault diagnostics; they do not establish native signal-delivery parity. The
+interpreter remains opt-in.
+
+The packaged smoke exited 42. Its trace showed the precompiled interpreter
+pipeline and a two-operation interpreter dispatch, followed by a translated
+compile and dispatch. Runtime SHA-256 before and after the gates was
+`addb7d90b52d07c8e7d0d52b6b36f955a2afd7881d97227b3036cb40ea22b88c`; interpreter
+metallib SHA-256 was
+`1caf266a865338dbe461092a96073e6caee7030b3621ae451f6ee9dac09e8e50`. The
+archive SHA-256 is
+`f89d77a0db30a7dc82197328da2daf74d959ea88c3a8761ba884724fa56aa395`; the tested
+archive is copied to `.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
+`/tmp/metal-memory-cbz-repaired.dgc6AW`, with interpreter fixtures in
+`source/.build/cpp/interpreter-verify.k0vPu7`.
+
+Demand-cache retry and native signal delivery remain separate checks. General
+unchanged-app compatibility remains open; these results cover only named
+fixtures, exact artifacts, and recorded configurations.
 
 ## Evidence locations
 
