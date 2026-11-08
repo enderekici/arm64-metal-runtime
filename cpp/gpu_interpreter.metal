@@ -12,6 +12,8 @@ struct InstructionPacket {
 };
 static_assert(sizeof(InstructionPacket) == 56, "host/device packet size mismatch");
 
+@GUEST_MEMORY_MSL_SOURCE@
+
 inline int find_packet(device const InstructionPacket *packets,
                        uint packetCount, ulong pc) {
     uint low = 0;
@@ -29,7 +31,12 @@ inline int find_packet(device const InstructionPacket *packets,
 
 kernel void run_interpreter(device ulong *state [[buffer(0)]],
                             device const InstructionPacket *packets [[buffer(1)]],
-                            constant uint &packetCount [[buffer(2)]]) {
+                            constant uint &packetCount [[buffer(2)]],
+                            device uchar *memory [[buffer(3)]],
+                            constant ulong &size [[buffer(4)]],
+                            device const ulong *writable [[buffer(5)]],
+                            device const ulong *resident [[buffer(6)]],
+                            device const ulong *config [[buffer(7)]]) {
     ulong pc = state[33];
     for (uint block = 0; block < 8192; ++block) {
         if (state[36] == 0) {
@@ -97,6 +104,53 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 pc = instruction.successor0;
                 leftBlock = true;
                 break;
+            }
+            if (opcode == 6u || opcode == 7u) {
+                const uint rt = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint immediate = instruction.operation[3];
+                const uint shift = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                const uint expectedShift = width == 32u ? 2u : 3u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rt > 31u || rn > 31u || immediate > 0xfffu ||
+                    (width != 32u && width != 64u) || shift != expectedShift ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong address = state[rn] + (ulong(immediate) << shift);
+                const uint bytes = width / 8u;
+                const ulong offset = guest_offset(address, bytes, size, writable,
+                                                   opcode == 7u, state, resident, config);
+                if (offset == ~0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                if (opcode == 6u) {
+                    const ulong value = load_guest_word(memory + offset, bytes);
+                    if (rt < 31u) state[rt] = width == 32u ? ulong(uint(value)) : value;
+                } else {
+                    const ulong value = rt < 31u ? state[rt] : 0ul;
+                    store_guest_word(memory + offset, value, bytes);
+                }
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
             }
             if (opcode == 2u) {
                 const uint source = instruction.operation[2];

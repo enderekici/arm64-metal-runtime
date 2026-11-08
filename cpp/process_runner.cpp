@@ -329,7 +329,17 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::MoveWideZero ||
                 opcode == translate_core::Opcode::MoveWideNot ||
                 opcode == translate_core::Opcode::MoveWideKeep;
-            if (!moveWideOpcode ||
+            const bool memoryOpcode =
+                opcode == translate_core::Opcode::LoadUnsignedImmediate ||
+                opcode == translate_core::Opcode::StoreUnsignedImmediate;
+            const auto& operation = *instruction.operation;
+            const bool validMemoryOperation =
+                !memoryOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 0xfff &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 operation.shift == (operation.width == 32 ? 2U : 3U));
+            if ((!moveWideOpcode && !memoryOpcode) || !validMemoryOperation ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;
@@ -992,10 +1002,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     auto resident = resident_cache_table(image, residentCapacity);
     auto residentBuffer = backend.makeSharedBuffer(resident.size() * sizeof(std::uint64_t));
     auto sizeBuffer = backend.makeSharedBuffer(sizeof(std::uint64_t));
-    auto writableBuffer = backend.makeSharedBuffer(sizeof(std::uint64_t));
     if (memoryBuffer.data() == nullptr || stateBuffer.data() == nullptr ||
-        residentBuffer.data() == nullptr || sizeBuffer.data() == nullptr ||
-        writableBuffer.data() == nullptr) {
+        residentBuffer.data() == nullptr || sizeBuffer.data() == nullptr) {
         throw std::runtime_error("Metal returned a null guest-process buffer");
     }
     std::memcpy(memoryBuffer.data(), bootstrap.memory.data(), bootstrap.memory.size());
@@ -1004,8 +1012,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::memcpy(residentBuffer.data(), resident.data(), resident.size() * sizeof(std::uint64_t));
     const auto guestSize = static_cast<std::uint64_t>(bootstrap.memory.size());
     std::memcpy(sizeBuffer.data(), &guestSize, sizeof(guestSize));
-    const auto writableBase = bootstrap.errnoSlot;
-    std::memcpy(writableBuffer.data(), &writableBase, sizeof(writableBase));
 
     GuestMemory guestMemory(static_cast<std::uint8_t*>(memoryBuffer.data()), memoryBuffer.size(),
                             bootstrap.readOnlyRanges, guest_memory_mappings(image));
@@ -1084,6 +1090,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                            static_cast<std::uint64_t>(range.second)});
     }
 
+    std::vector<std::uint64_t> writableTable{
+        bootstrap.errnoSlot,
+        static_cast<std::uint64_t>(config.writable_regions.size())};
+    writableTable.reserve(2 + 2 * config.writable_regions.size());
+    for (const auto& range : config.writable_regions) {
+        writableTable.push_back(range.begin);
+        writableTable.push_back(range.end);
+    }
+    auto writableBuffer = backend.makeSharedBuffer(
+        writableTable.size() * sizeof(std::uint64_t));
+    const std::array<std::uint64_t, 4> memoryConfig{
+        config.minimum_image_address, config.shared_guest_base,
+        config.linear_image_end, config.mapping_backing_end};
+    auto memoryConfigBuffer = backend.makeSharedBuffer(sizeof(memoryConfig));
+    if (writableBuffer.data() == nullptr || memoryConfigBuffer.data() == nullptr) {
+        throw std::runtime_error("Metal returned a null guest memory configuration buffer");
+    }
+    std::memcpy(writableBuffer.data(), writableTable.data(),
+                writableTable.size() * sizeof(std::uint64_t));
+    std::memcpy(memoryConfigBuffer.data(), memoryConfig.data(), sizeof(memoryConfig));
+
     std::map<std::int64_t, std::string> decodeErrors;
     std::map<std::int64_t, CompiledProcessKernel> kernels;
     const auto compileKernel = [&](std::int64_t entry) {
@@ -1100,7 +1127,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto started = std::chrono::steady_clock::now();
         progressTrace.event("compile-start", static_cast<std::uint64_t>(entry));
         const auto cases = translate_core::render_blocks(plan.instructions, entry, "ul");
-        const auto source = process_msl::render_source(cases, config);
+        const auto source = process_msl::render_source(cases);
         auto translated = backend.compileCompute(source, "run_process");
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
@@ -1141,7 +1168,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     const std::vector<BufferBinding> bindings{
         {&memoryBuffer, 0, 0}, {&stateBuffer, 1, 0}, {&sizeBuffer, 2, 0},
-        {&writableBuffer, 3, 0}, {&residentBuffer, 4, 0}};
+        {&writableBuffer, 3, 0}, {&residentBuffer, 4, 0},
+        {&memoryConfigBuffer, 5, 0}};
+    const gpu_interpreter::MemoryAccessContext interpreterMemoryAccess{
+        &memoryBuffer, &sizeBuffer, &writableBuffer, &residentBuffer,
+        &memoryConfigBuffer};
     const DispatchSize one{1, 1, 1};
     HostServiceState hostServiceState;
     if (bootstrap.heap.end > static_cast<std::uint64_t>(
@@ -3016,8 +3047,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto& currentThread = guestScheduler.current();
         registers[guestThreadPointer] = static_cast<std::uint64_t>(currentThread.tsdAddress);
         bootstrap.errnoSlot = static_cast<std::uint64_t>(currentThread.errnoAddress);
-        const auto writableBase = bootstrap.errnoSlot;
-        std::memcpy(writableBuffer.data(), &writableBase, sizeof(writableBase));
+        writableTable[0] = bootstrap.errnoSlot;
+        std::memcpy(writableBuffer.data(), writableTable.data(),
+                    writableTable.size() * sizeof(std::uint64_t));
         registers[36] = options.dispatchBlocks;
         registers[guestFaultAddress] = kNoFault;
         registers[guestCacheFaultAddress] = kNoFault;
@@ -3037,7 +3069,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 progressTrace.event("interpreter-dispatch", registers[33],
                                     activeKernel->interpretedPackets.size());
                 (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
-                                            stateBuffer);
+                                            stateBuffer, &interpreterMemoryAccess);
             } else {
                 (void)backend.dispatch(activeKernel->translated, bindings, one, one);
             }
@@ -3049,7 +3081,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         } else if (activeKernel->usesInterpreter) {
             (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
-                                        stateBuffer);
+                                        stateBuffer, &interpreterMemoryAccess);
         } else {
             (void)backend.dispatch(activeKernel->translated, bindings, one, one);
         }

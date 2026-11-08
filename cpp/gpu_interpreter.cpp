@@ -1,4 +1,5 @@
 #include "gpu_interpreter.hpp"
+#include "guest_memory_msl.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -10,6 +11,17 @@
 #include <string_view>
 
 namespace arm64metal::gpu_interpreter {
+namespace {
+
+void replace_all(std::string& text, std::string_view needle, std::string_view value) {
+    std::size_t position = 0;
+    while ((position = text.find(needle, position)) != std::string::npos) {
+        text.replace(position, needle.size(), value);
+        position += value.size();
+    }
+}
+
+}  // namespace
 
 Interpreter::Interpreter(const Backend& backend, std::string_view libraryPath)
     : kernel_(backend.loadComputeLibrary(libraryPath, "run_interpreter")) {}
@@ -25,7 +37,9 @@ Interpreter Interpreter::fromSourceFile(const Backend& backend,
     }
     const std::string source{std::istreambuf_iterator<char>(sourceFile),
                              std::istreambuf_iterator<char>()};
-    return Interpreter(backend.compileCompute(source, "run_interpreter"));
+    auto renderedSource = source;
+    replace_all(renderedSource, "@GUEST_MEMORY_MSL_SOURCE@", guestMemoryMslSource);
+    return Interpreter(backend.compileCompute(renderedSource, "run_interpreter"));
 }
 
 Result Interpreter::run(const Backend& backend,
@@ -41,7 +55,8 @@ Result Interpreter::run(const Backend& backend,
 
 Result Interpreter::dispatch(const Backend& backend,
                              const std::vector<InstructionPacket>& packets,
-                             SharedBuffer& processState) const {
+                             SharedBuffer& processState,
+                             const MemoryAccessContext* memoryAccess) const {
     if (!kernel_) throw std::logic_error("GPU interpreter kernel is not compiled");
     if (packets.empty() || packets.size() > 8192) {
         throw std::invalid_argument("Interpreter packet count is outside [1, 8192]");
@@ -53,6 +68,7 @@ Result Interpreter::dispatch(const Backend& backend,
     const auto* initialState = static_cast<const std::uint64_t*>(processState.data());
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
     bool hasInitialPc = false;
+    bool hasMemoryAccess = false;
     std::uint64_t previousPc = 0;
     for (std::size_t index = 0; index < packets.size(); ++index) {
         const auto& packet = packets[index];
@@ -98,12 +114,36 @@ Result Interpreter::dispatch(const Backend& backend,
                 packet.successorCount != (blockEnd ? 1U : 0U)) {
                 throw std::invalid_argument("Interpreter move-wide packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadUnsignedImmediate ||
+                   opcode == translate_core::Opcode::StoreUnsignedImmediate) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto width = operation[5];
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 0xfff ||
+                (width != 32 && width != 64) ||
+                operation[4] != (width == 32 ? 2U : 3U) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument("Interpreter memory packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
     }
     if (!hasInitialPc) {
         throw std::invalid_argument("Interpreter process PC is absent from the packet table");
+    }
+    if (hasMemoryAccess && (memoryAccess == nullptr ||
+        memoryAccess->guestMemoryBuffer == nullptr || memoryAccess->guestSizeBuffer == nullptr ||
+        memoryAccess->writableBuffer == nullptr || memoryAccess->residentBuffer == nullptr ||
+        memoryAccess->memoryConfigBuffer == nullptr ||
+        memoryAccess->guestMemoryBuffer->data() == nullptr ||
+        memoryAccess->guestSizeBuffer->data() == nullptr ||
+        memoryAccess->writableBuffer->data() == nullptr ||
+        memoryAccess->residentBuffer->data() == nullptr ||
+        memoryAccess->memoryConfigBuffer->data() == nullptr ||
+        processState.size() < 878 * sizeof(std::uint64_t))) {
+        throw std::invalid_argument("Interpreter memory operation requires process memory mappings");
     }
 
     auto packetBuffer = backend.makeSharedBuffer(packets.size() * sizeof(InstructionPacket));
@@ -116,8 +156,15 @@ Result Interpreter::dispatch(const Backend& backend,
     const auto count = static_cast<std::uint32_t>(packets.size());
     std::memcpy(countBuffer.data(), &count, sizeof(count));
 
+    auto* guestMemory = hasMemoryAccess ? memoryAccess->guestMemoryBuffer : &processState;
+    auto* guestSize = hasMemoryAccess ? memoryAccess->guestSizeBuffer : &processState;
+    auto* writable = hasMemoryAccess ? memoryAccess->writableBuffer : &processState;
+    auto* resident = hasMemoryAccess ? memoryAccess->residentBuffer : &processState;
+    auto* memoryConfig = hasMemoryAccess ? memoryAccess->memoryConfigBuffer : &processState;
     const std::vector<BufferBinding> bindings{
-        {&processState, 0, 0}, {&packetBuffer, 1, 0}, {&countBuffer, 2, 0}};
+        {&processState, 0, 0}, {&packetBuffer, 1, 0}, {&countBuffer, 2, 0},
+        {guestMemory, 3, 0}, {guestSize, 4, 0}, {writable, 5, 0},
+        {resident, 6, 0}, {memoryConfig, 7, 0}};
     const auto timing = backend.dispatch(kernel_, bindings, {1, 1, 1}, {1, 1, 1});
     Result result;
     std::copy_n(static_cast<const std::uint64_t*>(processState.data()),

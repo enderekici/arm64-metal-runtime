@@ -48,6 +48,14 @@ struct Result {
     DispatchTiming timing{};
 };
 
+struct MemoryAccessContext {
+    SharedBuffer* guestMemoryBuffer = nullptr;
+    SharedBuffer* guestSizeBuffer = nullptr;
+    SharedBuffer* writableBuffer = nullptr;
+    SharedBuffer* residentBuffer = nullptr;
+    SharedBuffer* memoryConfigBuffer = nullptr;
+};
+
 // Loads one fixed AOT Metal interpreter library. Guest programs never
 // contribute shader source. The same instance can dispatch any sequence.
 class Interpreter final {
@@ -61,7 +69,8 @@ public:
                              ProcessState initialState) const;
     [[nodiscard]] Result dispatch(const Backend& backend,
                                   const std::vector<InstructionPacket>& packets,
-                                  SharedBuffer& processState) const;
+                                  SharedBuffer& processState,
+                                  const MemoryAccessContext* memoryAccess = nullptr) const;
 
 private:
     explicit Interpreter(ComputeKernel kernel);

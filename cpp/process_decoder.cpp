@@ -59,7 +59,7 @@ inline void replace_all(std::string &s, const std::string &a,
 std::string mappedOffset(const std::string &address, const std::string &count,
                          bool write) {
   return "guest_offset(" + address + ", " + count + ", size, writable, " +
-         (write ? "true" : "false") + ", x, resident)";
+         (write ? "true" : "false") + ", x, resident, config)";
 }
 } // namespace
 

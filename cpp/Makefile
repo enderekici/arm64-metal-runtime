@@ -72,6 +72,9 @@ INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_MOVN_MOVK_MAIN := $(BUILD_DIR)/interpreter-movn-movk-main
 INTERPRETER_BRANCH_MAIN := $(BUILD_DIR)/interpreter-branch-main
 INTERPRETER_BRANCH_FALLBACK_MAIN := $(BUILD_DIR)/interpreter-branch-fallback-main
+INTERPRETER_TYPED_MEMORY_MAIN := $(BUILD_DIR)/interpreter-typed-memory-main
+INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
+INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
@@ -114,17 +117,29 @@ $(INTERPRETER_BRANCH_FALLBACK_MAIN): ../fixtures/interpreter/branch-fallback-mai
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_TYPED_MEMORY_MAIN): ../fixtures/interpreter/typed-memory-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
 
-$(INTERPRETER_AIR): gpu_interpreter.metal move_wide_shared.h
+$(INTERPRETER_GENERATOR): generate_interpreter_msl.cpp guest_memory_msl.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) "$<" -o "$@"
+
+$(INTERPRETER_SOURCE): gpu_interpreter.metal $(INTERPRETER_GENERATOR)
 	@mkdir -p "$(dir $@)"
-	xcrun -sdk macosx metal -c "$<" -o "$@"
+	"$(INTERPRETER_GENERATOR)" "$<" "$@"
+
+$(INTERPRETER_AIR): $(INTERPRETER_SOURCE) move_wide_shared.h
+	@mkdir -p "$(dir $@)"
+	xcrun -sdk macosx metal -I . -c "$<" -o "$@"
 
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -196,4 +211,20 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-block-ready.*detail=2' "$$run_dir/branch-fallback.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=2' "$$run_dir/branch-fallback.interpreter.err" && \
 		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/branch-fallback.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.native.out" 2>"$$run_dir/typed-memory.native.err"; memory_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.translated.out" 2>"$$run_dir/typed-memory.translated.err"; memory_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.interpreter.out" 2>"$$run_dir/typed-memory.interpreter.err"; memory_interpreter_rc=$$?; \
+		printf '%s\n' "$$memory_native_rc" >"$$run_dir/typed-memory.native.rc"; \
+		printf '%s\n' "$$memory_translated_rc" >"$$run_dir/typed-memory.translated.rc"; \
+		printf '%s\n' "$$memory_interpreter_rc" >"$$run_dir/typed-memory.interpreter.rc"; \
+		set -e; \
+		test "$$memory_native_rc" -eq 42 && test "$$memory_translated_rc" -eq "$$memory_native_rc" && \
+		test "$$memory_interpreter_rc" -eq "$$memory_native_rc" && \
+		cmp "$$run_dir/typed-memory.native.out" "$$run_dir/typed-memory.translated.out" && \
+		cmp "$$run_dir/typed-memory.native.out" "$$run_dir/typed-memory.interpreter.out" && \
+		cmp "$$run_dir/typed-memory.native.err" "$$run_dir/typed-memory.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/typed-memory.interpreter.err" && \
+		grep -q 'interpreter-block-ready.*detail=6' "$$run_dir/typed-memory.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=6' "$$run_dir/typed-memory.interpreter.err"; \
 		echo "verify-interpreter receipts: $$run_dir"

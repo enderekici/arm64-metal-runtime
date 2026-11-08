@@ -1,4 +1,5 @@
 #include "process_msl.hpp"
+#include "guest_memory_msl.hpp"
 
 #include "guest_vector_crypto.hpp"
 #include "move_wide_shared.h"
@@ -427,80 +428,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         ulong middle = uint(carry) + lo_left * hi_right;
         return hi_left * hi_right + (carry >> 32) + (middle >> 32);
     }
-    ulong load_guest_word(device const uchar *memory, uint count) {
-        if (count == 8 && (ulong(memory) & 7ul) == 0) return *((device const ulong *)memory);
-        if (count == 4 && (ulong(memory) & 3ul) == 0) return *((device const uint *)memory);
-        ulong word = 0;
-        for (uint byte = 0; byte < count; ++byte) word |= ulong(memory[byte]) << (8 * byte);
-        return word;
-    }
-    void store_guest_word(device uchar *memory, ulong word, uint count) {
-        if (count == 8 && (ulong(memory) & 7ul) == 0) { *((device ulong *)memory) = word; return; }
-        if (count == 4 && (ulong(memory) & 3ul) == 0) { *((device uint *)memory) = uint(word); return; }
-        for (uint byte = 0; byte < count; ++byte) memory[byte] = uchar(word >> (8 * byte));
-    }
-    void guest_move(device uchar *dst, device const uchar *src, ulong count) {
-        if (dst > src && ulong(dst - src) < count) {
-            for (ulong i = count; i > 0; --i) dst[i - 1] = src[i - 1];
-        } else {
-            for (ulong i = 0; i < count; ++i) dst[i] = src[i];
-        }
-    }
-    void guest_fill(device uchar *dst, uchar value, ulong count) {
-        for (ulong i = 0; i < count; ++i) dst[i] = value;
-    }
-    void guest_pattern(device uchar *dst, device const uchar *src, ulong count, uint width) {
-        uchar pattern[16];
-        for (uint i = 0; i < width; ++i) pattern[i] = src[i];
-        for (ulong i = 0; i < count; ++i) dst[i] = pattern[i & (width - 1)];
-    }
-    bool guest_write(ulong address, ulong count, ulong stack) {
-        if (address >= stack) return true;
-        @WRITABLE_REGION_CHECKS@
-        return false;
-    }
-
-    ulong guest_offset(ulong address, ulong count, ulong size, ulong writable, bool write,
-                       device ulong *state, device const ulong *resident) {
-        if (address < @SHARED_GUEST_BASE@ul) {
-            if (address >= @LINEAR_IMAGE_END@ul) {
-                if (count != 0) {
-                    for (ulong i = 0; i < resident[0]; ++i) {
-                        device const ulong *entry = resident + 1 + 4 * i;
-                        if ((entry[3] & 2ul) != 0 && address < entry[1] &&
-                            (address >= entry[0] || entry[0] - address < count))
-                            return ~0ul;
-                    }
-                }
-                for (ulong i = 0; i < resident[0]; ++i) {
-                    device const ulong *entry = resident + 1 + 4 * i;
-                    if (address >= entry[0] && address < entry[1]) {
-                        if ((entry[3] & 2ul) != 0 || (write && (entry[3] & 1ul) == 0) ||
-                            count > entry[1] - address) return ~0ul;
-                        return entry[2] + address - entry[0];
-                    }
-                }
-            }
-            ulong limit = address < @LINEAR_IMAGE_END@ul ? @LINEAR_IMAGE_END@ul : size;
-            if ((address < @MINIMUM_IMAGE_ADDRESS@ul && count != 0) ||
-                (address >= @LINEAR_IMAGE_END@ul && address < @MAPPING_BACKING_END@ul) ||
-                address > limit || count > limit - address ||
-                (write && !guest_write(address, count, writable))) return ~0ul;
-            return address;
-        }
-        for (ulong i = 0; i < resident[0]; ++i) {
-            device const ulong *entry = resident + 1 + 4 * i;
-            if (address >= entry[0] && address < entry[1]) {
-                if ((entry[3] & 2ul) != 0 || (write && (entry[3] & 1ul) == 0)) return ~0ul;
-                if (count <= entry[1] - address) return entry[2] + address - entry[0];
-            }
-        }
-        if (state[@GUEST_CACHE_FAULT_ADDRESS@] == ~0ul) {
-            state[@GUEST_CACHE_FAULT_ADDRESS@] = address;
-            state[@GUEST_CACHE_FAULT_WIDTH@] = count;
-        }
-        return ~0ul;
-    }
+    @GUEST_MEMORY_MSL_SOURCE@
     ulong encode_guest_pointer(ulong address, ulong key, ulong index) {
         if (key == 2 && address <= @GUEST_DATA_ADDRESS_MASK@ul) {
             ulong code = index % @GUEST_DATA_TOKEN_BUCKETS@ul + 1;
@@ -580,8 +508,9 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     kernel void run_process(device uchar *memory [[buffer(0)]],
                             device ulong *x [[buffer(1)]],
                             constant ulong &size [[buffer(2)]],
-                            constant ulong &writable [[buffer(3)]],
-                            device const ulong *resident [[buffer(4)]]) {
+                            device const ulong *writable [[buffer(3)]],
+                            device const ulong *resident [[buffer(4)]],
+                            device const ulong *config [[buffer(5)]]) {
         // Preserve the guest dispatch variable across switch cases on Metal.
         volatile ulong pc = x[33];
         bool z = (x[32] & 1ul) != 0;
@@ -613,19 +542,6 @@ void replace_all(std::string& text, std::string_view needle, std::string_view va
   }
 }
 
-std::string render_writable_checks(const Config& config) {
-  std::string result;
-  for (const auto& range : config.writable_regions) {
-    if (range.begin >= range.end) continue;
-    if (!result.empty()) result.push_back('\n');
-    result += "if (address >= " + std::to_string(range.begin) +
-              "ul && address < " + std::to_string(range.end) +
-              "ul && count <= " + std::to_string(range.end) +
-              "ul - address) return true;";
-  }
-  return result;
-}
-
 void remove_swift_multiline_indentation(std::string& text) {
   if (!text.empty() && text.front() == '\n') text.erase(text.begin());
   std::size_t line_start = 0;
@@ -648,16 +564,13 @@ void remove_swift_multiline_indentation(std::string& text) {
 
 }  // namespace
 
-std::string render_source(std::string_view rendered_cases, const Config& config) {
+std::string render_source(std::string_view rendered_cases) {
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 22> values = {{
-      {"@MINIMUM_IMAGE_ADDRESS@", decimal(config.minimum_image_address)},
-      {"@SHARED_GUEST_BASE@", decimal(config.shared_guest_base)},
+  const std::array<std::pair<std::string_view, std::string>, 16> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
-      {"@GUEST_CACHE_FAULT_ADDRESS@", decimal(guestCacheFaultAddress)},
-      {"@GUEST_CACHE_FAULT_WIDTH@", decimal(guestCacheFaultWidth)},
+      {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
       {"@GUEST_DATA_ADDRESS_MASK@", decimal(guestDataAddressMask)},
       {"@GUEST_DATA_TOKEN_BUCKETS@", decimal(guestDataTokenBuckets)},
       {"@GUEST_DATA_TOKEN_MARKER@", decimal(guestDataTokenMarker)},
@@ -672,9 +585,6 @@ std::string render_source(std::string_view rendered_cases, const Config& config)
       {"@GUEST_TOKEN_TAG@", decimal(guestTokenTag)},
       {"@GUEST_VECTOR_CRYPTO_SOURCE@", std::string(vector_crypto_metal_source())},
       {"@MOVE_WIDE_MSL_SOURCE@", std::string(move_wide_msl_source)},
-      {"@LINEAR_IMAGE_END@", decimal(config.linear_image_end)},
-      {"@MAPPING_BACKING_END@", decimal(config.mapping_backing_end)},
-      {"@WRITABLE_REGION_CHECKS@", render_writable_checks(config)},
   }};
   for (const auto& [key, value] : values) replace_all(source, key, value);
   return source;
