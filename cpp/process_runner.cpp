@@ -3767,6 +3767,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             std::uint32_t maximumProtection,
                                             std::uint32_t inheritance,
                                             std::uint32_t tag) {
+        progressTrace.event("vm-overwrite-enter", guestAddress, size);
         const auto pageSize = bootstrap.pageSize;
         if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
             guestAddress > std::numeric_limits<std::uint64_t>::max() - size) {
@@ -3910,6 +3911,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 return kernSuccess;
             }
             const auto replaceSparseRange = [&]() {
+                progressTrace.event("vm-overwrite-sparse-range", begin, end - begin);
                 if (pageSize > static_cast<std::uint64_t>(
                         std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
                 // A replacement may need a larger contiguous lease than the free
@@ -3953,6 +3955,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                 }
+                progressTrace.event("vm-overwrite-reclaim-count", begin,
+                                    reclaimedBackings.size());
                 for (const auto& lease : reclaimedBackings) mappingHeap.release(lease.backing);
                 struct ReclaimedBackingRollback {
                     GuestHeap& heap;
@@ -3973,7 +3977,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     static_cast<std::int64_t>(pageSize)};
                 const auto allocated = mappingHeap.allocate(
                     static_cast<std::int64_t>(end - begin), static_cast<std::int64_t>(pageSize));
-                if (!allocated) return kernNoSpace;
+                if (!allocated) {
+                    progressTrace.event("vm-overwrite-allocation-failed", begin, end - begin);
+                    return kernNoSpace;
+                }
                 const auto backing = static_cast<std::size_t>(*allocated);
                 if (backing > memoryBuffer.size() || end - begin > memoryBuffer.size() - backing) {
                     mappingHeap.release(*allocated);
@@ -4100,6 +4107,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                     if (stagedResident[0] >= residentCapacity) {
+                        progressTrace.event("vm-overwrite-resident-full", begin, stagedResident[0]);
                         mappingHeap.release(*allocated);
                         return kernNoSpace;
                     }
@@ -4166,6 +4174,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     guestAddress = begin;
                     return kernSuccess;
                 } catch (...) {
+                    progressTrace.event("vm-overwrite-stage-exception", begin, end - begin);
                     mappingHeap.release(*allocated);
                     return kernNoSpace;
                 }
