@@ -158,6 +158,95 @@ static std::pair<std::uint64_t, std::uint32_t> native_alias_add_sub_carry(
   return {value, internalFlags};
 }
 
+struct NativeScalarFPCompare {
+  std::uint32_t flags;
+  std::uint32_t fpsr;
+};
+
+static NativeScalarFPCompare native_scalar_fp_compare(
+    std::uint64_t left, std::uint64_t right, std::uint32_t width,
+    bool signalAllNans, bool compareZero, std::uint32_t fpcr) {
+  std::uint64_t savedFpcr;
+  std::uint64_t observedNzcv;
+  std::uint64_t observedFpsr;
+  asm volatile("mrs %0, fpcr" : "=r"(savedFpcr));
+  if (width == 64U) {
+    if (signalAllNans && compareZero) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov d0, %4\n\tfcmpe d0, #0.0\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left) : "v0", "cc", "memory");
+    } else if (signalAllNans) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov d0, %4\n\tfmov d1, %5\n\tfcmpe d0, d1\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left), "r"(right)
+                   : "v0", "v1", "cc", "memory");
+    } else if (compareZero) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov d0, %4\n\tfcmp d0, #0.0\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left) : "v0", "cc", "memory");
+    } else {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov d0, %4\n\tfmov d1, %5\n\tfcmp d0, d1\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left), "r"(right)
+                   : "v0", "v1", "cc", "memory");
+    }
+  } else {
+    if (signalAllNans && compareZero) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov s0, %w4\n\tfcmpe s0, #0.0\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left) : "v0", "cc", "memory");
+    } else if (signalAllNans) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov s0, %w4\n\tfmov s1, %w5\n\tfcmpe s0, s1\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left), "r"(right)
+                   : "v0", "v1", "cc", "memory");
+    } else if (compareZero) {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov s0, %w4\n\tfcmp s0, #0.0\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left) : "v0", "cc", "memory");
+    } else {
+      asm volatile("msr fpcr, %3\n\tmsr fpsr, xzr\n\tfmov s0, %w4\n\tfmov s1, %w5\n\tfcmp s0, s1\n\tmrs %0, nzcv\n\tmrs %1, fpsr\n\tmsr fpcr, %2"
+                   : "=&r"(observedNzcv), "=&r"(observedFpsr)
+                   : "r"(savedFpcr), "r"(std::uint64_t{fpcr}),
+                     "r"(left), "r"(right)
+                   : "v0", "v1", "cc", "memory");
+    }
+  }
+  const auto architectural = static_cast<std::uint32_t>(observedNzcv >> 28U);
+  const auto internal = ((architectural >> 2U) & 2U) |
+                        ((architectural >> 2U) & 1U) |
+                        ((architectural << 2U) & 8U) |
+                        ((architectural << 2U) & 4U);
+  return {internal, static_cast<std::uint32_t>(observedFpsr)};
+}
+
+static std::pair<std::uint64_t, std::uint32_t> native_scalar_fp_negate(
+    std::uint64_t value, std::uint32_t width) {
+  std::uint64_t savedFpsr;
+  std::uint64_t result;
+  std::uint64_t observedFpsr;
+  asm volatile("mrs %0, fpsr" : "=r"(savedFpsr));
+  if (width == 64U) {
+    asm volatile("msr fpsr, xzr\n\tfmov d0, %3\n\tfneg d0, d0\n\tfmov %0, d0\n\tmrs %1, fpsr\n\tmsr fpsr, %2"
+                 : "=&r"(result), "=&r"(observedFpsr)
+                 : "r"(savedFpsr), "r"(value) : "v0", "memory");
+  } else {
+    asm volatile("msr fpsr, xzr\n\tfmov s0, %w3\n\tfneg s0, s0\n\tfmov %w0, s0\n\tmrs %1, fpsr\n\tmsr fpsr, %2"
+                 : "=&r"(result), "=&r"(observedFpsr)
+                 : "r"(savedFpsr), "r"(value) : "v0", "memory");
+  }
+  return {width == 32U ? std::uint64_t{static_cast<std::uint32_t>(result)}
+                       : result,
+          static_cast<std::uint32_t>(observedFpsr)};
+}
+
 int main() {
   for (const std::uint32_t width : {32U, 64U}) {
     for (std::uint32_t variant = 0; variant < 3; ++variant) {
@@ -630,7 +719,9 @@ int main() {
              "multiply_accumulate_apply") != std::string_view::npos);
 
   using arm64metal::scalar_fp_expand_immediate;
+  using arm64metal::scalar_fp_compare;
   using arm64metal::scalar_fp_integer_to_float;
+  using arm64metal::scalar_fp_negate;
   using arm64metal::scalar_fp_round_positive;
   const auto ucvtf = decode_operation(0x9e630100U);  // ucvtf d0, x8
   assert(ucvtf.has_value() && ucvtf->opcode == Opcode::ScalarFloatingPoint &&
@@ -651,9 +742,38 @@ int main() {
   assert(frintp.has_value() && frintp->opcode == Opcode::ScalarFloatingPoint &&
          frintp->destination == 0 && frintp->source == 0 &&
          frintp->shift == 8 && frintp->width == 64);
+  const auto fnegD = decode_operation(0x1e6140a3U);  // fneg d3, d5
+  const auto fnegS = decode_operation(0x1e2140c7U);  // fneg s7, s6
+  assert(fnegD.has_value() && fnegD->opcode == Opcode::ScalarFloatingPoint &&
+         fnegD->destination == 3 && fnegD->source == 5 && fnegD->shift == 12 &&
+         fnegD->width == 64);
+  assert(fnegS.has_value() && fnegS->destination == 7 && fnegS->source == 6 &&
+         fnegS->width == 32);
+  const auto fcmpD = decode_operation(0x1e622020U);  // fcmp d1, d2
+  const auto fcmpeS = decode_operation(0x1e242070U);  // fcmpe s3, s4
+  const auto fcmpZero = decode_operation(0x1e6020a8U);  // fcmp d5, #0.0
+  const auto fcmpeZero = decode_operation(0x1e2020f8U);  // fcmpe s7, #0.0
+  assert(fcmpD.has_value() && fcmpD->opcode == Opcode::ScalarFloatingPoint &&
+         fcmpD->destination == 0 && fcmpD->source == 1 &&
+         fcmpD->immediate == 2 && fcmpD->shift == 16 && fcmpD->width == 64);
+  assert(fcmpeS.has_value() && fcmpeS->source == 3 && fcmpeS->immediate == 4 &&
+         fcmpeS->shift == 17 && fcmpeS->width == 32);
+  assert(fcmpZero.has_value() && fcmpZero->source == 5 &&
+         fcmpZero->immediate == 0 && fcmpZero->shift == 18 &&
+         fcmpZero->width == 64);
+  assert(fcmpeZero.has_value() && fcmpeZero->source == 7 &&
+         fcmpeZero->shift == 19 && fcmpeZero->width == 32);
   assert(make_operation_instruction(*ucvtf, {0x1000}, LoweringMode::Process,
                                     std::uint64_t{1} << 48)
              .code[0].find("scalar_fp_integer_to_float(") != std::string::npos);
+  assert(make_operation_instruction(*fnegD, {0x1000}, LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code[0].find("scalar_fp_negate(") != std::string::npos);
+  const auto loweredFcmp = make_operation_instruction(
+      *fcmpeS, {0x1000}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(loweredFcmp.code[0].find("scalar_fp_compare(") != std::string::npos &&
+         loweredFcmp.code[0].find("x[32] = (x[32] & ~0xful)") !=
+             std::string::npos);
   assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0).value ==
          0x4340000000000000ULL);
   assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0)
@@ -686,8 +806,53 @@ int main() {
   assert(scalar_fp_round_positive(0x0000000000000001ULL, 64, 1U << 24U).value == 0);
   assert(scalar_fp_round_positive(0x0000000000000001ULL, 64, 1U << 24U)
              .fpsrFlags == 128U);
+  const auto checkCompare = [](std::uint64_t left, std::uint64_t right,
+                               std::uint32_t width, bool signalAllNans,
+                               bool compareZero, std::uint32_t fpcr) {
+    const auto native = native_scalar_fp_compare(
+        left, right, width, signalAllNans, compareZero, fpcr);
+    const auto typed = scalar_fp_compare(
+        left, compareZero ? 0U : right, width,
+        static_cast<std::uint32_t>(signalAllNans), fpcr);
+    assert(typed.value == native.flags);
+    assert(typed.fpsrFlags == native.fpsr);
+  };
+  checkCompare(0x3ff0000000000000ULL, 0x4000000000000000ULL,
+               64U, false, false, 0U);
+  checkCompare(0x4000000000000000ULL, 0x3ff0000000000000ULL,
+               64U, false, false, 0U);
+  checkCompare(0x8000000000000000ULL, 0U, 64U, false, false, 0U);
+  checkCompare(0x7ff0000000001234ULL, 0x3ff0000000000000ULL,
+               64U, false, false, 0U);
+  checkCompare(0x7ff8000000001234ULL, 0x3ff0000000000000ULL,
+               64U, false, false, 0U);
+  checkCompare(0x7ff8000000001234ULL, 0x3ff0000000000000ULL,
+               64U, true, false, 0U);
+  checkCompare(0x7ff8000000001234ULL, 0U, 64U, true, true, 1U << 25U);
+  checkCompare(1U, 0U, 64U, false, true, 0U);
+  checkCompare(1U, 0U, 64U, false, true, 1U << 24U);
+  checkCompare(0xbf800000U, 0x3f800000U, 32U, false, false, 0U);
+  checkCompare(0x7f800123U, 0x3f800000U, 32U, true, false, 0U);
+  checkCompare(0x7fc00123U, 0U, 32U, true, true, 0U);
+  for (const std::uint64_t bits : {
+           0x7ff0000000001234ULL, 0x7ff8000000001234ULL,
+           0x8000000000000000ULL, 0x3f800000ULL}) {
+    const auto native = native_scalar_fp_negate(bits, 64U);
+    const auto typed = scalar_fp_negate(bits, 64U);
+    assert(typed.value == native.first && typed.fpsrFlags == native.second);
+  }
+  for (const std::uint64_t bits : {0x7f800123U, 0x80000000U, 0x3f800000U}) {
+    const auto native = native_scalar_fp_negate(bits, 32U);
+    const auto typed = scalar_fp_negate(bits, 32U);
+    assert(typed.value == native.first && typed.fpsrFlags == native.second);
+  }
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "scalar_fp_round_positive") != std::string_view::npos);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "scalar_fp_compare") != std::string_view::npos);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "\\ninline ScalarFPResult scalar_fp_compare") ==
+         std::string_view::npos);
 
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};

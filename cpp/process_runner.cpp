@@ -592,15 +592,23 @@ ProcessKernelPlan plan_process_kernel(
                  bitfieldEnd < operation.width && bitfieldVariant <= 2U &&
                  (operation.shift & ~0xffU) == 0);
             const auto scalarFPKind = operation.shift >> 2U;
+            const auto scalarFPMaxImmediate = scalarFPKind == 1U ? 255U :
+                                              scalarFPKind == 4U ? 31U : 0U;
             const bool validScalarFP =
                 !scalarFPOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
-                 operation.immediate <= 255 &&
+                 operation.immediate <= scalarFPMaxImmediate &&
                  (operation.width == 32 || operation.width == 64) &&
                  (scalarFPKind == 0U ? operation.shift <= 3U :
                   scalarFPKind == 1U ? operation.shift == 4U :
-                  scalarFPKind == 2U ? operation.shift == 8U : false) &&
-                 (scalarFPKind == 1U || operation.immediate == 0));
+                  scalarFPKind == 2U ? operation.shift == 8U :
+                  scalarFPKind == 3U ? operation.shift == 12U :
+                  scalarFPKind == 4U ?
+                      (operation.shift >= 16U && operation.shift <= 19U) : false) &&
+                 ((scalarFPKind == 1U || scalarFPKind == 4U) ||
+                  operation.immediate == 0U) &&
+                 (scalarFPKind != 4U || (operation.shift & 2U) == 0U ||
+                  operation.immediate == 0U));
             const bool validIntegerBitOperation =
                 !integerBitOperationOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&

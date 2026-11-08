@@ -117,6 +117,12 @@ enum class Opcode : std::uint32_t {
 // UDIV/SDIV use destination=Rd, source=Rn, immediate=Rm, shift=0 for UDIV
 // or 1 for SDIV, and width=32 or 64. Register 31 reads as zero and discards
 // writes.
+// Scalar FP uses destination=Fd, source=Rn/Fn, immediate=FMOV imm8 or FCMP Rm,
+// shift=(kind << 2) | detail, and width=32 or 64 for the FP format. Kinds are
+// integer conversion, FMOV immediate, FRINTP, FNEG, and FCMP/FCMPE. Kind 0
+// details encode integer source width and signedness; kind 4 detail bit 0 marks
+// FCMPE and bit 1 compares against +0. Scalar FP registers use their low 64-bit
+// lane; the upper lane is cleared. Integer source register 31 is ZR.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

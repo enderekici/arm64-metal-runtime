@@ -406,6 +406,23 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5),
                      field(bits, 5, 5), 0, 8U, floatWidth};
   }
+  if ((bits & 0xff3ffc00U) == 0x1e214000U) {
+    const auto format = field(bits, 22, 2);
+    if (format > 1U) return std::nullopt;
+    return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5),
+                     field(bits, 5, 5), 0, 12U,
+                     format == 1U ? 64U : 32U};
+  }
+  if ((bits & 0xff20fc00U) == 0x1e202000U && (bits & 7U) == 0U) {
+    const auto format = field(bits, 22, 2);
+    if (format > 1U) return std::nullopt;
+    const bool compareZero = field(bits, 3, 1) != 0U;
+    const auto signalAllNans = field(bits, 4, 1);
+    return Operation{Opcode::ScalarFloatingPoint, 0U, field(bits, 5, 5),
+                     compareZero ? 0U : field(bits, 16, 5),
+                     16U | signalAllNans | (compareZero ? 2U : 0U),
+                     format == 1U ? 64U : 32U};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -738,16 +755,21 @@ Instruction make_operation_instruction(Operation operation,
     }
   } else if (operation.opcode == Opcode::ScalarFloatingPoint) {
     const auto kind = operation.shift >> 2U;
+    const auto detail = operation.shift & 3U;
+    const auto maxImmediate = kind == 1U ? 255U : kind == 4U ? 31U : 0U;
     const auto scalarRegister = [](std::uint32_t index) {
       return std::to_string(806U + 2U * index);
     };
     if (operation.destination > 31 || operation.source > 31 ||
-        operation.immediate > 255 ||
+        operation.immediate > maxImmediate ||
         (operation.width != 32 && operation.width != 64) ||
         (kind == 0U && operation.shift > 3U) ||
         (kind == 1U && operation.shift != 4U) ||
-        (kind == 2U && operation.shift != 8U) || kind > 2U ||
-        (kind != 1U && operation.immediate != 0)) {
+        (kind == 2U && operation.shift != 8U) ||
+        (kind == 3U && operation.shift != 12U) ||
+        (kind == 4U && operation.shift < 16U) || kind > 4U ||
+        ((kind != 1U && kind != 4U) && operation.immediate != 0U) ||
+        (kind == 4U && (detail & 2U) != 0U && operation.immediate != 0U)) {
       throw std::invalid_argument("Typed scalar FP operands are invalid");
     }
     const auto destination = scalarRegister(operation.destination);
@@ -770,7 +792,7 @@ Instruction make_operation_instruction(Operation operation,
                      std::to_string(operation.width) + "u); x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; }");
-    } else {
+    } else if (kind == 2U) {
       result = "scalar_fp_round_positive(x[" +
           scalarRegister(operation.source) + "], " +
           std::to_string(operation.width) + "u, uint(x[870]))";
@@ -778,6 +800,23 @@ Instruction make_operation_instruction(Operation operation,
                      "x[" + destination + "] = fp_result.value; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+    } else if (kind == 3U) {
+      code.push_back("{ const ScalarFPResult fp_result = scalar_fp_negate(x[" +
+                     scalarRegister(operation.source) + "], " +
+                     std::to_string(operation.width) + "u); x[" + destination +
+                     "] = fp_result.value; x[" +
+                     std::to_string(807U + 2U * operation.destination) +
+                     "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+    } else {
+      const auto right = (detail & 2U) != 0U
+          ? std::string("0ul")
+          : "x[" + scalarRegister(operation.immediate) + "]";
+      code.push_back("{ const ScalarFPResult fp_result = scalar_fp_compare(x[" +
+                     scalarRegister(operation.source) + "], " + right + ", " +
+                     std::to_string(operation.width) + "u, " +
+                     std::to_string(detail & 1U) + "u, uint(x[870])); " +
+                     "x[32] = (x[32] & ~0xful) | fp_result.value; " +
+                     "x[871] |= fp_result.fpsrFlags; }");
     }
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {

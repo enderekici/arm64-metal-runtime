@@ -386,6 +386,59 @@ inline ulong integer_divide_apply(uint isSigned, ulong lhs, ulong rhs,
     const ulong quotient = leftMagnitude / rightMagnitude;
     return ((leftNegative != rightNegative) ? 0ul - quotient : quotient) & valueMask;
 }
+inline ScalarFPResult scalar_fp_negate(ulong value, uint floatWidth) {
+    const ulong signMask = floatWidth == 64u
+        ? 0x8000000000000000ul : 0x80000000ul;
+    const ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful;
+    return ScalarFPResult{(value ^ signMask) & valueMask, 0u};
+}
+inline ScalarFPResult scalar_fp_compare(
+    ulong left, ulong right, uint floatWidth, uint signalAllNans, uint fpcr) {
+    const uint fraction = floatWidth == 64u ? 52u : 23u;
+    const uint exponentBits = floatWidth == 64u ? 11u : 8u;
+    const uint signPosition = fraction + exponentBits;
+    const ulong signMask = 1ul << signPosition;
+    const ulong fractionMask = (1ul << fraction) - 1ul;
+    const ulong exponentLimit = (1ul << exponentBits) - 1ul;
+    const ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful;
+    left &= valueMask;
+    right &= valueMask;
+    uint fpsrFlags = 0u;
+    const bool leftSubnormal = ((left >> fraction) & exponentLimit) == 0ul &&
+                               (left & fractionMask) != 0ul;
+    const bool rightSubnormal = ((right >> fraction) & exponentLimit) == 0ul &&
+                                (right & fractionMask) != 0ul;
+    if ((fpcr & (1u << 24u)) != 0u) {
+        if (leftSubnormal) { left &= signMask; fpsrFlags |= 128u; }
+        if (rightSubnormal) { right &= signMask; fpsrFlags |= 128u; }
+    }
+    const ulong leftExponent = (left >> fraction) & exponentLimit;
+    const ulong rightExponent = (right >> fraction) & exponentLimit;
+    const ulong leftFraction = left & fractionMask;
+    const ulong rightFraction = right & fractionMask;
+    const bool leftNan = leftExponent == exponentLimit && leftFraction != 0ul;
+    const bool rightNan = rightExponent == exponentLimit && rightFraction != 0ul;
+    if (leftNan || rightNan) {
+        const ulong quietBit = 1ul << (fraction - 1u);
+        const bool signaling =
+            (leftNan && (leftFraction & quietBit) == 0ul) ||
+            (rightNan && (rightFraction & quietBit) == 0ul);
+        if (signaling || signalAllNans != 0u) fpsrFlags |= 1u;
+        return ScalarFPResult{12u, fpsrFlags}; // Internal Z,N,V,C = 0,0,1,1.
+    }
+    const ulong leftMagnitude = left & ~signMask;
+    const ulong rightMagnitude = right & ~signMask;
+    if (leftMagnitude == 0ul && rightMagnitude == 0ul)
+        return ScalarFPResult{9u, fpsrFlags}; // Equal: Z=1, C=1.
+    const bool leftNegative = (left & signMask) != 0ul;
+    const bool rightNegative = (right & signMask) != 0ul;
+    const bool less = leftNegative != rightNegative
+        ? leftNegative
+        : (leftNegative ? leftMagnitude > rightMagnitude
+                        : leftMagnitude < rightMagnitude);
+    const bool equal = left == right;
+    return ScalarFPResult{equal ? 9u : (less ? 2u : 8u), fpsrFlags};
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -696,6 +749,59 @@ inline std::uint64_t integer_divide_apply(std::uint32_t isSigned,
   const auto quotient = leftMagnitude / rightMagnitude;
   return ((leftNegative != rightNegative) ? 0U - quotient : quotient) & valueMask;
 }
+inline constexpr ScalarFPResult scalar_fp_negate(
+    std::uint64_t value, std::uint32_t floatWidth) {
+  const auto signMask = floatWidth == 64U ? 0x8000000000000000ULL : 0x80000000ULL;
+  const auto valueMask = floatWidth == 64U ? ~std::uint64_t{0} : std::uint64_t{0xffffffffU};
+  return {(value ^ signMask) & valueMask, 0U};
+}
+inline constexpr ScalarFPResult scalar_fp_compare(
+    std::uint64_t left, std::uint64_t right, std::uint32_t floatWidth,
+    std::uint32_t signalAllNans, std::uint32_t fpcr) {
+  const std::uint32_t fraction = floatWidth == 64U ? 52U : 23U;
+  const std::uint32_t exponentBits = floatWidth == 64U ? 11U : 8U;
+  const std::uint32_t signPosition = fraction + exponentBits;
+  const auto signMask = std::uint64_t{1} << signPosition;
+  const auto fractionMask = (std::uint64_t{1} << fraction) - 1U;
+  const auto exponentLimit = (std::uint64_t{1} << exponentBits) - 1U;
+  const auto valueMask = floatWidth == 64U ? ~std::uint64_t{0} : std::uint64_t{0xffffffffU};
+  left &= valueMask;
+  right &= valueMask;
+  std::uint32_t fpsrFlags = 0U;
+  const bool leftSubnormal = ((left >> fraction) & exponentLimit) == 0U &&
+                             (left & fractionMask) != 0U;
+  const bool rightSubnormal = ((right >> fraction) & exponentLimit) == 0U &&
+                              (right & fractionMask) != 0U;
+  if ((fpcr & (1U << 24U)) != 0U) {
+    if (leftSubnormal) { left &= signMask; fpsrFlags |= 128U; }
+    if (rightSubnormal) { right &= signMask; fpsrFlags |= 128U; }
+  }
+  const auto leftExponent = (left >> fraction) & exponentLimit;
+  const auto rightExponent = (right >> fraction) & exponentLimit;
+  const auto leftFraction = left & fractionMask;
+  const auto rightFraction = right & fractionMask;
+  const bool leftNan = leftExponent == exponentLimit && leftFraction != 0U;
+  const bool rightNan = rightExponent == exponentLimit && rightFraction != 0U;
+  if (leftNan || rightNan) {
+    const auto quietBit = std::uint64_t{1} << (fraction - 1U);
+    const bool signaling =
+        (leftNan && (leftFraction & quietBit) == 0U) ||
+        (rightNan && (rightFraction & quietBit) == 0U);
+    if (signaling || signalAllNans != 0U) fpsrFlags |= 1U;
+    return {12U, fpsrFlags};
+  }
+  const auto leftMagnitude = left & ~signMask;
+  const auto rightMagnitude = right & ~signMask;
+  if (leftMagnitude == 0U && rightMagnitude == 0U) return {9U, fpsrFlags};
+  const bool leftNegative = (left & signMask) != 0U;
+  const bool rightNegative = (right & signMask) != 0U;
+  const bool less = leftNegative != rightNegative
+      ? leftNegative
+      : (leftNegative ? leftMagnitude > rightMagnitude
+                      : leftMagnitude < rightMagnitude);
+  const bool equal = left == right;
+  return {equal ? 9U : (less ? 2U : 8U), fpsrFlags};
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -931,6 +1037,41 @@ inline constexpr char typed_integer_msl_source[] =
     "ulong rightMagnitude = rightNegative ? (0ul - right) & valueMask : right; "
     "ulong quotient = leftMagnitude / rightMagnitude; "
     "return ((leftNegative != rightNegative) ? 0ul - quotient : quotient) & valueMask; }\n"
+    "inline ScalarFPResult scalar_fp_negate(ulong value, uint floatWidth) { "
+    "ulong signMask = floatWidth == 64u ? 0x8000000000000000ul : 0x80000000ul; "
+    "ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful; "
+    "return ScalarFPResult{(value ^ signMask) & valueMask, 0u}; }\n"
+    "inline ScalarFPResult scalar_fp_compare(ulong left, ulong right, "
+    "uint floatWidth, uint signalAllNans, uint fpcr) { "
+    "uint fraction = floatWidth == 64u ? 52u : 23u; "
+    "uint exponentBits = floatWidth == 64u ? 11u : 8u; "
+    "uint signPosition = fraction + exponentBits; ulong signMask = 1ul << signPosition; "
+    "ulong fractionMask = (1ul << fraction) - 1ul; "
+    "ulong exponentLimit = (1ul << exponentBits) - 1ul; "
+    "ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful; "
+    "left &= valueMask; right &= valueMask; uint flags = 0u; "
+    "bool leftSubnormal = ((left >> fraction) & exponentLimit) == 0ul && "
+    "(left & fractionMask) != 0ul; bool rightSubnormal = "
+    "((right >> fraction) & exponentLimit) == 0ul && (right & fractionMask) != 0ul; "
+    "if ((fpcr & (1u << 24u)) != 0u) { if (leftSubnormal) { left &= signMask; flags |= 128u; } "
+    "if (rightSubnormal) { right &= signMask; flags |= 128u; } } "
+    "ulong leftExponent = (left >> fraction) & exponentLimit; "
+    "ulong rightExponent = (right >> fraction) & exponentLimit; "
+    "ulong leftFraction = left & fractionMask; ulong rightFraction = right & fractionMask; "
+    "bool leftNan = leftExponent == exponentLimit && leftFraction != 0ul; "
+    "bool rightNan = rightExponent == exponentLimit && rightFraction != 0ul; "
+    "if (leftNan || rightNan) { ulong quietBit = 1ul << (fraction - 1u); "
+    "bool signaling = (leftNan && (leftFraction & quietBit) == 0ul) || "
+    "(rightNan && (rightFraction & quietBit) == 0ul); "
+    "if (signaling || signalAllNans != 0u) flags |= 1u; "
+    "return ScalarFPResult{12u, flags}; } "
+    "ulong leftMagnitude = left & ~signMask; ulong rightMagnitude = right & ~signMask; "
+    "if (leftMagnitude == 0ul && rightMagnitude == 0ul) return ScalarFPResult{9u, flags}; "
+    "bool leftNegative = (left & signMask) != 0ul; "
+    "bool rightNegative = (right & signMask) != 0ul; "
+    "bool less = leftNegative != rightNegative ? leftNegative : "
+    "(leftNegative ? leftMagnitude > rightMagnitude : leftMagnitude < rightMagnitude); "
+    "bool equal = left == right; return ScalarFPResult{equal ? 9u : (less ? 2u : 8u), flags}; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

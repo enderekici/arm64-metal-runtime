@@ -281,12 +281,18 @@ Result Interpreter::dispatch(const Backend& backend,
         } else if (opcode == translate_core::Opcode::ScalarFloatingPoint) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto kind = operation[4] >> 2U;
-            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 255 ||
+            const auto maxImmediate = kind == 1U ? 255U : kind == 4U ? 31U : 0U;
+            if (operation[1] > 31 || operation[2] > 31 ||
+                operation[3] > maxImmediate ||
                 (operation[5] != 32 && operation[5] != 64) ||
                 (kind == 0U ? operation[4] > 3U :
                  kind == 1U ? operation[4] != 4U :
-                 kind == 2U ? operation[4] != 8U : true) ||
-                (kind != 1U && operation[3] != 0U) ||
+                 kind == 2U ? operation[4] != 8U :
+                 kind == 3U ? operation[4] != 12U :
+                 kind == 4U ?
+                     (operation[4] < 16U || operation[4] > 19U) : true) ||
+                ((kind != 1U && kind != 4U) && operation[3] != 0U) ||
+                (kind == 4U && (operation[4] & 2U) != 0U && operation[3] != 0U) ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
                 throw std::invalid_argument(

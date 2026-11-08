@@ -408,12 +408,17 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     const uint packed = instruction.operation[4];
                     const uint width = instruction.operation[5];
                     const uint kind = packed >> 2u;
-                    if (rd > 31u || rn > 31u || immediate > 255u ||
+                    const uint detail = packed & 3u;
+                    const uint maxImmediate = kind == 1u ? 255u : kind == 4u ? 31u : 0u;
+                    if (rd > 31u || rn > 31u || immediate > maxImmediate ||
                         (width != 32u && width != 64u) ||
                         (kind == 0u ? packed > 3u :
                          kind == 1u ? packed != 4u :
-                         kind == 2u ? packed != 8u : true) ||
-                        (kind != 1u && immediate != 0u)) {
+                         kind == 2u ? packed != 8u :
+                         kind == 3u ? packed != 12u :
+                         kind == 4u ? (packed < 16u || packed > 19u) : true) ||
+                        ((kind != 1u && kind != 4u) && immediate != 0u) ||
+                        (kind == 4u && (detail & 2u) != 0u && immediate != 0u)) {
                         state[33] = pc;
                         state[34] = 7;
                         return;
@@ -428,12 +433,24 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     } else if (kind == 1u) {
                         result = ScalarFPResult{
                             scalar_fp_expand_immediate(immediate, width), 0u};
-                    } else {
+                    } else if (kind == 2u) {
                         result = scalar_fp_round_positive(
                             state[806u + 2u * rn], width, uint(state[870]));
+                    } else if (kind == 3u) {
+                        result = scalar_fp_negate(state[806u + 2u * rn], width);
+                    } else {
+                        const ulong right = (detail & 2u) != 0u
+                            ? 0ul : state[806u + 2u * immediate];
+                        result = scalar_fp_compare(
+                            state[806u + 2u * rn], right, width, detail & 1u,
+                            uint(state[870]));
                     }
-                    state[806u + 2u * rd] = result.value;
-                    state[807u + 2u * rd] = 0ul;
+                    if (kind == 4u) {
+                        state[32] = (state[32] & ~0xful) | result.value;
+                    } else {
+                        state[806u + 2u * rd] = result.value;
+                        state[807u + 2u * rd] = 0ul;
+                    }
                     state[871] |= result.fpsrFlags;
                 }
                 if (blockEnd) {
