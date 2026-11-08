@@ -429,6 +429,21 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return hi_left * hi_right + (carry >> 32) + (middle >> 32);
     }
     @GUEST_MEMORY_MSL_SOURCE@
+    void guest_move(device uchar *dst, device const uchar *src, ulong count) {
+        if (dst > src && ulong(dst - src) < count) {
+            for (ulong i = count; i > 0; --i) dst[i - 1] = src[i - 1];
+        } else {
+            for (ulong i = 0; i < count; ++i) dst[i] = src[i];
+        }
+    }
+    void guest_fill(device uchar *dst, uchar value, ulong count) {
+        for (ulong i = 0; i < count; ++i) dst[i] = value;
+    }
+    void guest_pattern(device uchar *dst, device const uchar *src, ulong count, uint width) {
+        uchar pattern[16];
+        for (uint i = 0; i < width; ++i) pattern[i] = src[i];
+        for (ulong i = 0; i < count; ++i) dst[i] = pattern[i & (width - 1)];
+    }
     ulong encode_guest_pointer(ulong address, ulong key, ulong index) {
         if (key == 2 && address <= @GUEST_DATA_ADDRESS_MASK@ul) {
             ulong code = index % @GUEST_DATA_TOKEN_BUCKETS@ul + 1;
