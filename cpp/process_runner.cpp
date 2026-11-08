@@ -29,10 +29,12 @@
 #include <map>
 #include <pthread.h>
 #include <runetype.h>
+#include <libproc.h>
 #include <set>
 #include <signal.h>
 #include <sstream>
 #include <stdexcept>
+#include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <mach/mach.h>
@@ -5985,6 +5987,100 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (status == 13) {
             const auto syscall = registers[16];
             progressTrace.event("raw-syscall", registers[33], syscall);
+            if (syscall == 336) {
+                constexpr std::uint64_t carryMask = 8U;
+                constexpr std::uint32_t procInfoCallPidInfo = 2;
+                constexpr std::uint32_t procPidUniqIdentifierInfo = 17;
+                struct ProcUniqueIdentifierInfo {
+                    std::uint8_t uuid[16];
+                    std::uint64_t uniqueId;
+                    std::uint64_t parentUniqueId;
+                    std::uint64_t reserved[3];
+                };
+                static_assert(sizeof(ProcUniqueIdentifierInfo) == 56);
+                const auto fail = [registers](int error) {
+                    registers[0] = static_cast<std::uint32_t>(error);
+                    registers[32] |= 8U;
+                    registers[34] = 0;
+                };
+                const auto call = static_cast<std::uint32_t>(registers[0]);
+                const auto requestedPid = static_cast<std::int32_t>(registers[1]);
+                const auto flavor = static_cast<std::uint32_t>(registers[2]);
+                const auto argument = registers[3];
+                const auto outputAddress = registers[4];
+                const auto outputSize = static_cast<std::int32_t>(registers[5]);
+                const auto ownPid = static_cast<std::int32_t>(::getpid());
+                if (call != procInfoCallPidInfo) {
+                    fail(EINVAL);
+                    continue;
+                }
+                // The guest currently shares the runner PID. Never forward a
+                // guest-selected foreign PID to the host proc-info API.
+                if (requestedPid != ownPid) {
+                    fail(ESRCH);
+                    continue;
+                }
+                const std::size_t requiredSize = flavor == PROC_PIDT_SHORTBSDINFO
+                    ? sizeof(proc_bsdshortinfo)
+                    : flavor == procPidUniqIdentifierInfo
+                        ? sizeof(ProcUniqueIdentifierInfo) : 0;
+                if (requiredSize == 0) {
+                    fail(EINVAL);
+                    continue;
+                }
+                if (outputSize < 0 || static_cast<std::size_t>(outputSize) < requiredSize) {
+                    fail(ENOMEM);
+                    continue;
+                }
+                if (outputAddress == 0) {
+                    fail(EFAULT);
+                    continue;
+                }
+                std::uint8_t* guestOutput = nullptr;
+                try {
+                    guestOutput = guestMemory.buffer(outputAddress, requiredSize, true);
+                } catch (const std::out_of_range&) {
+                    fail(EFAULT);
+                    continue;
+                }
+                if (flavor == PROC_PIDT_SHORTBSDINFO) {
+                    proc_bsdshortinfo info{};
+                    errno = 0;
+                    const auto result = ::proc_pidinfo(ownPid, static_cast<int>(flavor),
+                        argument, &info, sizeof(info));
+                    if (result != static_cast<int>(sizeof(info))) {
+                        fail(errno == 0 ? EIO : errno);
+                        continue;
+                    }
+                    info.pbsi_pid = static_cast<std::uint32_t>(requestedPid);
+                    std::memset(info.pbsi_comm, 0, sizeof(info.pbsi_comm));
+                    const auto executableName =
+                        std::filesystem::path(bootstrap.resolvedExecutablePath).filename().string();
+                    const auto nameSize = std::min(executableName.size(),
+                        sizeof(info.pbsi_comm) - 1);
+                    std::memcpy(info.pbsi_comm, executableName.data(), nameSize);
+                    std::memcpy(guestOutput, &info, sizeof(info));
+                } else {
+                    if (image.main_uuid.size() != sizeof(ProcUniqueIdentifierInfo::uuid)) {
+                        fail(EIO);
+                        continue;
+                    }
+                    ProcUniqueIdentifierInfo info{};
+                    errno = 0;
+                    const auto result = ::proc_pidinfo(ownPid, static_cast<int>(flavor),
+                        argument, &info, sizeof(info));
+                    if (result != static_cast<int>(sizeof(info))) {
+                        fail(errno == 0 ? EIO : errno);
+                        continue;
+                    }
+                    std::copy(image.main_uuid.begin(), image.main_uuid.end(), info.uuid);
+                    std::memcpy(guestOutput, &info, sizeof(info));
+                }
+                registers[0] = requiredSize;
+                registers[32] &= ~carryMask;
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 202) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint64_t minimumGuestAddress =
