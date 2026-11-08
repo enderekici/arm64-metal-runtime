@@ -37,45 +37,40 @@ Capture stdout, stderr, and exit status separately for native and Metal. Freeze 
 
 ## Current wave
 
-Release source 9252d86 is integrated at aa4fa1c. It passed both release gates
-on one stable runtime. The runtime SHA-256 before and after was
-2f800e32089c805835cc60c62df21c802b49e29bb6e0211eea1130b1c99d8567.
-The packaged metallib SHA-256 was
+The VM multi-allocation release candidate at source 224a7c9 passed both gates.
+Its code tree matches the VM changes at 8647989; the tree difference is limited
+to HANDOFF.md and COMPATIBILITY.md. The runtime SHA-256 before and after the
+gate was
+410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047.
+The metallib SHA-256 was
 7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9.
-The gates recorded 42 launch comparisons and 2,048 function runs. The archive
-SHA-256 is
-17d9c280790308f1aee2cf1389cf71858106425a0fedcf7b2c3043dcabb70be9.
-Receipts are under /tmp/move-wide-release-gate.4pSw6y.
+Both gates recorded 42 launch comparisons and 2,048 function runs. Receipts
+are under /tmp/metal-vm-multi-gate.HuuxCB.
 
-The standalone interpreter used 10 dispatches, one precompiled pipeline, and
-zero runtime Metal source compilations. A typed MOVN/MOVK entry fixture matches
-native, translator, and interpreter, returns exit 42, and produces packed value
-3. The interpreter remains opt-in and has only its qualified typed coverage.
-The extracted archive includes the adjacent metallib, and its opt-in launcher
-ran a normal Mach-O fixture to exit 42. A missing packaged .metallib correctly
-fails even when a source override is supplied. This protects the AOT package
-contract; it is not general application compatibility.
+The multi-allocation VM fixture's native and GPU stdout, stderr, and status
+match exactly. The extracted archive smoke used the adjacent AOT library and
+returned exit status 42. Its trace reports interpreter-block-ready detail=3.
+Archive SHA-256:
+596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015.
+The interpreter remains opt-in.
 
-The TPRO investigation now matches direct import 134 between native and guest
-at 6d5ae31. The full libz path has reached mach_msg2 for host_info, trap ID
-200, flavor 5, count 8. Its focused GPU control is in flight. Native
-verification is also tracking raw XNU trap paths host-self (-29), task-self
-(-28), and pid-for-task (-46). Confirm each native ABI/result before relying
-on those mappings. Keep the full libz root/provider cases unresolved until the
-native differential and unchanged app replay pass. Preserve the earlier
-confirmed late TPRO behavior: after libSystem initialization, native rejects
-and terminates with SIGABRT. Do not call the callback late or relax the guard.
+The focused host_info candidate at cad3d149 matches native for exact and
+reduced flags. Full libz startup still stops at raw Darwin trap -18; that
+candidate is in progress. The earlier observed request was mach_msg2 host_info
+(ID 200, flavor 5, count 8). Do not claim full libz compatibility from the
+focused host_info match.
 
-VM deallocation across allocations at deb0734 matches the focused native/GPU
-fixture exactly. The combined multi-allocation fixture at 224a7c9 is pending
-the full gate. CFG interpreter work at 50740ab is isolated and not release
-qualified. Keep its branch/fault behavior separate from the passing MOVN/MOVK
-typed slice until its own differential and both gates pass.
+VM deallocation across allocations matches the native/GPU fixture. Keep the
+full gate evidence attached to the exact runtime hash above.
 
-The full goal remains broad compatibility for unchanged macOS applications,
-with guest instructions executing on GPU and CPU services confined to host
-boundaries. The interpreter stays opt-in while typed coverage grows. CLI,
-VM, packaging and interpreter passes are milestones, not broad compatibility.
+CFG candidate f1ddb46 passed earlier gates, then exposed a confirmed
+double-charge when an interpreter-typed operation misses and falls back to an
+untyped translated block. Hold that candidate until the counter behavior is
+fixed and the full gates rerun. A prior green result does not qualify the
+current CFG path.
+
+General unchanged-app compatibility remains open. These VM, package, and
+interpreter results cover only named fixtures and runtime artifacts.
 
 ## Evidence locations
 
@@ -85,25 +80,17 @@ The [loader probe sources](fixtures/handoff/README.md) are included in the repos
 
 ## Final checkpoint verification
 
-Release source 9252d86, integrated at aa4fa1c, passed both release gates on the
-same stable runtime. Runtime SHA-256 before and after:
-2f800e32089c805835cc60c62df21c802b49e29bb6e0211eea1130b1c99d8567.
-Packaged metallib SHA-256:
-7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9.
-The gates recorded 42 launch comparisons and 2,048 function runs. Archive
-SHA-256:
-17d9c280790308f1aee2cf1389cf71858106425a0fedcf7b2c3043dcabb70be9.
-Receipts: /tmp/move-wide-release-gate.4pSw6y.
+The VM multi-allocation release source 224a7c9 passed both gates with runtime
+SHA-256 410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047 and
+metallib SHA-256 7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9.
+The gates recorded 42 launch comparisons and 2,048 function runs. The
+multi-allocation fixture matched native stdout, stderr and status. The extracted
+archive smoke exited 42; its trace reports interpreter-block-ready detail=3.
+Archive digest:
+596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015.
+Receipts: /tmp/metal-vm-multi-gate.HuuxCB.
 
-The interpreter ran the MOVN/MOVK entry path across native, translator and
-GPU interpreter with matching exit 42 and packed value 3. It used 10
-dispatches, one pipeline, and zero runtime source compiles. The extracted
-archive opt-in path used its adjacent metallib and exited 42 on a normal
-Mach-O fixture. Missing packaged metallib is rejected even with a source
-override.
-
-TPRO direct import 134 parity is recorded at 6d5ae31. Full libz next observed
-mach_msg2 host_info (200, flavor 5, count 8); focused GPU test is pending.
-VM cross-allocation deallocation matches its focused fixture; the combined
-multi-allocation gate is pending. CFG interpreter branch handling remains
-isolated. Broad application compatibility remains open.
+The host_info focused candidate at cad3d149 matches native exact/reduced flags.
+Full libz startup stops at raw trap -18 and its candidate remains in progress.
+CFG candidate f1ddb46 is held for a confirmed typed-to-untyped miss double-charge.
+Neither result establishes broad application compatibility.
