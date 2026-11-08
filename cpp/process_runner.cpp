@@ -5109,6 +5109,89 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (status == 13) {
             const auto syscall = registers[16];
             progressTrace.event("raw-syscall", registers[33], syscall);
+            if (syscall == 202) {
+                constexpr std::uint64_t carryMask = 8U;
+                constexpr std::uint64_t minimumGuestAddress =
+                    ExecutableImage::minimum_image_address;
+                registers[32] |= carryMask;
+                const auto mibCount = static_cast<std::uint32_t>(registers[1]);
+                const auto mibAddress = registers[0];
+                bool mibReadable = false;
+                bool supportedMib = false;
+                if (mibAddress >= minimumGuestAddress && mibCount > 0 &&
+                    mibCount <= CTL_MAXNAME) {
+                    try {
+                        const auto* bytes = guestMemory.buffer(mibAddress,
+                            static_cast<std::size_t>(mibCount) * sizeof(int));
+                        std::array<int, CTL_MAXNAME> mib{};
+                        std::memcpy(mib.data(), bytes,
+                                    static_cast<std::size_t>(mibCount) * sizeof(int));
+                        mibReadable = true;
+                        supportedMib = mibCount == 2 && mib[0] == CTL_KERN &&
+                            (mib[1] == KERN_USRSTACK64 || mib[1] == KERN_USRSTACK32 ||
+                             mib[1] == KERN_OSRELEASE);
+                    } catch (const std::out_of_range&) {
+                        mibReadable = false;
+                    }
+                }
+                if (registers[4] != 0 || registers[5] != 0) {
+                    registers[0] = EPERM;
+                } else if (mibCount == 0 || mibCount > CTL_MAXNAME) {
+                    registers[0] = EINVAL;
+                } else if (!mibReadable) {
+                    registers[0] = EFAULT;
+                } else if (!supportedMib) {
+                    registers[0] = EINVAL;
+                } else if ((registers[3] != 0 && registers[3] < minimumGuestAddress) ||
+                           (registers[3] != 0 && registers[2] != 0 &&
+                            registers[2] < minimumGuestAddress)) {
+                    registers[0] = EFAULT;
+                } else {
+                    std::size_t outputCapacity = 0;
+                    bool validOutputLength = true;
+                    if (registers[3] != 0) {
+                        try {
+                            std::memcpy(&outputCapacity, guestMemory.buffer(registers[3],
+                                sizeof(outputCapacity)), sizeof(outputCapacity));
+                        } catch (const std::out_of_range&) {
+                            registers[0] = EFAULT;
+                            validOutputLength = false;
+                        }
+                        if (validOutputLength && outputCapacity > static_cast<std::size_t>(
+                                std::numeric_limits<std::int64_t>::max())) {
+                            registers[0] = EINVAL;
+                            validOutputLength = false;
+                        }
+                    }
+                    if (validOutputLength) {
+                        std::uint32_t savedErrno = 0;
+                        std::memcpy(&savedErrno, guestMemory.buffer(bootstrap.errnoSlot,
+                            sizeof(savedErrno)), sizeof(savedErrno));
+                        auto trapRegisters = std::vector<std::uint64_t>(registers,
+                                                                         registers + 36);
+                        try {
+                            (void)dispatch_guest_host_service(trapRegisters, guestMemory,
+                                bootstrap, hostServiceState, 50);
+                            if (static_cast<std::uint32_t>(trapRegisters[0]) ==
+                                std::numeric_limits<std::uint32_t>::max()) {
+                                std::uint32_t error = 0;
+                                std::memcpy(&error, guestMemory.buffer(bootstrap.errnoSlot,
+                                    sizeof(error)), sizeof(error));
+                                registers[0] = error == 0 ? EIO : error;
+                            } else {
+                                registers[0] = trapRegisters[0];
+                                registers[32] &= ~carryMask;
+                            }
+                        } catch (const std::out_of_range&) {
+                            registers[0] = EFAULT;
+                        }
+                        std::memcpy(guestMemory.buffer(bootstrap.errnoSlot,
+                            sizeof(savedErrno), true), &savedErrno, sizeof(savedErrno));
+                    }
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-14))) {
                 if (registers[0] != bootstrap.guestTaskPort) {
                     registers[0] = machSendInvalidDest;

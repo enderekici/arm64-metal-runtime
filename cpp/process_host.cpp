@@ -1793,37 +1793,88 @@ HostServiceResult dispatch_guest_host_service(
             if (registers[output_index + 2] != 0 || registers[output_index + 3] != 0) {
                 throw std::runtime_error("Guest sysctl writes are unsupported");
             }
-            std::size_t count = 0;
-            std::memcpy(&count, memory.buffer(registers[output_index + 1], sizeof(count)),
-                        sizeof(count));
-            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
-                throw std::runtime_error("Invalid guest sysctl length");
-            }
-            void* output = nullptr;
-            if (registers[output_index] != 0) {
-                output = memory.buffer(registers[output_index], count, true);
-            }
-            int result = -1;
+            const auto outputAddress = registers[output_index];
+            const auto lengthAddress = registers[output_index + 1];
+            std::string name;
+            std::vector<int> mib;
             if (named) {
-                const auto name = string_at(registers[0]);
-                result = ::sysctlbyname(name.c_str(), output, &count, nullptr, 0);
+                name = string_at(registers[0]);
             } else {
                 const auto mib_count = registers[1];
                 if (mib_count == 0 || mib_count > 64) {
                     throw std::runtime_error("Invalid guest sysctl MIB length");
                 }
-                const auto* mib_bytes = memory.buffer(registers[0], mib_count * sizeof(std::int32_t));
-                std::vector<int> mib(static_cast<std::size_t>(mib_count));
+                const auto* mib_bytes = memory.buffer(registers[0],
+                    mib_count * sizeof(std::int32_t));
+                mib.resize(static_cast<std::size_t>(mib_count));
                 for (std::size_t index = 0; index < mib.size(); ++index) {
                     std::int32_t value = 0;
                     std::memcpy(&value, mib_bytes + index * sizeof(value), sizeof(value));
                     mib[index] = value;
                 }
+            }
+            const bool stack64 = named ? name == "kern.usrstack64"
+                : mib.size() == 2 && mib[0] == CTL_KERN && mib[1] == KERN_USRSTACK64;
+            const bool stack32 = named ? name == "kern.usrstack"
+                : mib.size() == 2 && mib[0] == CTL_KERN && mib[1] == KERN_USRSTACK32;
+            const auto stackValueSize = stack64 ? sizeof(std::uint64_t)
+                : stack32 ? sizeof(std::uint32_t) : std::size_t{0};
+            if (lengthAddress == 0) {
+                int result = -1;
+                int error = 0;
+                if (outputAddress != 0) {
+                    error = ENOMEM;
+                } else if (stackValueSize != 0) {
+                    result = 0;
+                } else if (named) {
+                    result = ::sysctlbyname(name.c_str(), nullptr, nullptr, nullptr, 0);
+                    if (result != 0) error = errno;
+                } else {
+                    result = ::sysctl(mib.data(), static_cast<u_int>(mib.size()),
+                                      nullptr, nullptr, nullptr, 0);
+                    if (result != 0) error = errno;
+                }
+                if (result != 0) set_errno(error);
+                registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+                break;
+            }
+            std::size_t count = 0;
+            std::memcpy(&count, memory.buffer(lengthAddress, sizeof(count)), sizeof(count));
+            if (count > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("Invalid guest sysctl length");
+            }
+            void* output = nullptr;
+            if (outputAddress != 0) {
+                output = memory.buffer(outputAddress, count, true);
+            }
+            int result = -1;
+            int error = 0;
+            if (stackValueSize != 0) {
+                const auto stackTop = static_cast<std::uint64_t>(bootstrap.stack.end);
+                if (outputAddress == 0) {
+                    count = stackValueSize;
+                    result = 0;
+                } else if (count < stackValueSize) {
+                    error = ERANGE;
+                } else {
+                    if (stack64) {
+                        std::memcpy(output, &stackTop, sizeof(stackTop));
+                    } else {
+                        const auto stackTop32 = static_cast<std::uint32_t>(stackTop);
+                        std::memcpy(output, &stackTop32, sizeof(stackTop32));
+                    }
+                    count = stackValueSize;
+                    result = 0;
+                }
+            } else if (named) {
+                result = ::sysctlbyname(name.c_str(), output, &count, nullptr, 0);
+                if (result != 0) error = errno;
+            } else {
                 result = ::sysctl(mib.data(), static_cast<u_int>(mib.size()), output,
                                   &count, nullptr, 0);
+                if (result != 0) error = errno;
             }
-            const auto error = errno;
-            std::memcpy(memory.buffer(registers[output_index + 1], sizeof(count), true),
+            std::memcpy(memory.buffer(lengthAddress, sizeof(count), true),
                         &count, sizeof(count));
             if (result != 0) set_errno(error);
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));

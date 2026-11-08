@@ -54,6 +54,9 @@ xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typ
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
 xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
 xcrun clang -Wall -Wextra -Werror "$src/mach-host-info.c" -o "$out/mach-host-info"
+xcrun clang -Wall -Wextra -Werror "$src/raw-sysctl.c" -o "$out/raw-sysctl"
+xcrun clang -Wall -Wextra -Werror "$src/sysctl-usrstack.c" -o "$out/sysctl-usrstack"
+xcrun clang -Wall -Wextra -Werror "$src/pthread-stackaddr.c" -o "$out/pthread-stackaddr"
 xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
 xcrun clang -Wall -Wextra -Werror "$src/mach-vm-partial-deallocate.c" \
@@ -67,11 +70,17 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/dyld-interposition"
 "$out/mach-reply-port"
 "$out/mach-host-info"
+"$out/raw-sysctl"
+"$out/sysctl-usrstack"
 "$out/mach-self-pid"
 "$out/commpage-page-shift"
 "$out/mach-vm-partial-deallocate"
 "$out/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
 ```
+
+`pthread-stackaddr` is a separate native control for comparing
+`pthread_get_stackaddr_np` with `KERN_USRSTACK64`; it is not part of the guest
+sysctl parity run.
 
 For a Metal comparison, prefix each invocation with `env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 .build/cpp/arm64-metal launch`. Keep these runs separate from the unchanged application replays.
 
