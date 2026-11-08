@@ -66,6 +66,7 @@ APP_SOURCES := \
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
+INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
@@ -85,6 +86,10 @@ $(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interprete
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
 
+$(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp translate_core.cpp translate_core.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. ../fixtures/handoff/typed-operation.cpp translate_core.cpp -o "$@"
+
 $(INTERPRETER_MINIMAL_MAIN): ../fixtures/interpreter/minimal-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -99,23 +104,28 @@ $(INTERPRETER_AIR): gpu_interpreter.metal move_wide_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_METALLIB)
-	ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" "$(APP)" interpreter-probe "$(abspath $(INTERPRETER_METALLIB))" >"$(BUILD_DIR)/interpreter.gpu.out" 2>"$(BUILD_DIR)/interpreter.gpu.err"
-	"$(INTERPRETER_NATIVE)" >"$(BUILD_DIR)/interpreter.native.out"
-	cmp "$(BUILD_DIR)/interpreter.native.out" "$(BUILD_DIR)/interpreter.gpu.out"
-	grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=4' "$(BUILD_DIR)/interpreter.gpu.err"
-	@set +e; \
-		"$(INTERPRETER_MINIMAL_MAIN)" >"$(BUILD_DIR)/interpreter-process.native.out" 2>"$(BUILD_DIR)/interpreter-process.native.err"; native_rc=$$?; \
-		"$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$(BUILD_DIR)/interpreter-process.translated.out" 2>"$(BUILD_DIR)/interpreter-process.translated.err"; translated_rc=$$?; \
-		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$(BUILD_DIR)/interpreter-process.interpreter.out" 2>"$(BUILD_DIR)/interpreter-process.interpreter.err"; interpreter_rc=$$?; \
-		printf '%s\n' "$$native_rc" >"$(BUILD_DIR)/interpreter-process.native.rc"; \
-		printf '%s\n' "$$translated_rc" >"$(BUILD_DIR)/interpreter-process.translated.rc"; \
-		printf '%s\n' "$$interpreter_rc" >"$(BUILD_DIR)/interpreter-process.interpreter.rc"; \
+verify-interpreter: $(APP) $(INTERPRETER_NATIVE) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		mkdir -p "$(BUILD_DIR)"; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
+		"$(INTERPRETER_TYPED_NATIVE)"; \
+		ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" "$(APP)" interpreter-probe "$(abspath $(INTERPRETER_METALLIB))" >"$$run_dir/interpreter.gpu.out" 2>"$$run_dir/interpreter.gpu.err"; \
+		"$(INTERPRETER_NATIVE)" >"$$run_dir/interpreter.native.out"; \
+		cmp "$$run_dir/interpreter.native.out" "$$run_dir/interpreter.gpu.out"; \
+		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=4' "$$run_dir/interpreter.gpu.err"; \
+		set +e; \
+		"$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.native.out" 2>"$$run_dir/interpreter-process.native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.translated.out" 2>"$$run_dir/interpreter-process.translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.interpreter.out" 2>"$$run_dir/interpreter-process.interpreter.err"; interpreter_rc=$$?; \
+		printf '%s\n' "$$native_rc" >"$$run_dir/interpreter-process.native.rc"; \
+		printf '%s\n' "$$translated_rc" >"$$run_dir/interpreter-process.translated.rc"; \
+		printf '%s\n' "$$interpreter_rc" >"$$run_dir/interpreter-process.interpreter.rc"; \
 		set -e; \
 		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq "$$native_rc" && \
 		test "$$interpreter_rc" -eq "$$native_rc" && \
-		cmp "$(BUILD_DIR)/interpreter-process.native.out" "$(BUILD_DIR)/interpreter-process.translated.out" && \
-		cmp "$(BUILD_DIR)/interpreter-process.native.err" "$(BUILD_DIR)/interpreter-process.translated.err" && \
-		grep -q 'interpreter-pipeline-ready.*detail=1' "$(BUILD_DIR)/interpreter-process.interpreter.err" && \
-		grep -q 'interpreter-block-ready.*detail=2' "$(BUILD_DIR)/interpreter-process.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=2' "$(BUILD_DIR)/interpreter-process.interpreter.err"
+		cmp "$$run_dir/interpreter-process.native.out" "$$run_dir/interpreter-process.translated.out" && \
+		cmp "$$run_dir/interpreter-process.native.err" "$$run_dir/interpreter-process.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter-process.interpreter.err" && \
+		grep -q 'interpreter-block-ready.*detail=2' "$$run_dir/interpreter-process.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=2' "$$run_dir/interpreter-process.interpreter.err"; \
+		echo "verify-interpreter receipts: $$run_dir"
