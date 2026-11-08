@@ -16,10 +16,10 @@ using namespace arm64metal;
 int main() {
   assert(decoder_host_service_ids().at("_mach_vm_protect") == 196);
   assert(decoder_host_service_ids().at("_mach_vm_read_overwrite") == 197);
-  assert(decoder_host_service_ids().at("_mach_vm_region") == 198);
+  assert(decoder_host_service_ids().at("_mach_vm_region") == 199);
   assert(runner_host_service_ids().at("_mach_vm_protect") == 196);
   assert(runner_host_service_ids().at("_mach_vm_read_overwrite") == 197);
-  assert(runner_host_service_ids().at("_mach_vm_region") == 198);
+  assert(runner_host_service_ids().at("_mach_vm_region") == 199);
 
   std::vector<std::uint8_t> borrowedBytes(256, 0x31);
   std::vector<std::uint8_t> expandedBytes(512, 0x31);
@@ -90,7 +90,7 @@ int main() {
   registers[4] = 64;
   registers[5] = 56;
   registers[6] = 60;
-  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 198);
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 199);
   assert(registers[0] == 0);
   std::memcpy(&queryAddress, protectMemory.buffer(40, sizeof(queryAddress)),
               sizeof(queryAddress));
@@ -117,7 +117,7 @@ int main() {
   std::memcpy(protectMemory.buffer(60, sizeof(objectName), true), &objectName,
               sizeof(objectName));
   registers[0] = 78;
-  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 198);
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 199);
   assert(registers[0] == 0x10000003U);
   std::memcpy(&queryAddress, protectMemory.buffer(40, sizeof(queryAddress)),
               sizeof(queryAddress));

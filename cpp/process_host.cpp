@@ -2334,7 +2334,7 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 198: {  // mach_vm_region over logical guest map and reservation intervals
+        case 199: {  // mach_vm_region over logical guest map and reservation intervals
             constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
             constexpr std::uint32_t kernInvalidAddress = 1;
             constexpr std::uint32_t kernInvalidArgument = 4;
