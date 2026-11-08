@@ -60,18 +60,19 @@ remains unresolved. ARM64_METAL_TRACE samples compile/dispatch/host-service
 events, then emits periodic progress plus image-load, initializer, and raw
 syscall boundaries.
 
-Both libz-root and libz-provider reach the same
-__dyld_call_with_writable_tpro_memory path after reading dyld4::gAPIs.
-The exact VM gate artifact previously passed commpage reads and then faulted
-at address 0, normalized PC 0x180466370. A TPRO parser/callback candidate is
-isolated and unverified. Compare native callback and permission behavior,
-then exercise existing guest callback machinery. Do not infer or invent a
-dyld vtable layout.
+Both libz-root and libz-provider reach
+__dyld_call_with_writable_tpro_memory after reading dyld4::gAPIs. The latest
+trace reports guest 134, startup=0, prefix=0, target=0x44b0, LR=0x10089a95c
+in libsystem_platform. The callback token authenticates, but no callback runs.
+The TPRO parser/callback candidate remains isolated. The next work is to fix
+initialization ordering and deferred system roots, not relax the guard.
+Candidate commit 00541caf adds typed MOVZ/RET handling, with a fixed GPU
+interpreter regression test still in progress. Do not claim whole-app parity
+from this candidate.
 
-A corrected JIT transaction candidate is also isolated. The positive RW-to-RX
-call fixture matched native (first=42, second=73, wx=13/13, exit 0). Negative
-execute-after-RW, unmap and MAP_JIT cases remain open pending their own
-differentials.
+The JIT candidate at b545de0 passes its positive RW-to-RX call and
+revocation tests in isolation. Its full gate is running. This does not establish
+whole-app compatibility; retain the exact gate artifact and result separately.
 
 The project goal remains broad compatibility for unchanged macOS applications,
 with guest instructions translated for GPU execution and CPU work limited to
@@ -97,9 +98,13 @@ The gate completed 42 launch comparisons and 2,048 function runs. The archive
 contains the same launcher digest. Receipts are under
 /tmp/metal-vm-integrated.C6e4d6.
 
-The latest app trace showed plutil compiling kernels late in its bounded run
-before timing out. Both libz controls converge on the TPRO callback path and
-remain unresolved. TPRO and corrected JIT work are isolated candidates, not
-part of this verified artifact. See COMPATIBILITY.md for source ownership and
-the next native differential boundaries. General unchanged-app compatibility
+The latest plutil trace showed kernel compilation continuing late into its
+bounded run before timeout. Both libz controls reach the same TPRO callback
+path. The latest trace reports guest 134, startup=0, prefix=0, target=0x44b0,
+LR=0x10089a95c in libsystem_platform. The authenticated callback token does not
+lead to callback execution. Fix initialization ordering and deferred system
+roots before considering any guard change. Typed MOVZ/RET commit 00541caf and
+its fixed GPU interpreter test are WIP. JIT commit b545de0 passes positive
+RW-to-RX and revocation cases in isolation, with full gate running. Neither
+candidate proves whole-app behavior. General unchanged-app compatibility
 remains the project goal.
