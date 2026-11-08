@@ -620,6 +620,19 @@ std::vector<std::uint8_t> SharedCache::bytes(std::uint64_t address, std::uint64_
 std::int64_t SharedCache::guestAddress(std::uint64_t address) const { return impl_->guestAddress(address); }
 std::uint64_t SharedCache::originalAddress(std::int64_t address) const { return impl_->originalAddress(address); }
 
+std::optional<std::string> SharedCache::canonicalImagePath(const std::string& path) const {
+    const auto found = impl_->images.find(path);
+    if (found == impl_->images.end()) return std::nullopt;
+    const auto image = impl_->image(path);
+    if (!image.installName.empty()) {
+        const auto canonical = impl_->images.find(image.installName);
+        if (canonical != impl_->images.end() && canonical->second == image.address) {
+            return image.installName;
+        }
+    }
+    return path;
+}
+
 std::optional<SharedCache::Export> SharedCache::exportSymbol(const std::string& path, const std::string& name) const {
     const auto image = impl_->image(path);
     const auto table = impl_->exportTable(image);

@@ -147,6 +147,7 @@ public:
     std::vector<std::uint8_t> bytes(std::uint64_t address, std::uint64_t count) const;
     std::int64_t guestAddress(std::uint64_t address) const;
     std::uint64_t originalAddress(std::int64_t guestAddress) const;
+    std::optional<std::string> canonicalImagePath(const std::string& path) const;
     std::optional<Export> exportSymbol(const std::string& path, const std::string& name) const;
     std::optional<ResolvedExport> resolveExport(const std::string& path,
                                                 const std::string& name) const;

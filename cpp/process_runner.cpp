@@ -4025,16 +4025,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     const auto canonicalSharedCachePath = [&](const std::string& requestedPath)
         -> std::optional<std::string> {
-        if (!image.cache_reader) return std::nullopt;
-        const auto& cachedImages = image.cache_reader->images();
-        auto found = cachedImages.find(requestedPath);
-        if (found == cachedImages.end()) {
+        const auto* cache = image.metadata_cache_reader();
+        if (cache == nullptr) return std::nullopt;
+        auto canonical = cache->canonicalImagePath(requestedPath);
+        if (!canonical) {
             std::error_code error;
             const auto resolvedPath = std::filesystem::canonical(requestedPath, error);
-            if (!error) found = cachedImages.find(resolvedPath.string());
+            if (!error) canonical = cache->canonicalImagePath(resolvedPath.string());
         }
-        if (found == cachedImages.end()) return std::nullopt;
-        return found->first;
+        return canonical;
     };
     std::size_t startupIndex = 0;
     const auto advanceStartup = [&]() {
