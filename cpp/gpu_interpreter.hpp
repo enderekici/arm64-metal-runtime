@@ -11,16 +11,27 @@
 
 namespace arm64metal::gpu_interpreter {
 
-// Fixed-width host/device packet. The first 24 bytes are the canonical
-// translate_core operation serialization. The guest PC is appended as data.
+inline constexpr std::uint32_t packetBlockStart = 1U;
+inline constexpr std::uint32_t packetBlockEnd = 2U;
+
+// Fixed-width host/device packet. Control-flow edges stay 64-bit guest PCs,
+// separate from the canonical 24-byte operation serialization.
 struct InstructionPacket {
     translate_core::OperationPacket operation{};
     std::uint64_t pc = 0;
+    std::uint64_t successor0 = 0;
+    std::uint64_t successor1 = 0;
+    std::uint32_t successorCount = 0;
+    std::uint32_t flags = 0;
 };
 
-static_assert(sizeof(InstructionPacket) == 32);
+static_assert(sizeof(InstructionPacket) == 56);
 static_assert(offsetof(InstructionPacket, operation) == 0);
 static_assert(offsetof(InstructionPacket, pc) == 24);
+static_assert(offsetof(InstructionPacket, successor0) == 32);
+static_assert(offsetof(InstructionPacket, successor1) == 40);
+static_assert(offsetof(InstructionPacket, successorCount) == 48);
+static_assert(offsetof(InstructionPacket, flags) == 52);
 
 inline constexpr std::size_t processRegisterCount = 37;
 inline constexpr std::size_t programCounterIndex = 33;

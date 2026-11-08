@@ -90,6 +90,20 @@ int main() {
   assert(returned.code.size() == 5);
 
   assert(!decode_operation(0x10000000).has_value());
+  const auto forwardBranch = decode_operation(0x14000002);
+  assert(forwardBranch.has_value());
+  assert(forwardBranch->opcode == Opcode::Branch);
+  assert(static_cast<std::int32_t>(forwardBranch->immediate) == 8);
+  const auto branch = make_operation_instruction(
+      *forwardBranch, {0x500c}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(branch.next == std::vector<std::int64_t>{0x500c});
+  assert(branch.ends_block_at(0x5004));
+  assert(branch.code == std::vector<std::string>{"pc = 20492ul; break;"});
+
+  const auto backwardBranch = decode_operation(0x17ffffff);
+  assert(backwardBranch.has_value());
+  assert(static_cast<std::int32_t>(backwardBranch->immediate) == -4);
 
   bool invalidShiftRejected = false;
   try {

@@ -294,28 +294,89 @@ ProcessKernelPlan plan_process_kernel(
 
     if (!allowInterpreter) return plan;
 
-    auto pc = entry;
-    while (plan.interpretedPackets.size() < 8192) {
-        const auto found = plan.instructions.find(pc);
-        if (found == plan.instructions.end() || !found->second.operation) break;
-        const auto& operation = *found->second.operation;
-        plan.interpretedPackets.push_back({
-            translate_core::serialize_operation(operation),
-            static_cast<std::uint64_t>(pc)});
-        if (operation.opcode == translate_core::Opcode::Return) {
-            plan.interpreterEligible = true;
-            return plan;
+    const auto leaders = translate_core::block_entries(plan.instructions, entry);
+    std::map<std::int64_t, gpu_interpreter::InstructionPacket> eligiblePackets;
+    for (const auto leader : leaders) {
+        struct PlannedInstruction {
+            std::int64_t pc;
+            const Instruction* instruction;
+            bool blockEnd;
+        };
+        std::vector<PlannedInstruction> block;
+        auto pc = leader;
+        bool complete = false;
+        while (block.size() < 8192) {
+            const auto found = plan.instructions.find(pc);
+            if (found == plan.instructions.end() || !found->second.operation) break;
+            const auto& instruction = found->second;
+            const auto opcode = instruction.operation->opcode;
+            if (opcode == translate_core::Opcode::Return) {
+                if (!instruction.next.empty()) break;
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
+            if (opcode == translate_core::Opcode::Branch) {
+                if (!instruction.ends_block_at(pc) || instruction.next.size() != 1 ||
+                    instruction.next.front() < 0) {
+                    break;
+                }
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
+            const bool moveWideOpcode =
+                opcode == translate_core::Opcode::MoveWideZero ||
+                opcode == translate_core::Opcode::MoveWideNot ||
+                opcode == translate_core::Opcode::MoveWideKeep;
+            if (!moveWideOpcode ||
+                instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
+                instruction.next.front() != pc + 4) {
+                break;
+            }
+            const bool leaderBoundary = leaders.find(pc + 4) != leaders.end();
+            block.push_back({pc, &instruction, leaderBoundary});
+            if (leaderBoundary) {
+                complete = true;
+                break;
+            }
+            pc += 4;
         }
-        if ((operation.opcode != translate_core::Opcode::MoveWideZero &&
-             operation.opcode != translate_core::Opcode::MoveWideNot &&
-             operation.opcode != translate_core::Opcode::MoveWideKeep) ||
-            pc > std::numeric_limits<std::int64_t>::max() - 4) {
-            plan.interpretedPackets.clear();
-            break;
+        if (!complete || block.empty() || block.size() + eligiblePackets.size() > 8192) {
+            if (leader == entry) return plan;
+            continue;
         }
-        pc += 4;
+        for (std::size_t index = 0; index < block.size(); ++index) {
+            const auto& planned = block[index];
+            gpu_interpreter::InstructionPacket packet;
+            packet.operation = translate_core::serialize_operation(
+                *planned.instruction->operation);
+            packet.pc = static_cast<std::uint64_t>(planned.pc);
+            if (index == 0) packet.flags |= gpu_interpreter::packetBlockStart;
+            if (planned.blockEnd) {
+                packet.flags |= gpu_interpreter::packetBlockEnd;
+                const auto& successors = planned.instruction->next;
+                if (successors.size() > 2) return plan;
+                packet.successorCount = static_cast<std::uint32_t>(successors.size());
+                if (!successors.empty()) {
+                    if (successors.front() < 0) return plan;
+                    packet.successor0 = static_cast<std::uint64_t>(successors.front());
+                }
+                if (successors.size() > 1) {
+                    if (successors[1] < 0) return plan;
+                    packet.successor1 = static_cast<std::uint64_t>(successors[1]);
+                }
+            }
+            eligiblePackets.emplace(planned.pc, packet);
+        }
     }
-    plan.interpretedPackets.clear();
+    if (eligiblePackets.find(entry) == eligiblePackets.end()) return plan;
+    plan.interpretedPackets.reserve(eligiblePackets.size());
+    for (const auto& [pc, packet] : eligiblePackets) {
+        (void)pc;
+        plan.interpretedPackets.push_back(packet);
+    }
+    plan.interpreterEligible = true;
     return plan;
 }
 

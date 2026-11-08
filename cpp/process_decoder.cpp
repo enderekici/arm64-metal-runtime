@@ -348,13 +348,24 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   };
   auto next = pc + 4;
   auto rd = field(0, 5), rn = field(5, 5);
-  if (const auto operation = translate_core::decode_operation(bits)) {
+  const auto decodedOperation = translate_core::decode_operation(bits);
+  const bool typedBranch = decodedOperation &&
+                           decodedOperation->opcode == translate_core::Opcode::Branch;
+  if (typedBranch) {
+    const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
+    if (!imports.count(target) && !guestStubs.count(target)) {
+      return translate_core::make_operation_instruction(
+          *decodedOperation, {target}, translate_core::LoweringMode::Process,
+          guestCodeLimit);
+    }
+  }
+  if (decodedOperation && !typedBranch) {
     const auto successors =
-        operation->opcode == translate_core::Opcode::Return
+        decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
             : PCs{next};
     return translate_core::make_operation_instruction(
-        *operation, successors, translate_core::LoweringMode::Process,
+        *decodedOperation, successors, translate_core::LoweringMode::Process,
         guestCodeLimit);
   }
   auto emit = [&](auto... lines) -> Instruction {
@@ -469,9 +480,11 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         PCs{});
   }
   auto immediateBranch = bits & 0xfc000000;
-  if (immediateBranch == 0x94000000 || immediateBranch == 0x14000000) {
+  if (immediateBranch == 0x94000000 || typedBranch) {
     auto linked = immediateBranch == 0x94000000;
-    auto target = pc + sign_extend(field(0, 26), 26) * 4;
+    auto target = pc + (typedBranch
+                            ? static_cast<std::int32_t>(decodedOperation->immediate)
+                            : sign_extend(field(0, 26), 26) * 4);
     auto usesGuestAllocator =
         (imports.count(target) &&
          imports.at(target) == (std::string("_malloc_size"))) &&

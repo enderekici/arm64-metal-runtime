@@ -5,68 +5,130 @@ using namespace metal;
 struct InstructionPacket {
     uint operation[6];
     ulong pc;
+    ulong successor0;
+    ulong successor1;
+    uint successorCount;
+    uint flags;
 };
+static_assert(sizeof(InstructionPacket) == 56, "host/device packet size mismatch");
+
+inline int find_packet(device const InstructionPacket *packets,
+                       uint packetCount, ulong pc) {
+    uint low = 0;
+    uint high = packetCount;
+    while (low < high) {
+        const uint middle = low + (high - low) / 2;
+        if (packets[middle].pc < pc) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low < packetCount && packets[low].pc == pc ? int(low) : -1;
+}
 
 kernel void run_interpreter(device ulong *state [[buffer(0)]],
                             device const InstructionPacket *packets [[buffer(1)]],
                             constant uint &packetCount [[buffer(2)]]) {
-    if (state[36] == 0) {
-        state[34] = 1;
-        return;
-    }
-    --state[36];
     ulong pc = state[33];
-    for (uint step = 0; step < packetCount; ++step) {
-        const InstructionPacket instruction = packets[step];
-        if (instruction.pc != pc) {
+    for (uint block = 0; block < 8192; ++block) {
+        if (state[36] == 0) {
+            state[33] = pc;
+            state[34] = 1;
+            return;
+        }
+        --state[36];
+
+        const int firstIndex = find_packet(packets, packetCount, pc);
+        if (firstIndex < 0 || (packets[firstIndex].flags & 1u) == 0u) {
             state[33] = pc;
             state[34] = 7;
             return;
         }
-        const uint opcode = instruction.operation[0];
-        if (opcode == 1u || opcode == 3u || opcode == 4u) {
-            const uint rd = instruction.operation[1];
-            const uint immediate = instruction.operation[3];
-            const uint shift = instruction.operation[4];
-            const uint width = instruction.operation[5];
-            if ((width != 32u && width != 64u) || rd > 31u ||
-                shift >= width || (shift & 15u) != 0u ||
-                instruction.operation[3] > 0xffffu) {
+
+        bool leftBlock = false;
+        for (uint index = uint(firstIndex); index < packetCount; ++index) {
+            const InstructionPacket instruction = packets[index];
+            if (instruction.pc != pc) {
                 state[33] = pc;
                 state[34] = 7;
                 return;
             }
-            if (rd < 31u) {
-                state[rd] = move_wide_apply(opcode, state[rd], immediate,
-                                            shift, width);
+            const uint opcode = instruction.operation[0];
+            if (opcode == 1u || opcode == 3u || opcode == 4u) {
+                const uint rd = instruction.operation[1];
+                const uint immediate = instruction.operation[3];
+                const uint shift = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                if ((width != 32u && width != 64u) || rd > 31u ||
+                    shift >= width || (shift & 15u) != 0u || immediate > 0xffffu) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                if (rd < 31u) {
+                    state[rd] = move_wide_apply(opcode, state[rd], immediate,
+                                                shift, width);
+                }
+                if ((instruction.flags & 2u) != 0u) {
+                    if (instruction.successorCount != 1u) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
             }
-            pc = instruction.pc + 4ul;
-            continue;
-        }
-        if (opcode == 2u) {
-            const uint source = instruction.operation[2];
-            if (source != 30u) {
-                state[33] = pc;
+            if (opcode == 5u) {
+                if ((instruction.flags & 2u) == 0u ||
+                    instruction.successorCount != 1u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                pc = instruction.successor0;
+                leftBlock = true;
+                break;
+            }
+            if (opcode == 2u) {
+                const uint source = instruction.operation[2];
+                if (source != 30u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong target = state[source];
+                if (target == ~0ul) {
+                    state[34] = 0;
+                    return;
+                }
+                if (target >= (1ul << 48)) {
+                    state[34] = 3;
+                    return;
+                }
+                state[33] = target;
                 state[34] = 7;
                 return;
             }
-            const ulong target = state[source];
-            if (target == ~0ul) {
-                state[34] = 0;
-                return;
-            }
-            if (target >= (1ul << 48)) {
-                state[34] = 3;
-                return;
-            }
-            state[33] = target;
+            state[33] = pc;
             state[34] = 7;
             return;
         }
-        state[33] = pc;
-        state[34] = 7;
-        return;
+        if (!leftBlock) {
+            state[33] = pc;
+            state[34] = 7;
+            return;
+        }
     }
     state[33] = pc;
-    state[34] = 7;
+    state[34] = state[36] == 0 ? 1 : 8;
 }

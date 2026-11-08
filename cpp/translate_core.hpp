@@ -17,6 +17,7 @@ enum class Opcode : std::uint32_t {
   Return = 2,
   MoveWideNot = 3,
   MoveWideKeep = 4,
+  Branch = 5,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.

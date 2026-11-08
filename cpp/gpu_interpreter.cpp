@@ -44,43 +44,66 @@ Result Interpreter::dispatch(const Backend& backend,
                              SharedBuffer& processState) const {
     if (!kernel_) throw std::logic_error("GPU interpreter kernel is not compiled");
     if (packets.empty() || packets.size() > 8192) {
-        throw std::invalid_argument("Interpreter basic block packet count is outside [1, 8192]");
+        throw std::invalid_argument("Interpreter packet count is outside [1, 8192]");
     }
     if (processState.data() == nullptr ||
         processState.size() < processRegisterCount * sizeof(std::uint64_t)) {
         throw std::invalid_argument("Interpreter process state buffer is too small");
     }
     const auto* initialState = static_cast<const std::uint64_t*>(processState.data());
-    if (initialState[programCounterIndex] != packets.front().pc) {
-        throw std::invalid_argument("Interpreter process PC must match the first packet");
-    }
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
-    if (packets.front().pc >= guestCodeLimit ||
-        packets.size() > (guestCodeLimit - packets.front().pc) / 4U) {
-        throw std::invalid_argument("Interpreter packet range exceeds guest code space");
-    }
+    bool hasInitialPc = false;
+    std::uint64_t previousPc = 0;
     for (std::size_t index = 0; index < packets.size(); ++index) {
-        const auto expectedPc = packets.front().pc + index * 4U;
-        if ((packets[index].pc & 3U) != 0 || packets[index].pc != expectedPc) {
-            throw std::invalid_argument("Interpreter packets must be contiguous aligned instructions");
+        const auto& packet = packets[index];
+        if (packet.pc >= guestCodeLimit || (packet.pc & 3U) != 0 ||
+            (index != 0 && packet.pc <= previousPc)) {
+            throw std::invalid_argument("Interpreter packets must have ordered aligned PCs");
         }
-        const auto& operation = packets[index].operation;
+        hasInitialPc = hasInitialPc || packet.pc == initialState[programCounterIndex];
+        previousPc = packet.pc;
+        if ((packet.flags & ~(packetBlockStart | packetBlockEnd)) != 0 ||
+            packet.successorCount > 2) {
+            throw std::invalid_argument("Interpreter packet has invalid control-flow metadata");
+        }
+        for (std::size_t edge = 0; edge < packet.successorCount; ++edge) {
+            const auto target = edge == 0 ? packet.successor0 : packet.successor1;
+            if (target >= guestCodeLimit || (target & 3U) != 0) {
+                throw std::invalid_argument("Interpreter packet successor is outside guest code space");
+            }
+        }
+        const auto& operation = packet.operation;
         const auto opcode = static_cast<translate_core::Opcode>(operation[0]);
-        if (index + 1 == packets.size()) {
-            if (opcode != translate_core::Opcode::Return || operation[1] != 0 ||
+        if (opcode == translate_core::Opcode::Return) {
+            if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 0 ||
+                operation[1] != 0 ||
                 operation[2] != 30 || operation[3] != 0 || operation[4] != 0 ||
                 operation[5] != 64) {
-                throw std::invalid_argument("Interpreter basic block must end with plain RET X30");
+                throw std::invalid_argument("Interpreter RET packet metadata is invalid");
             }
-        } else if ((opcode != translate_core::Opcode::MoveWideZero &&
-                    opcode != translate_core::Opcode::MoveWideNot &&
-                    opcode != translate_core::Opcode::MoveWideKeep) ||
-                   operation[1] > 31 || operation[2] != 0 ||
-                   operation[3] > 0xffff || (operation[5] != 32 && operation[5] != 64) ||
-                   operation[4] >= operation[5] || (operation[4] & 15U) != 0 ||
-                   (operation[5] == 32 && operation[4] > 16)) {
-            throw std::invalid_argument("Interpreter basic block contains an unsupported operation");
+        } else if (opcode == translate_core::Opcode::Branch) {
+            if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 1 ||
+                operation[1] != 0 || operation[2] != 0 || operation[4] != 0 ||
+                operation[5] != 64) {
+                throw std::invalid_argument("Interpreter B packet metadata is invalid");
+            }
+        } else if (opcode == translate_core::Opcode::MoveWideZero ||
+                   opcode == translate_core::Opcode::MoveWideNot ||
+                   opcode == translate_core::Opcode::MoveWideKeep) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] != 0 || operation[3] > 0xffff ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                operation[4] >= operation[5] || (operation[4] & 15U) != 0 ||
+                (operation[5] == 32 && operation[4] > 16) ||
+                packet.successorCount != (blockEnd ? 1U : 0U)) {
+                throw std::invalid_argument("Interpreter move-wide packet metadata is invalid");
+            }
+        } else {
+            throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
+    }
+    if (!hasInitialPc) {
+        throw std::invalid_argument("Interpreter process PC is absent from the packet table");
     }
 
     auto packetBuffer = backend.makeSharedBuffer(packets.size() * sizeof(InstructionPacket));

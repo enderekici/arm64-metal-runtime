@@ -52,6 +52,13 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
   }
 
+  if ((bits & 0xfc000000) == 0x14000000) {
+    const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
+    return Operation{Opcode::Branch, 0, 0,
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     0, 64};
+  }
+
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -105,6 +112,11 @@ Instruction make_operation_instruction(Operation operation,
           "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
           "x[34] = 7; return;"};
     }
+  } else if (operation.opcode == Opcode::Branch) {
+    if (next.size() != 1) {
+      throw std::invalid_argument("Typed B needs one resolved guest target");
+    }
+    code.push_back("pc = " + std::to_string(next.front()) + "ul; break;");
   } else {
     throw std::invalid_argument("Unknown typed ARM64 operation");
   }
@@ -129,10 +141,14 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
   };
 
   if (const auto operation = decode_operation(bits)) {
-    return make_operation_instruction(*operation,
-        operation->opcode == Opcode::Return ? std::vector<std::int64_t>{}
-                                             : std::vector<std::int64_t>{following},
-        LoweringMode::Function);
+    std::vector<std::int64_t> successors;
+    if (operation->opcode == Opcode::Branch) {
+      successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
+    } else if (operation->opcode != Opcode::Return) {
+      successors.push_back(following);
+    }
+    return make_operation_instruction(*operation, std::move(successors),
+                                      LoweringMode::Function);
   }
   const auto branch = [&](const std::string& condition, std::int64_t target) {
     return Instruction{{"pc = " + condition + " ? " + pc_literal(target, address_suffix) +
@@ -148,10 +164,6 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
   if ((bits & 0xff00001e) == 0x54000000) {
     return branch(field(bits, 0, 1) == 0 ? "z" : "!z",
                   pc + signed_field(field(bits, 5, 19), 19) * 4);
-  }
-  if ((bits & 0xfc000000) == 0x14000000) {
-    const auto target = pc + signed_field(field(bits, 0, 26), 26) * 4;
-    return {{"pc = " + pc_literal(target, address_suffix) + "; break;"}, {target}};
   }
   if ((bits & 0x7f200000) == 0x0b000000 ||
       (bits & 0x7f200000) == 0x4a000000) {

@@ -139,26 +139,43 @@ int run_command(const std::vector<std::string>& args,
     using arm64metal::translate_core::decode_operation;
     using arm64metal::translate_core::serialize_operation;
 
-    const auto packet = [](std::uint32_t bits, std::uint64_t pc) {
+    const auto packet = [](std::uint32_t bits, std::uint64_t pc,
+                           std::uint32_t flags = 0,
+                           std::uint32_t successorCount = 0,
+                           std::uint64_t successor0 = 0) {
       const auto operation = decode_operation(bits);
       if (!operation) throw std::runtime_error("Probe instruction has no typed operation");
-      return InstructionPacket{serialize_operation(*operation), pc};
+      InstructionPacket result;
+      result.operation = serialize_operation(*operation);
+      result.pc = pc;
+      result.flags = flags;
+      result.successorCount = successorCount;
+      result.successor0 = successor0;
+      return result;
     };
+    constexpr auto blockStart = arm64metal::gpu_interpreter::packetBlockStart;
+    constexpr auto blockEnd = arm64metal::gpu_interpreter::packetBlockEnd;
     const std::vector<InstructionPacket> firstProgram{
-        packet(0xd2800540u, 0x1000), packet(0xd65f03c0u, 0x1004)};
+        packet(0xd2800540u, 0x1000, blockStart),
+        packet(0xd65f03c0u, 0x1004, blockEnd)};
     const std::vector<InstructionPacket> secondProgram{
-        packet(0x52b7dde0u, 0x2000), packet(0xd65f03c0u, 0x2004)};
+        packet(0x52b7dde0u, 0x2000, blockStart),
+        packet(0xd65f03c0u, 0x2004, blockEnd)};
     const std::vector<std::vector<InstructionPacket>> moveWidePrograms{
-        {packet(0x92a24680u, 0x5000), packet(0xd65f03c0u, 0x5004)},
-        {packet(0x12a24680u, 0x6000), packet(0xd65f03c0u, 0x6004)},
-        {packet(0xd28acf00u, 0x7000), packet(0xf2d579a0u, 0x7004),
-         packet(0xd65f03c0u, 0x7008)},
-        {packet(0xd2eeeee0u, 0x8000), packet(0x72b579a0u, 0x8004),
-         packet(0xd65f03c0u, 0x8008)},
-        {packet(0xd28acf00u, 0x9000), packet(0xf2d579bfu, 0x9004),
-         packet(0xd65f03c0u, 0x9008)},
-        {packet(0xd28acf00u, 0xa000), packet(0x72b579bfu, 0xa004),
-         packet(0xd65f03c0u, 0xa008)}};
+        {packet(0x92a24680u, 0x5000, blockStart), packet(0xd65f03c0u, 0x5004, blockEnd)},
+        {packet(0x12a24680u, 0x6000, blockStart), packet(0xd65f03c0u, 0x6004, blockEnd)},
+        {packet(0xd28acf00u, 0x7000, blockStart), packet(0xf2d579a0u, 0x7004),
+         packet(0xd65f03c0u, 0x7008, blockEnd)},
+        {packet(0xd2eeeee0u, 0x8000, blockStart), packet(0x72b579a0u, 0x8004),
+         packet(0xd65f03c0u, 0x8008, blockEnd)},
+        {packet(0xd28acf00u, 0x9000, blockStart), packet(0xf2d579bfu, 0x9004),
+         packet(0xd65f03c0u, 0x9008, blockEnd)},
+        {packet(0xd28acf00u, 0xa000, blockStart), packet(0x72b579bfu, 0xa004),
+         packet(0xd65f03c0u, 0xa008, blockEnd)}};
+    const std::vector<InstructionPacket> branchProgram{
+        packet(0xd28000e0u, 0x5000, blockStart),
+        packet(0x14000002u, 0x5004, blockEnd, 1, 0x500c),
+        packet(0xd65f03c0u, 0x500c, blockStart | blockEnd)};
 
     auto backend = arm64metal::Backend::createDefault();
     const auto initialCompiles = backend.compiledPipelineCount();
@@ -191,7 +208,7 @@ int run_command(const std::vector<std::string>& args,
     continuationState[33] = 0x3000;
     continuationState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
     const auto continuation = interpreter.run(
-        backend, {packet(0xd65f03c0u, 0x3000)}, continuationState);
+        backend, {packet(0xd65f03c0u, 0x3000, blockStart | blockEnd)}, continuationState);
     ProcessState zeroBudgetState{};
     zeroBudgetState[arm64metal::gpu_interpreter::resultRegisterIndex] = 99;
     zeroBudgetState[arm64metal::gpu_interpreter::returnRegisterIndex] =
@@ -199,10 +216,19 @@ int run_command(const std::vector<std::string>& args,
     zeroBudgetState[33] = 0x4000;
     zeroBudgetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 0;
     const auto zeroBudget = interpreter.run(
-        backend, {packet(0xd2800540u, 0x4000), packet(0xd65f03c0u, 0x4004)},
+        backend, {packet(0xd2800540u, 0x4000, blockStart),
+                  packet(0xd65f03c0u, 0x4004, blockEnd)},
         zeroBudgetState);
+    ProcessState branchState{};
+    branchState[arm64metal::gpu_interpreter::returnRegisterIndex] =
+        arm64metal::gpu_interpreter::noReturnAddress;
+    branchState[33] = 0x5000;
+    branchState[arm64metal::gpu_interpreter::blockBudgetIndex] = 2;
+    const auto branch = interpreter.run(backend, branchProgram, branchState);
+    branchState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+    const auto branchBudget = interpreter.run(backend, branchProgram, branchState);
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 10 ||
+    if (compiled != 1 || dispatches != 12 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
         moveWideResults[0].state[34] != 0 ||
@@ -218,8 +244,11 @@ int run_command(const std::vector<std::string>& args,
         moveWideResults[5].state[34] != 0 ||
         moveWideResults[5].state[0] != 0x5678u ||
         continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
-        zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99) {
-      throw std::runtime_error("Fixed GPU interpreter move-wide/RET probe mismatch");
+        zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99 ||
+        branch.state[34] != 0 || branch.state[0] != 7 || branch.state[36] != 0 ||
+        branchBudget.state[34] != 1 || branchBudget.state[33] != 0x500c ||
+        branchBudget.state[0] != 7 || branchBudget.state[36] != 0) {
+      throw std::runtime_error("Fixed GPU interpreter move-wide/block-flow probe mismatch");
     }
     std::cerr << "pipeline_compiles=" << compiled
               << " runtime_source_compiles=" << sourceCompiles
