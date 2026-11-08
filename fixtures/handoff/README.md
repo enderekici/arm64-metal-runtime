@@ -158,3 +158,30 @@ otool -tvV /usr/lib/system/libsystem_kernel.dylib | awk '/^__kernelrpc_mach_vm_p
 ```
 
 Native stdout is `page=16384 wrapper=0 split=0 q=0:1/7,0:1/7,0:3/7 lower=0 raise=2 over=2 final=0:1/1` followed by `release=0`. The exported wrapper forwards x0 through x4 unchanged; the trap stub loads x16 with -14 and executes `svc #0x80`.
+
+## Minimal raw protection differential fixture
+
+`mach-vm-protect-raw-probe.c` avoids `mach_vm_region` and other MIG query APIs.
+It uses `mprotect` return codes and guarded reads/writes to observe the raw trap:
+current READ can be restored to RW before max-lowering; lowering the middle
+page's maximum to READ rejects both a later raw WRITE request and POSIX RW
+upgrade with `EACCES`, while the middle byte remains readable. It also checks
+that both edge pages remain writable with their data intact, that the deallocated
+middle page reports `ENOMEM`, and that both edge fragments can be released.
+
+```sh
+src=fixtures/handoff/mach-vm-protect-raw-probe.c
+out=.build/handoff-probes/mach-vm-protect-raw-probe
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o "$out"
+"$out" > "$out.native.out" 2> "$out.native.err"
+printf '%s\n' "$?" > "$out.native.status"
+.build/cpp/arm64-metal launch "$out" > "$out.runtime.out" 2> "$out.runtime.err"
+printf '%s\n' "$?" > "$out.runtime.status"
+cmp "$out.native.out" "$out.runtime.out"
+cmp "$out.native.err" "$out.runtime.err"
+cmp "$out.native.status" "$out.runtime.status"
+```
+
+The native control exits 0 with stdout
+`page=16384 current=0 restore=0/read=0 lower=0 raise=2 write=2 mprotect-rw=-1/13 read=0/0 middle=83 edges=0,0:50,116 dealloc=0 hole=-1/12 release=0,0` and empty stderr.
