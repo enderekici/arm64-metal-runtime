@@ -2,7 +2,7 @@
 
 ## Late writable-TPRO rejection
 
-This control resolves the SPI at runtime and calls it from `main`, after
+This control imports the SPI directly and calls it from `main`, after
 libSystem initialization. The callback writes a unique stderr marker and
 mutates its context, so neither effect can be mistaken for an abort before the
 callback. Native dyld exits 134 with `Illegal TPRO memory access`, prints the
@@ -14,16 +14,32 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O0 \
 .build/handoff-probes/tpro-late-negative
 ```
 
-For the guest negative comparison, build the C++ runtime and launch with the
-same four cache/startup flags used by the positive cache-root control:
+For the focused guest late-guard comparison, build the C++ runtime and launch
+with shared-cache and demand mapping only. Omitting cache bootstrap and cached
+initializers lets this fixture reach `main` before the modeled libSystem
+initializer path; this checks the host-service late guard and does not claim
+full startup parity.
 
 ```sh
 env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
-  ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+  ARM64_METAL_TRACE=1 \
   .build/cpp/arm64-metal launch .build/handoff-probes/tpro-late-negative
 ```
 
 The guest must preserve the late abort and omit both callback markers.
+Expected guest status is 134; with `ARM64_METAL_TRACE=1`, the log should show
+the main entry dispatch before service 178. The callback marker and `AFTER`
+line must both remain absent.
+
+This late fixture cannot verify normal scope release or cancellation: native
+dyld permits a callback only during early libSystem initialization. To observe
+scope ownership safely, an opt-in runtime trace should report the guest thread
+ID when service 178 opens the scope, then report either normal callback-frame
+return or thread-frame discard for that same ID. The full-startup cache-root
+probe covers normal return; cancellation requires a synthetic runner-level
+fixture that discards a TPRO-scoped callback frame on a guest worker thread.
+Do not use a post-main native SPI call as a scope-positive control; dyld must
+abort it before invoking the callback.
 
 Build these from the repository root. Use the same compiled probe for native and Metal runs. Set `JDK_HOME` to the installed JDK you are qualifying.
 
