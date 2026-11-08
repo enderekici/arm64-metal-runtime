@@ -458,6 +458,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::Bitfield;
             const bool scalarFPOpcode =
                 opcode == translate_core::Opcode::ScalarFloatingPoint;
+            const bool integerBitOperationOpcode =
+                opcode == translate_core::Opcode::IntegerBitOperation;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const bool adrOpcode = opcode == translate_core::Opcode::Adr;
@@ -596,6 +598,11 @@ ProcessKernelPlan plan_process_kernel(
                   scalarFPKind == 1U ? operation.shift == 4U :
                   scalarFPKind == 2U ? operation.shift == 8U : false) &&
                  (scalarFPKind == 1U || operation.immediate == 0));
+            const bool validIntegerBitOperation =
+                !integerBitOperationOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 3U && operation.shift == 0 &&
+                 (operation.width == 32 || operation.width == 64));
             const bool validAdr =
                 !adrOpcode ||
                 (operation.destination <= 31 && operation.source <= 1 &&
@@ -606,7 +613,8 @@ ProcessKernelPlan plan_process_kernel(
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
                  !logicalVariableShiftOpcode && !multiplyAccumulateOpcode &&
-                 !bitfieldOpcode && !scalarFPOpcode && !adrOpcode) ||
+                 !bitfieldOpcode && !scalarFPOpcode &&
+                 !integerBitOperationOpcode && !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -615,7 +623,8 @@ ProcessKernelPlan plan_process_kernel(
                 !validAddSubCarryRegister ||
                 !validLogicalShiftedRegister || !validLogicalImmediate ||
                 !validLogicalVariableShift || !validMultiplyAccumulate ||
-                !validBitfield || !validScalarFP || !validAdr ||
+                !validBitfield || !validScalarFP ||
+                !validIntegerBitOperation || !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

@@ -341,6 +341,36 @@ inline ScalarFPResult scalar_fp_round_positive(
     if (sign == 0ul) rounded += 1ul << fractionalBits;
     return ScalarFPResult{rounded & valueMask, 0u};
 }
+inline ulong integer_bit_operation_apply(uint variant, ulong source,
+                                         uint width) {
+    const ulong valueMask = width == 32u ? 0xfffffffful : ~0ul;
+    const ulong value = source & valueMask;
+    if (variant == 0u) {
+        ulong result = 0ul;
+        for (uint bit = 0u; bit < width; ++bit) {
+            result = (result << 1u) | ((value >> bit) & 1ul);
+        }
+        return result & valueMask;
+    }
+    if (variant == 1u) {
+        ulong result = 0ul;
+        for (uint byte = 0u; byte < width / 8u; ++byte) {
+            result = (result << 8u) | ((value >> (byte * 8u)) & 0xfful);
+        }
+        return result & valueMask;
+    }
+    if (variant == 2u) {
+        if (value == 0ul) return width;
+        return width == 32u ? metal::clz(uint(value)) : metal::clz(value);
+    }
+    const ulong signBit = 1ul << (width - 1u);
+    const ulong normalized = (value & signBit) != 0ul
+        ? value ^ valueMask : value;
+    if (normalized == 0ul) return width - 1u;
+    const uint leadingZeros = width == 32u
+        ? metal::clz(uint(normalized)) : metal::clz(normalized);
+    return leadingZeros - 1u;
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -601,6 +631,38 @@ inline constexpr ScalarFPResult scalar_fp_round_positive(
   if (sign == 0U) rounded += std::uint64_t{1} << fractionalBits;
   return {rounded & valueMask, 0U};
 }
+inline std::uint64_t integer_bit_operation_apply(
+    std::uint32_t variant, std::uint64_t source, std::uint32_t width) {
+  const auto valueMask = width == 32U ? std::uint64_t{0xffffffffU}
+                                      : ~std::uint64_t{0};
+  const auto value = source & valueMask;
+  if (variant == 0U) {
+    std::uint64_t result = 0U;
+    for (std::uint32_t bit = 0; bit < width; ++bit) {
+      result = (result << 1U) | ((value >> bit) & 1U);
+    }
+    return result & valueMask;
+  }
+  if (variant == 1U) {
+    std::uint64_t result = 0U;
+    for (std::uint32_t byte = 0; byte < width / 8U; ++byte) {
+      result = (result << 8U) | ((value >> (byte * 8U)) & 0xffU);
+    }
+    return result & valueMask;
+  }
+  if (variant == 2U) {
+    if (value == 0U) return width;
+    return width == 32U ? __builtin_clz(static_cast<std::uint32_t>(value))
+                        : __builtin_clzll(value);
+  }
+  const auto signBit = std::uint64_t{1} << (width - 1U);
+  const auto normalized = (value & signBit) != 0U ? value ^ valueMask : value;
+  if (normalized == 0U) return width - 1U;
+  const auto leadingZeros = width == 32U
+      ? __builtin_clz(static_cast<std::uint32_t>(normalized))
+      : __builtin_clzll(normalized);
+  return leadingZeros - 1U;
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -812,6 +874,21 @@ inline constexpr char typed_integer_msl_source[] =
     "ulong rounded = value & ~discardedMask; "
     "if (sign == 0ul) rounded += 1ul << fractionalBits; "
     "return ScalarFPResult{rounded & valueMask, 0u}; }\n"
+    "inline ulong integer_bit_operation_apply(uint variant, ulong source, "
+    "uint width) { ulong valueMask = width == 32u ? 0xfffffffful : ~0ul; "
+    "ulong value = source & valueMask; if (variant == 0u) { ulong result = 0ul; "
+    "for (uint bit = 0u; bit < width; ++bit) result = (result << 1u) | "
+    "((value >> bit) & 1ul); return result & valueMask; } "
+    "if (variant == 1u) { ulong result = 0ul; for (uint byte = 0u; "
+    "byte < width / 8u; ++byte) result = (result << 8u) | "
+    "((value >> (byte * 8u)) & 0xfful); return result & valueMask; } "
+    "if (variant == 2u) return value == 0ul ? width : "
+    "(width == 32u ? metal::clz(uint(value)) : metal::clz(value)); "
+    "ulong signBit = 1ul << (width - 1u); ulong normalized = "
+    "(value & signBit) != 0ul ? value ^ valueMask : value; "
+    "if (normalized == 0ul) return width - 1u; "
+    "uint leadingZeros = width == 32u ? metal::clz(uint(normalized)) : metal::clz(normalized); "
+    "return leadingZeros - 1u; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

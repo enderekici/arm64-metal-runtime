@@ -344,6 +344,23 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 5, 5), field(bits, 16, 5),
                      (subtract << 5U) | accumulator, width};
   }
+  if ((bits & 0x7ffffc00U) == 0x5ac00000U) {
+    const auto width = field(bits, 31, 1) == 1U ? 64U : 32U;
+    return Operation{Opcode::IntegerBitOperation, field(bits, 0, 5),
+                     field(bits, 5, 5), 0U, 0U, width};
+  }
+  const auto reverseEncoding = bits & 0xfffffc00U;
+  if (reverseEncoding == 0x5ac00800U || reverseEncoding == 0xdac00c00U) {
+    const auto width = reverseEncoding == 0xdac00c00U ? 64U : 32U;
+    return Operation{Opcode::IntegerBitOperation, field(bits, 0, 5),
+                     field(bits, 5, 5), 1U, 0U, width};
+  }
+  if ((bits & 0x7ffff800U) == 0x5ac01000U) {
+    const auto width = field(bits, 31, 1) == 1U ? 64U : 32U;
+    const auto variant = field(bits, 10, 1) == 0U ? 2U : 3U;
+    return Operation{Opcode::IntegerBitOperation, field(bits, 0, 5),
+                     field(bits, 5, 5), variant, 0U, width};
+  }
   const auto bitfieldEncoding = bits & 0x7f800000U;
   if (bitfieldEncoding == 0x53000000U || bitfieldEncoding == 0x33000000U ||
       bitfieldEncoding == 0x13000000U) {
@@ -409,7 +426,20 @@ Instruction make_operation_instruction(Operation operation,
                                        std::uint64_t guest_code_limit,
                                        std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::Bitfield) {
+  if (operation.opcode == Opcode::IntegerBitOperation) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 3U || operation.shift != 0 ||
+        (operation.width != 32 && operation.width != 64)) {
+      throw std::invalid_argument("Typed integer bit-operation operands are invalid");
+    }
+    if (operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = integer_bit_operation_apply(" +
+                     std::to_string(operation.immediate) + "u, " +
+                     reg(operation.source, operation.width == 64) + ", " +
+                     std::to_string(operation.width) + "u);");
+    }
+  } else if (operation.opcode == Opcode::Bitfield) {
     const auto variant = operation.shift >> 6U;
     const auto end = operation.shift & 63U;
     if (operation.destination > 31 || operation.source > 31 ||

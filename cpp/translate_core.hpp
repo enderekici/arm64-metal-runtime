@@ -45,6 +45,7 @@ enum class Opcode : std::uint32_t {
   IntegerMultiplyAccumulate = 31,
   ScalarFloatingPoint = 32,
   Bitfield = 33,
+  IntegerBitOperation = 34,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -109,6 +110,9 @@ enum class Opcode : std::uint32_t {
 // width=32 or 64 for the FP format. Kinds are integer conversion, FMOV
 // immediate, and FRINTP. Scalar FP registers use their low 64-bit lane; the
 // upper lane is cleared. Integer source register 31 is ZR.
+// RBIT/REV/CLZ/CLS use destination=Rd, source=Rn, immediate=(variant
+// 0=RBIT, 1=REV, 2=CLZ, 3=CLS), shift=0, and width=32 or 64. Register 31
+// reads as zero and discards writes.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

@@ -23,6 +23,30 @@ static std::uint64_t native_ubfm_wrap(std::uint64_t source) {
   return result;
 }
 
+static std::uint64_t native_integer_bit_operation(std::uint32_t variant,
+                                                  std::uint32_t width,
+                                                  std::uint64_t source) {
+  std::uint64_t result;
+  if (variant == 0U && width == 64U) {
+    asm volatile("rbit %0, %1" : "=r"(result) : "r"(source));
+  } else if (variant == 0U) {
+    asm volatile("rbit %w0, %w1" : "=r"(result) : "r"(source));
+  } else if (variant == 1U && width == 64U) {
+    asm volatile("rev %0, %1" : "=r"(result) : "r"(source));
+  } else if (variant == 1U) {
+    asm volatile("rev %w0, %w1" : "=r"(result) : "r"(source));
+  } else if (variant == 2U && width == 64U) {
+    asm volatile("clz %0, %1" : "=r"(result) : "r"(source));
+  } else if (variant == 2U) {
+    asm volatile("clz %w0, %w1" : "=r"(result) : "r"(source));
+  } else if (width == 64U) {
+    asm volatile("cls %0, %1" : "=r"(result) : "r"(source));
+  } else {
+    asm volatile("cls %w0, %w1" : "=r"(result) : "r"(source));
+  }
+  return width == 32U ? std::uint32_t(result) : result;
+}
+
 static std::uint64_t native_sbfm_wrap(std::uint64_t source) {
   std::uint64_t result;
   asm volatile("sbfm %0, %1, #60, #7" : "=r"(result) : "r"(source));
@@ -1400,5 +1424,46 @@ int main() {
     invalidShiftRejected = true;
   }
   assert(invalidShiftRejected);
+  for (const auto width : {32U, 64U}) {
+    const std::array<std::uint64_t, 6> values{
+        0U, 1U, 0x80000000ULL, 0x123456789abcdef0ULL,
+        0xffffffffffffffffULL, 0x55555555aaaaaaaaULL};
+    for (std::uint32_t variant = 0; variant < 4U; ++variant) {
+      for (const auto value : values) {
+        const auto native = native_integer_bit_operation(variant, width, value);
+        const auto shared = arm64metal::integer_bit_operation_apply(
+            variant, value, width);
+        assert(native == shared);
+      }
+    }
+  }
+  const auto rbit = decode_operation(0xdac00000U);
+  assert(rbit.has_value() && rbit->opcode == Opcode::IntegerBitOperation &&
+         rbit->destination == 0 && rbit->source == 0 && rbit->immediate == 0 &&
+         rbit->width == 64);
+  assert((serialize_operation(*rbit) ==
+          arm64metal::translate_core::OperationPacket{34, 0, 0, 0, 0, 64}));
+  const auto rbitLowered = make_operation_instruction(
+      *rbit, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(rbitLowered.code[0] ==
+         "x[0] = integer_bit_operation_apply(0u, x[0], 64u);");
+  const auto rbitXzr = decode_operation(0xdac0003fU);
+  assert(rbitXzr.has_value() && rbitXzr->destination == 31U &&
+         rbitXzr->source == 1U);
+  assert(make_operation_instruction(
+             *rbitXzr, {0x1004}, LoweringMode::Process,
+             std::uint64_t{1} << 48).code.empty());
+  const auto revWzr = decode_operation(0x5ac0083fU);
+  assert(revWzr.has_value() && revWzr->destination == 31U &&
+         revWzr->source == 1U && revWzr->width == 32U);
+  assert(make_operation_instruction(
+             *revWzr, {0x1004}, LoweringMode::Process,
+             std::uint64_t{1} << 48).code.empty());
+  assert(decode_operation(0x5ac00800U)->immediate == 1U);
+  assert(decode_operation(0xdac00c00U)->immediate == 1U &&
+         decode_operation(0xdac00c00U)->width == 64U);
+  assert(decode_operation(0x5ac01000U)->immediate == 2U);
+  assert(decode_operation(0xdac01400U)->immediate == 3U);
+  assert(!decode_operation(0xdac01800U).has_value());
   return 0;
 }
