@@ -122,6 +122,26 @@ PLIST
             (cd "$probe_dir" && "$tar" -cf "$probe_dir/input.tar" tar-input)
             test -s "$probe_dir/input.tar"
             compare tar-list 0 "$tar" -tf "$probe_dir/input.tar"
+            mkdir -p "$probe_dir/native-extract" "$probe_dir/guest-extract"
+            run_bounded tar-extract.native "$tar" -xf "$probe_dir/input.tar" \
+                -C "$probe_dir/native-extract" || exit 1
+            test "$(cat "$run_dir/tar-extract.native.status")" = 0
+            run_bounded tar-extract.guest env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+                ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+                "$runtime" launch "$tar" -xf "$probe_dir/input.tar" -C "$probe_dir/guest-extract" || exit 1
+            test "$(cat "$run_dir/tar-extract.guest.status")" = 0
+            cmp "$run_dir/tar-extract.native.stdout" "$run_dir/tar-extract.guest.stdout"
+            cmp "$run_dir/tar-extract.native.stderr" "$run_dir/tar-extract.guest.stderr"
+            cmp "$probe_dir/tar-input/readme.txt" "$probe_dir/native-extract/tar-input/readme.txt"
+            cmp "$probe_dir/tar-input/readme.txt" "$probe_dir/guest-extract/tar-input/readme.txt"
+            cmp "$probe_dir/tar-input/subdir/payload.bin" \
+                "$probe_dir/native-extract/tar-input/subdir/payload.bin"
+            cmp "$probe_dir/tar-input/subdir/payload.bin" \
+                "$probe_dir/guest-extract/tar-input/subdir/payload.bin"
+            cmp "$probe_dir/native-extract/tar-input/readme.txt" "$probe_dir/guest-extract/tar-input/readme.txt"
+            cmp "$probe_dir/native-extract/tar-input/subdir/payload.bin" \
+                "$probe_dir/guest-extract/tar-input/subdir/payload.bin"
+            printf 'tar extracted file contents match native\n'
             ;;
         libz-root|libz-provider)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
