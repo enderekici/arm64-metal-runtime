@@ -250,6 +250,14 @@ overflow service is wired to deliver the same signal and code through
 libsystem addresses. The successful GPU path remains a GPU byte-copy; only an
 object-size violation crosses to the host failure service.
 
+## SHA-256 crypto instructions
+
+The failing instruction at `libcorecrypto`'s `_AccelerateCrypto_SHA256_compress`
+is `SHA256SU0`; its adjacent compression loop uses `SHA256H`, `SHA256H2`, and
+`SHA256SU1` as well. `make -C cpp verify-vector-crypto` checks direct lowering,
+compiles the emitted Metal helpers to AIR without dispatching a GPU kernel, and
+compares a native ARM64 intrinsic control against the committed result file.
+
 ## Typed MOVN and MOVK slice
 
 The native assembly control covers X/W MOVN complements, X/W MOVK field

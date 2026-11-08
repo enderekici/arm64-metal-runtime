@@ -78,6 +78,65 @@ ulong2 vector_pmull(ulong left, ulong right) {
         }
     }
     return product;
+}
+uint sha256_rotr(uint value, uint amount) {
+    return (value >> amount) | (value << (32u - amount));
+}
+uint sha256_sigma0(uint value) {
+    return sha256_rotr(value, 2u) ^ sha256_rotr(value, 13u) ^ sha256_rotr(value, 22u);
+}
+uint sha256_sigma1(uint value) {
+    return sha256_rotr(value, 6u) ^ sha256_rotr(value, 11u) ^ sha256_rotr(value, 25u);
+}
+uint sha256_small_sigma0(uint value) {
+    return sha256_rotr(value, 7u) ^ sha256_rotr(value, 18u) ^ (value >> 3u);
+}
+uint sha256_small_sigma1(uint value) {
+    return sha256_rotr(value, 17u) ^ sha256_rotr(value, 19u) ^ (value >> 10u);
+}
+uint4 vector_sha256_hash_words(uint4 abcd, uint4 efgh, uint4 schedule, bool first) {
+    for (uint round = 0; round < 4; ++round) {
+        uint a = abcd.x, b = abcd.y, c = abcd.z, d = abcd.w;
+        uint e = efgh.x, f = efgh.y, g = efgh.z, h = efgh.w;
+        uint choose = (e & f) ^ (~e & g);
+        uint majority = (a & b) ^ (a & c) ^ (b & c);
+        uint t1 = h + sha256_sigma1(e) + choose + schedule[round];
+        uint t2 = sha256_sigma0(a) + majority;
+        abcd = uint4(t1 + t2, a, b, c);
+        efgh = uint4(d + t1, e, f, g);
+    }
+    return first ? abcd : efgh;
+}
+ulong2 vector_sha256_hash(ulong2 abcd_bits, ulong2 efgh_bits,
+                          ulong2 schedule_bits, bool first) {
+    uint4 abcd = as_type<uint4>(abcd_bits);
+    uint4 efgh = as_type<uint4>(efgh_bits);
+    uint4 schedule = as_type<uint4>(schedule_bits);
+    return as_type<ulong2>(vector_sha256_hash_words(abcd, efgh, schedule, first));
+}
+ulong2 vector_sha256_su0(ulong2 destination_bits, ulong2 source_bits) {
+    uint4 destination = as_type<uint4>(destination_bits);
+    uint4 source = as_type<uint4>(source_bits);
+    uint4 schedule = uint4(destination.y, destination.z, destination.w, source.x);
+    uint4 result = uint4(
+        destination.x + sha256_small_sigma0(schedule.x),
+        destination.y + sha256_small_sigma0(schedule.y),
+        destination.z + sha256_small_sigma0(schedule.z),
+        destination.w + sha256_small_sigma0(schedule.w));
+    return as_type<ulong2>(result);
+}
+ulong2 vector_sha256_su1(ulong2 destination_bits, ulong2 source1_bits,
+                         ulong2 source2_bits) {
+    uint4 destination = as_type<uint4>(destination_bits);
+    uint4 source1 = as_type<uint4>(source1_bits);
+    uint4 source2 = as_type<uint4>(source2_bits);
+    uint4 schedule = uint4(source1.y, source1.z, source1.w, source2.x);
+    uint4 result;
+    result.x = destination.x + schedule.x + sha256_small_sigma1(source2.z);
+    result.y = destination.y + schedule.y + sha256_small_sigma1(source2.w);
+    result.z = destination.z + schedule.z + sha256_small_sigma1(result.x);
+    result.w = destination.w + schedule.w + sha256_small_sigma1(result.y);
+    return as_type<ulong2>(result);
 })METAL";
 
 }  // namespace
@@ -104,6 +163,44 @@ std::optional<translate_core::Instruction> lower_vector_crypto(
     return translate_core::Instruction{{"{ ulong2 value = " + expression + "; x[" +
                         std::to_string(destination) + "] = value[0]; x[" +
                         std::to_string(destination + 1) + "] = value[1]; }"},
+                       {pc + 4}};
+  }
+
+  const std::uint32_t sha256_three_register_opcode = bits & 0xffe0fc00u;
+  constexpr std::uint32_t sha256h_opcode = 0x5e004000u;
+  constexpr std::uint32_t sha256h2_opcode = 0x5e005000u;
+  constexpr std::uint32_t sha256su1_opcode = 0x5e006000u;
+  const std::uint32_t sha_destination_register = bits & 0x1fu;
+  const std::uint32_t sha_source_register = (bits >> 5) & 0x1fu;
+  const std::uint32_t sha_third_register = (bits >> 16) & 0x1fu;
+  const auto vector_value = [](std::uint32_t reg) {
+    const int slot = 806 + 2 * static_cast<int>(reg);
+    return "ulong2(x[" + std::to_string(slot) + "], x[" +
+           std::to_string(slot + 1) + "])";
+  };
+  const int sha_destination_slot = 806 + 2 * static_cast<int>(sha_destination_register);
+  std::string sha256_expression;
+  if (sha256_three_register_opcode == sha256h_opcode) {
+    sha256_expression = "vector_sha256_hash(" + vector_value(sha_destination_register) +
+        ", " + vector_value(sha_source_register) + ", " +
+        vector_value(sha_third_register) + ", true)";
+  } else if (sha256_three_register_opcode == sha256h2_opcode) {
+    sha256_expression = "vector_sha256_hash(" + vector_value(sha_source_register) +
+        ", " + vector_value(sha_destination_register) + ", " +
+        vector_value(sha_third_register) + ", false)";
+  } else if (sha256_three_register_opcode == sha256su1_opcode) {
+    sha256_expression = "vector_sha256_su1(" + vector_value(sha_destination_register) +
+        ", " + vector_value(sha_source_register) + ", " +
+        vector_value(sha_third_register) + ")";
+  } else if ((bits & 0xfffffc00u) == 0x5e282800u) {
+    sha256_expression = "vector_sha256_su0(" + vector_value(sha_destination_register) +
+        ", " + vector_value(sha_source_register) + ")";
+  }
+  if (!sha256_expression.empty()) {
+    return translate_core::Instruction{{"{ ulong2 value = " + sha256_expression +
+                        "; x[" + std::to_string(sha_destination_slot) +
+                        "] = value[0]; x[" + std::to_string(sha_destination_slot + 1) +
+                        "] = value[1]; }"},
                        {pc + 4}};
   }
 

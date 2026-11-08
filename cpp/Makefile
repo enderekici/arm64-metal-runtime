@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -133,6 +133,10 @@ MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
 MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
 MEMCPY_CHK_DECODE_TEST := $(BUILD_DIR)/memcpy-chk-decode-test
+SHA256_NATIVE := $(BUILD_DIR)/sha256-instructions-native
+VECTOR_CRYPTO_LOWER_TEST := $(BUILD_DIR)/vector-crypto-lowering-test
+VECTOR_CRYPTO_MSL := $(BUILD_DIR)/vector-crypto.metal
+VECTOR_CRYPTO_AIR := $(BUILD_DIR)/vector-crypto.air
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
@@ -378,6 +382,26 @@ verify-chained-addends: $(CHAINED_ADDENDS_TEST) $(CHAINED_ADDENDS_FIXTURE) \
 	"$(CHAINED_ADDENDS_IMAGE_TEST)" weak "$(CHAINED_ADDEND_WEAK)" >"$(BUILD_DIR)/chained-addend-weak.loader"
 	printf '%s\n' 'weak_null_addend=12' >"$(BUILD_DIR)/chained-addend-weak.loader.expected"
 	cmp "$(BUILD_DIR)/chained-addend-weak.loader.expected" "$(BUILD_DIR)/chained-addend-weak.loader"
+
+$(SHA256_NATIVE): ../fixtures/handoff/sha256-instructions.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O2 -Wall -Wextra -Werror "$<" -o "$@"
+
+$(VECTOR_CRYPTO_LOWER_TEST): ../fixtures/handoff/vector-crypto-lowering.cpp guest_vector_crypto.cpp guest_vector_crypto.hpp translate_core.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/vector-crypto-lowering.cpp guest_vector_crypto.cpp -o "$@"
+
+$(VECTOR_CRYPTO_MSL): $(VECTOR_CRYPTO_LOWER_TEST)
+	@mkdir -p "$(BUILD_DIR)"
+	"$(VECTOR_CRYPTO_LOWER_TEST)" --emit-metal >"$@"
+
+$(VECTOR_CRYPTO_AIR): $(VECTOR_CRYPTO_MSL)
+	xcrun -sdk macosx metal -I . -c "$<" -o "$@"
+
+verify-vector-crypto: $(SHA256_NATIVE) $(VECTOR_CRYPTO_LOWER_TEST) $(VECTOR_CRYPTO_AIR)
+	"$(SHA256_NATIVE)" >"$(BUILD_DIR)/sha256-instructions.native.out"
+	cmp ../fixtures/handoff/sha256-instructions.expected.out "$(BUILD_DIR)/sha256-instructions.native.out"
+	"$(VECTOR_CRYPTO_LOWER_TEST)"
 
 $(INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
 	@mkdir -p "$(dir $@)"
