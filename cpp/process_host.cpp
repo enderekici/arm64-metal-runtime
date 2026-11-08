@@ -2,6 +2,7 @@
 #include "darwin_bridge.hpp"
 #include "guest_format.hpp"
 #include "guest_state.hpp"
+#include "host_service_registry.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -738,6 +739,11 @@ HostServiceResult dispatch_guest_host_service(
         }, guest_string_reader);
     };
     switch (service) {
+        case kMemcpyChkFailureService:
+            if (registers[2] <= registers[3]) {
+                throw std::runtime_error("Invalid checked memcpy failure dispatch");
+            }
+            return {true, 128 + SIGTRAP};
         case 1: {  // puts
             const auto value = string_at(registers[0]);
             const auto first = write_all(STDOUT_FILENO,

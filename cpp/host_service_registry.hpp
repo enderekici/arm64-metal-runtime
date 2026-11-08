@@ -7,6 +7,8 @@
 
 namespace arm64metal {
 
+inline constexpr int kMemcpyChkFailureService = 184;
+
 struct HostServiceRegistration {
   std::string_view symbol;
   int id;
@@ -200,6 +202,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_get_stackaddr_np", 180, true, true},
     {"_pthread_get_stacksize_np", 181, true, true},
     {"_pthread_jit_write_protect_np", 182, true, true},
+    {"___memcpy_chk", kMemcpyChkFailureService, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {

@@ -78,7 +78,8 @@ Instruction hostCall(const std::string &name,
   const std::map<std::string, int> patternWidths{{"_memset_pattern4", 4},
                                                  {"_memset_pattern8", 8},
                                                  {"_memset_pattern16", 16}};
-  bool copy = name == "_memcpy" || name == "_memmove";
+  bool checkedCopy = name == "___memcpy_chk";
+  bool copy = name == "_memcpy" || name == "_memmove" || checkedCopy;
   bool zero = name == "_bzero";
   auto pattern = patternWidths.find(name);
   if (copy || zero || name == "_memset" || pattern != patternWidths.end()) {
@@ -104,21 +105,28 @@ Instruction hostCall(const std::string &name,
       operation = "guest_pattern(memory + " + destination + ", memory + " +
                   source + ", " + count + ", " + str(pattern->second) + ");";
     } else if (copy) {
-      operation = "guest_move(memory + " + destination + ", memory + " +
+      const auto helper = name == "_memmove" ? "guest_move" : "guest_copy";
+      operation = std::string(helper) + "(memory + " + destination + ", memory + " +
                   source + ", " + count + ");";
     } else {
       operation = "guest_fill(memory + " + destination + ", " +
                   (zero ? "0" : "uchar(x[1])") + ", " + count + ");";
     }
-    return {
-        {returnAddress ? "x[30] = " + str(*returnAddress) + "ul;" : "",
-         "if (" + count + " != 0) {",
+    Strings code{returnAddress ? "x[30] = " + str(*returnAddress) + "ul;" : ""};
+    if (checkedCopy) {
+      code.push_back("if (x[2] > x[3]) {");
+      code.push_back("x[33] = x[30];");
+      code.push_back("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
+      code.push_back("x[35] = " + str(kMemcpyChkFailureService) + "ul; x[34] = 4; return;");
+      code.push_back("}");
+    }
+    code.insert(code.end(), {"if (" + count + " != 0) {",
          "if (" + destinationBounds + sourceBounds +
              ") { x[33] = pc; x[34] = 2; return; }",
          operation, "}", "if (x[30] == ~0ul) { x[34] = 0; return; }",
          "if (x[30] >= " + str(guestCodeLimit) + "ul) { x[874] = x[30]; x[33] = pc; x[34] = 3; return; }",
-         "pc = x[30]; break;"},
-        returnAddress ? PCs{*returnAddress} : PCs{}};
+         "pc = x[30]; break;"});
+    return {std::move(code), returnAddress ? PCs{*returnAddress} : PCs{}};
   }
   const auto& services = decoder_host_service_ids();
   auto service = services.find(name);

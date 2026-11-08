@@ -113,6 +113,15 @@ xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -Icpp \
 
 Expected native output is `1 2 3 4 5 6|0a|0x123456789abcdef|4294967301|0|-0042`.
 
+## Fortified guest memcpy
+
+`make -C cpp verify-memcpy-chk` builds a native ARM64 control with an explicit
+`___memcpy_chk` import. It checks a successful bounded copy, confirms an
+oversized copy terminates through the native checked-failure trap (shell status
+133 on this host), and runs CPU assertions for direct and cached GPU lowering.
+The successful GPU path remains a GPU byte-copy; only an object-size violation
+crosses to the host failure service.
+
 ## Typed MOVN and MOVK slice
 
 The native assembly control covers X/W MOVN complements, X/W MOVK field
