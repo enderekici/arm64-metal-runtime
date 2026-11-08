@@ -411,6 +411,18 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::VectorCompareEqualZero, field(bits, 0, 5),
                      field(bits, 5, 5), elementWidth, 0U, vectorWidth};
   }
+  if ((bits & 0x9f3efc00U) == 0x0e30a800U) {
+    const auto elementWidth = 8U << field(bits, 22, 2);
+    const auto vectorWidth = field(bits, 30, 1) != 0U ? 128U : 64U;
+    if (elementWidth >= 64U || (elementWidth == 32U && vectorWidth != 128U)) {
+      return std::nullopt;
+    }
+    const auto minimum = field(bits, 16, 1);
+    const auto signedLanes = field(bits, 29, 1) == 0U ? 1U : 0U;
+    return Operation{Opcode::VectorReduceExtreme, field(bits, 0, 5),
+                     field(bits, 5, 5), elementWidth,
+                     (signedLanes << 1U) | minimum, vectorWidth};
+  }
   if ((bits & 0x7f3efc00U) == 0x1e220000U) {
     const auto floatWidth = field(bits, 22, 1) != 0 ? 64U : 32U;
     const auto sourceWidth = field(bits, 31, 1) != 0 ? 64U : 32U;
@@ -565,6 +577,28 @@ Instruction make_operation_instruction(Operation operation,
                    "u); x[" + std::to_string(destination) +
                    "] = value[0]; x[" + std::to_string(destination + 1U) +
                    "] = value[1]; }");
+  } else if (operation.opcode == Opcode::VectorReduceExtreme) {
+    const auto minimum = operation.shift & 1U;
+    const auto signedLanes = (operation.shift >> 1U) & 1U;
+    if (operation.destination > 31 || operation.source > 31 ||
+        (operation.immediate != 8U && operation.immediate != 16U &&
+         operation.immediate != 32U) || operation.shift > 3U ||
+        (operation.width != 64U && operation.width != 128U) ||
+        (operation.immediate == 32U && operation.width != 128U) ||
+        next.size() != 1U) {
+      throw std::invalid_argument("Typed vector min/max reduction operands are invalid");
+    }
+    const auto destination = 806U + 2U * operation.destination;
+    const auto source = 806U + 2U * operation.source;
+    code.push_back("{ ulong2 value = vector_reduce_extreme_apply(ulong2(x[" +
+                   std::to_string(source) + "], x[" +
+                   std::to_string(source + 1U) + "]), " +
+                   std::to_string(operation.immediate) + "u, " +
+                   std::to_string(operation.width) + "u, " +
+                   std::to_string(minimum) + "u, " +
+                   std::to_string(signedLanes) + "u); x[" +
+                   std::to_string(destination) + "] = value[0]; x[" +
+                   std::to_string(destination + 1U) + "] = value[1]; }");
   } else if (operation.opcode == Opcode::LoadLiteral) {
     const auto displacement = static_cast<std::int32_t>(operation.immediate);
     const auto bytes = operation.shift == 1U ? 8U : 4U;

@@ -50,6 +50,7 @@ enum class Opcode : std::uint32_t {
   LoadLiteral = 38,
   LoadUnsignedMinMax = 37,
   VectorCompareEqualZero = 39,
+  VectorReduceExtreme = 40,
   AuthenticatedReturn = 36,
 };
 
@@ -145,6 +146,8 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // lane; the upper lane is cleared. Integer source register 31 is ZR.
 // VectorCompareEqualZero uses destination=Vd, source=Vn, immediate=element
 // width in bits, shift=0, and width=64 or 128 vector bits.
+// VectorReduceExtreme uses destination=Vd, source=Vn, immediate=element width,
+// shift=(signed << 1) | minimum, and width=64 or 128 vector bits.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

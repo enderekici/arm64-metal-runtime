@@ -84,6 +84,23 @@ inline ulong2 vector_compare_equal_zero_apply(
     }
     return result;
 }
+inline ulong2 vector_reduce_extreme_apply(
+    ulong2 source, uint elementWidth, uint vectorWidth,
+    uint minimum, uint signedLanes) {
+    const ulong laneMask = ~0ul >> (64u - elementWidth);
+    const ulong signBit = signedLanes != 0u ? 1ul << (elementWidth - 1u) : 0ul;
+    ulong best = source[0] & laneMask;
+    const uint laneCount = vectorWidth / elementWidth;
+    for (uint lane = 1u; lane < laneCount; ++lane) {
+        const uint bit = lane * elementWidth;
+        const ulong value = (source[bit >> 6u] >> (bit & 63u)) & laneMask;
+        if ((minimum != 0u && (value ^ signBit) < (best ^ signBit)) ||
+            (minimum == 0u && (value ^ signBit) > (best ^ signBit))) {
+            best = value;
+        }
+    }
+    return ulong2(best, 0ul);
+}
 struct AddSubImmediateResult {
     ulong value;
     uint flags;
@@ -851,6 +868,17 @@ inline constexpr char typed_integer_msl_source[] =
     "ulong value = (source[bit >> 6u] >> (bit & 63u)) & laneMask; "
     "ulong compared = value == 0ul ? laneMask : 0ul; "
     "result[bit >> 6u] |= compared << (bit & 63u); } return result; }\n"
+    "inline ulong2 vector_reduce_extreme_apply(ulong2 source, "
+    "uint elementWidth, uint vectorWidth, uint minimum, uint signedLanes) { "
+    "ulong laneMask = ~0ul >> (64u - elementWidth); "
+    "ulong signBit = signedLanes != 0u ? 1ul << (elementWidth - 1u) : 0ul; "
+    "ulong best = source[0] & laneMask; uint laneCount = vectorWidth / elementWidth; "
+    "for (uint lane = 1u; lane < laneCount; ++lane) { "
+    "uint bit = lane * elementWidth; "
+    "ulong value = (source[bit >> 6u] >> (bit & 63u)) & laneMask; "
+    "if ((minimum != 0u && (value ^ signBit) < (best ^ signBit)) || "
+    "(minimum == 0u && (value ^ signBit) > (best ^ signBit))) best = value; } "
+    "return ulong2(best, 0ul); }\n"
     "struct AddSubImmediateResult { ulong value; uint flags; };\n"
     "inline AddSubImmediateResult add_sub_immediate_apply(uint subtract, ulong lhs, "
     "uint immediate, uint shift, uint width, uint setFlags, uint previousFlags) { "

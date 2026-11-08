@@ -131,6 +131,47 @@ static VectorPair native_cmeq_alias_2d(VectorPair source) {
   return source;
 }
 
+// The operand spelling splits the scalar destination from the vector shape.
+#define DEFINE_REDUCE_NATIVE_SHAPED(name, operation, scalar, shape)          \
+  static VectorPair name(VectorPair source) {                                \
+    VectorPair result{};                                                     \
+    asm volatile("ldr q1, [%1]\n\t" #operation " " #scalar "0, v1." #shape \
+                 "\n\tstr q0, [%0]"                                        \
+                 :                                                           \
+                 : "r"(&result), "r"(&source)                               \
+                 : "v0", "v1", "memory");                                   \
+    return result;                                                           \
+  }
+
+DEFINE_REDUCE_NATIVE_SHAPED(native_umaxv_8b, umaxv, b, 8b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_umaxv_16b, umaxv, b, 16b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_umaxv_4h, umaxv, h, 4h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_umaxv_8h, umaxv, h, 8h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_umaxv_4s, umaxv, s, 4s)
+DEFINE_REDUCE_NATIVE_SHAPED(native_uminv_8b, uminv, b, 8b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_uminv_16b, uminv, b, 16b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_uminv_4h, uminv, h, 4h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_uminv_8h, uminv, h, 8h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_uminv_4s, uminv, s, 4s)
+DEFINE_REDUCE_NATIVE_SHAPED(native_smaxv_8b, smaxv, b, 8b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_smaxv_16b, smaxv, b, 16b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_smaxv_4h, smaxv, h, 4h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_smaxv_8h, smaxv, h, 8h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_smaxv_4s, smaxv, s, 4s)
+DEFINE_REDUCE_NATIVE_SHAPED(native_sminv_8b, sminv, b, 8b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_sminv_16b, sminv, b, 16b)
+DEFINE_REDUCE_NATIVE_SHAPED(native_sminv_4h, sminv, h, 4h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_sminv_8h, sminv, h, 8h)
+DEFINE_REDUCE_NATIVE_SHAPED(native_sminv_4s, sminv, s, 4s)
+
+static VectorPair native_umaxv_alias_4s(VectorPair source) {
+  asm volatile("ldr q0, [%0]\n\tumaxv s0, v0.4s\n\tstr q0, [%0]"
+               :
+               : "r"(&source)
+               : "v0", "memory");
+  return source;
+}
+
 static std::uint64_t vector_lane(const VectorPair& value, unsigned index,
                                  unsigned width) {
   const std::uint64_t mask = width == 64U
@@ -162,6 +203,22 @@ static VectorPair expected_cmeq_zero(const VectorPair& source,
 static void assert_vector_equal(VectorPair actual, VectorPair expected) {
   assert(actual.lane0 == expected.lane0);
   assert(actual.lane1 == expected.lane1);
+}
+
+static VectorPair expected_vector_extreme(const VectorPair& source,
+                                          unsigned elementWidth,
+                                          unsigned vectorWidth, bool minimum,
+                                          bool signedLanes) {
+  const auto signBit = std::uint64_t{1} << (elementWidth - 1U);
+  const auto laneCount = vectorWidth / elementWidth;
+  auto best = vector_lane(source, 0, elementWidth);
+  for (unsigned index = 1; index < laneCount; ++index) {
+    const auto value = vector_lane(source, index, elementWidth);
+    const auto left = signedLanes ? best ^ signBit : best;
+    const auto right = signedLanes ? value ^ signBit : value;
+    if (minimum ? right < left : right > left) best = value;
+  }
+  return VectorPair{best, 0};
 }
 
 static std::uint64_t native_bfm_wrap(std::uint64_t destination,
@@ -1990,5 +2047,65 @@ int main() {
   assert_vector_equal(nativeAlias, expected_cmeq_zero(vectorInput, 64, 128));
   assert(!decode_operation(0x0ee09820U));  // 64-bit lanes need Q=1.
   assert(!decode_operation(0x5e209820U));  // Scalar compare is not this vector op.
+
+  const VectorPair reductionInput{0x0180000102ff007fULL,
+                                  0xfe00000080ff0001ULL};
+  const std::array<std::uint32_t, 20> reductionEncodings{
+      0x2e30a820U, 0x6e30a820U, 0x2e70a820U, 0x6e70a820U, 0x6eb0a820U,
+      0x2e31a820U, 0x6e31a820U, 0x2e71a820U, 0x6e71a820U, 0x6eb1a820U,
+      0x0e30a820U, 0x4e30a820U, 0x0e70a820U, 0x4e70a820U, 0x4eb0a820U,
+      0x0e31a820U, 0x4e31a820U, 0x0e71a820U, 0x4e71a820U, 0x4eb1a820U};
+  const std::array<unsigned, 20> reductionWidths{
+      8, 8, 16, 16, 32, 8, 8, 16, 16, 32,
+      8, 8, 16, 16, 32, 8, 8, 16, 16, 32};
+  const std::array<unsigned, 20> reductionVectorWidths{
+      64, 128, 64, 128, 128, 64, 128, 64, 128, 128,
+      64, 128, 64, 128, 128, 64, 128, 64, 128, 128};
+  const std::array<unsigned, 20> reductionVariants{
+      0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 3, 3, 3, 3, 3};
+  const std::array<VectorPair (*)(VectorPair), 20> nativeReductions{
+      native_umaxv_8b, native_umaxv_16b, native_umaxv_4h, native_umaxv_8h,
+      native_umaxv_4s, native_uminv_8b, native_uminv_16b, native_uminv_4h,
+      native_uminv_8h, native_uminv_4s, native_smaxv_8b, native_smaxv_16b,
+      native_smaxv_4h, native_smaxv_8h, native_smaxv_4s, native_sminv_8b,
+      native_sminv_16b, native_sminv_4h, native_sminv_8h, native_sminv_4s};
+  for (std::size_t index = 0; index < reductionEncodings.size(); ++index) {
+    const auto decoded = decode_operation(reductionEncodings[index]);
+    assert(decoded && decoded->opcode == Opcode::VectorReduceExtreme &&
+           decoded->destination == 0U && decoded->source == 1U &&
+           decoded->immediate == reductionWidths[index] &&
+           decoded->shift == reductionVariants[index] &&
+           decoded->width == reductionVectorWidths[index]);
+    assert((serialize_operation(*decoded) ==
+            arm64metal::translate_core::OperationPacket{
+                40U, 0U, 1U, reductionWidths[index], reductionVariants[index],
+                reductionVectorWidths[index]}));
+    const auto lowered = make_operation_instruction(
+        *decoded, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48U,
+        0x1000);
+    assert(lowered.code.size() == 1U &&
+           lowered.code[0].find("vector_reduce_extreme_apply") !=
+               std::string::npos);
+    const auto process = arm64metal::decode_process(
+        reductionEncodings[index], 0x1000, {}, {}, false);
+    assert(process.operation && process.operation->opcode ==
+           Opcode::VectorReduceExtreme && process.code.size() == 1U &&
+           process.code[0].find("vector_reduce_extreme_apply") !=
+               std::string::npos);
+    assert_vector_equal(nativeReductions[index](reductionInput),
+                        expected_vector_extreme(
+                            reductionInput, reductionWidths[index],
+                            reductionVectorWidths[index],
+                            (reductionVariants[index] & 1U) != 0,
+                            (reductionVariants[index] & 2U) != 0));
+  }
+  const auto reductionAlias = decode_operation(0x6eb0a800U);
+  assert(reductionAlias && reductionAlias->destination == 0U &&
+         reductionAlias->source == 0U);
+  assert_vector_equal(native_umaxv_alias_4s(reductionInput),
+                      expected_vector_extreme(reductionInput, 32, 128, false,
+                                              false));
+  assert(!decode_operation(0x2ea0a820U));  // 2S reduction is not encoded.
   return 0;
 }

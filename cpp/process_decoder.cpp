@@ -1434,9 +1434,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     }
     auto minimum = field(16, 1) == 1;
     auto signedLanes = field(29, 1) == 0;
-    return assignVector((std::string("vector_extreme(") + str(vector(rn)) +
-                         ", " + str(width) + ", " + str(vectorBits) + ", " +
-                         str(minimum) + ", " + str(signedLanes) + ")"));
+    return assignVector((std::string("vector_reduce_extreme_apply(") +
+                         str(vector(rn)) + ", " + str(width) + ", " +
+                         str(vectorBits) + ", " + str(minimum) + ", " +
+                         str(signedLanes) + ")"));
   }
   const bool vectorEqualZero = (bits & 0xbf3ffc00) == 0x0e209800;
   const bool scalarEqualZero = (bits & 0xff3ffc00) == 0x5e209800;
