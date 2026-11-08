@@ -47,11 +47,12 @@ switches it from RW to RX, executes it, switches back to RW, rewrites its return
 value, and executes it again. It also checks that RWX `mmap` and `mprotect`
 requests fail with `EACCES`.
 
-The positive case protects only the first page of a two-page mapping. The
-neighboring RW page remains writable. Optional negative cases attempt to
-execute after returning code memory to RW or after unmapping it. Native
-execution faults with SIGBUS for RW and SIGSEGV after unmapping. The translated
-runtime must reject both without executing stale code.
+The positive case protects individual pages in a three-page mapping, rewrites
+one executable page, then unmaps it while calling code from the surviving
+executable page. Optional negative cases attempt to execute after returning
+code memory to RW or after unmapping it. Native execution faults with SIGBUS
+for RW and SIGSEGV after unmapping. The translated runtime must reject both
+without executing stale code.
 
 ```sh
 src=fixtures/handoff/jit-rewrite.c
@@ -62,7 +63,8 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o .build/handoff-probe
 .build/handoff-probes/jit-rewrite unmapped-fault
 ```
 
-Expected output from both runs is `first=42 second=73 wx=13/13`, with exit status 0.
+Expected output from both runs is
+`first=42 second=81 third=73 survivor=81 wx=13/13`, with exit status 0.
 Each negative case prints `calling revoked code` before the native fault. The
 translated runtime reports a code rejection instead of reproducing Unix signal
 delivery.

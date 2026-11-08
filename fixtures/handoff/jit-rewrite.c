@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
     const int mmap_wx_errno = errno;
     if (writable_executable != MAP_FAILED || mmap_wx_errno != EACCES) return 9;
 
-    void *page = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+    void *page = mmap(NULL, (size_t)page_size * 3, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANON, -1, 0);
     if (page == MAP_FAILED) { perror("mmap"); return 11; }
 
@@ -70,6 +70,10 @@ int main(int argc, char **argv) {
     neighbor[2] = 0x12345678U;
     if (neighbor[2] != 0x12345678U) return 18;
     int first = ((guest_function)page)();
+    if (mprotect(neighbor, (size_t)page_size, PROT_READ | PROT_EXEC) != 0) {
+        perror("mprotect neighbor RX"); return 19;
+    }
+    int second = ((guest_function)neighbor)();
     if (mprotect(page, (size_t)page_size, PROT_READ | PROT_WRITE) != 0) {
         perror("mprotect RW"); return 13;
     }
@@ -77,8 +81,11 @@ int main(int argc, char **argv) {
     if (mprotect(page, (size_t)page_size, PROT_READ | PROT_EXEC) != 0) {
         perror("mprotect RX 2"); return 14;
     }
-    int second = ((guest_function)page)();
-    printf("first=%d second=%d wx=%d/%d\n", first, second, mmap_wx_errno, mprotect_wx_errno);
-    if (munmap(page, (size_t)page_size * 2) != 0) { perror("munmap"); return 15; }
-    return first == 42 && second == 73 ? 0 : 16;
+    int third = ((guest_function)page)();
+    if (munmap(page, (size_t)page_size) != 0) { perror("partial munmap"); return 20; }
+    int survivor = ((guest_function)neighbor)();
+    printf("first=%d second=%d third=%d survivor=%d wx=%d/%d\n",
+           first, second, third, survivor, mmap_wx_errno, mprotect_wx_errno);
+    if (munmap(neighbor, (size_t)page_size * 2) != 0) { perror("munmap"); return 15; }
+    return first == 42 && second == 81 && third == 73 && survivor == 81 ? 0 : 16;
 }
