@@ -492,6 +492,8 @@ ProcessKernelPlan plan_process_kernel(
             const bool adrOpcode = opcode == translate_core::Opcode::Adr;
             const bool vectorCompareEqualZeroOpcode =
                 opcode == translate_core::Opcode::VectorCompareEqualZero;
+            const bool vectorReduceExtremeOpcode =
+                opcode == translate_core::Opcode::VectorReduceExtreme;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !unsignedMemoryOpcode ||
@@ -680,6 +682,13 @@ ProcessKernelPlan plan_process_kernel(
                  operation.shift == 0U &&
                  (operation.width == 64U || operation.width == 128U) &&
                  (operation.immediate != 64U || operation.width == 128U));
+            const bool validVectorReduceExtreme =
+                !vectorReduceExtremeOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.immediate == 8U || operation.immediate == 16U ||
+                  operation.immediate == 32U) && operation.shift <= 3U &&
+                 (operation.width == 64U || operation.width == 128U) &&
+                 (operation.immediate != 32U || operation.width == 128U));
             if ((!moveWideOpcode && !authenticatedStep && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
@@ -687,7 +696,8 @@ ProcessKernelPlan plan_process_kernel(
                  !logicalVariableShiftOpcode && !multiplyAccumulateOpcode &&
                  !bitfieldOpcode && !scalarFPOpcode &&
                  !integerBitOperationOpcode && !integerDivideOpcode &&
-                 !adrOpcode && !vectorCompareEqualZeroOpcode) ||
+                 !adrOpcode && !vectorCompareEqualZeroOpcode &&
+                 !vectorReduceExtremeOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -700,7 +710,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validLogicalVariableShift || !validMultiplyAccumulate ||
                 !validBitfield || !validScalarFP ||
                 !validIntegerBitOperation || !validIntegerDivide || !validAdr ||
-                !validVectorCompareEqualZero ||
+                !validVectorCompareEqualZero || !validVectorReduceExtreme ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;
