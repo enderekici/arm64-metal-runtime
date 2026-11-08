@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <iostream>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -646,6 +647,39 @@ std::string hexadecimal(std::uint64_t value) {
     return output.str();
 }
 
+class ProgressTrace {
+public:
+    ProgressTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    [[nodiscard]] bool enabled() const noexcept { return enabled_; }
+
+    void event(const char* name, std::uint64_t pc, std::uint64_t detail = 0) {
+        if (!enabled_) return;
+        if (events_ == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal trace event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        ++events_;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::cerr << "arm64-metal trace +" << elapsed << "ms " << name
+                  << " pc=0x" << hexadecimal(pc) << " detail=" << detail << '\n';
+    }
+
+private:
+    static constexpr std::size_t maximumEvents = 128;
+    bool enabled_ = false;
+    bool limitReported_ = false;
+    std::size_t events_ = 0;
+    std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+};
+
 std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
                                 std::uint64_t status) {
     const std::string kind = status == 9 ? "data-pointer" : status == 10 ? "branch" : "code-pointer";
@@ -904,14 +938,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     std::map<std::int64_t, std::string> decodeErrors;
     std::map<std::int64_t, ComputeKernel> kernels;
+    ProgressTrace progressTrace;
+    const auto compileKernel = [&](std::int64_t entry) {
+        const auto started = std::chrono::steady_clock::now();
+        progressTrace.event("compile-start", static_cast<std::uint64_t>(entry));
+        auto kernel = compile_process_kernel(image, config, imports, guestStubs,
+                                             decodeErrors, entry, backend);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        progressTrace.event("compile-done", static_cast<std::uint64_t>(entry),
+                            static_cast<std::uint64_t>(elapsed));
+        return kernel;
+    };
     const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
     if (state[33] > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::runtime_error("Guest entry address exceeds the supported code range");
     }
     const auto initialEntry = static_cast<std::int64_t>(startup.front());
     auto [initialKernel, inserted] = kernels.emplace(
-        initialEntry, compile_process_kernel(image, config, imports, guestStubs,
-                                             decodeErrors, initialEntry, backend));
+        initialEntry, compileKernel(initialEntry));
     (void)inserted;
     auto* activeKernel = &initialKernel->second;
     std::int64_t activeEntry = initialEntry;
@@ -927,9 +972,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         auto found = kernels.find(entry);
         if (found == kernels.end()) {
-            auto [compiled, wasInserted] = kernels.emplace(
-                entry, compile_process_kernel(image, config, imports, guestStubs,
-                                              decodeErrors, entry, backend));
+            auto [compiled, wasInserted] = kernels.emplace(entry, compileKernel(entry));
             (void)wasInserted;
             found = compiled;
         }
@@ -2582,6 +2625,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         selectKernel(static_cast<std::int64_t>(handler->target));
         return true;
     };
+    std::uint64_t dispatchSequence = 0;
     while (true) {
         if (const auto signalExit = deliverPendingSignal()) return *signalExit;
         auto& callbackFrames = callbackFramesByThread[guestScheduler.current_id()];
@@ -2597,8 +2641,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         registers[guestCacheFaultWidth] = 0;
         // A guest callback may tail-call a host service. Its sentinel return
         // must complete the callback without compiling the sentinel as code.
-        if (registers[33] == kNoFault) registers[34] = 0;
-        else (void)backend.dispatch(*activeKernel, bindings, one, one);
+        if (registers[33] == kNoFault) {
+            registers[34] = 0;
+        } else if (progressTrace.enabled()) {
+            ++dispatchSequence;
+            const bool reportDispatch = dispatchSequence <= 16 || dispatchSequence % 32 == 0;
+            const auto dispatchStarted = std::chrono::steady_clock::now();
+            if (reportDispatch) {
+                progressTrace.event("dispatch-start", registers[33], dispatchSequence);
+            }
+            (void)backend.dispatch(*activeKernel, bindings, one, one);
+            if (reportDispatch) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - dispatchStarted).count();
+                progressTrace.event("dispatch-done", registers[33],
+                                    static_cast<std::uint64_t>(elapsed));
+            }
+        } else {
+            (void)backend.dispatch(*activeKernel, bindings, one, one);
+        }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto status = registers[34];
         if (status == 0) {
@@ -2707,6 +2768,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 static_cast<const std::uint64_t*>(stateBuffer.data()) +
                     stateBuffer.size() / sizeof(std::uint64_t));
             const auto service = registers[35];
+            progressTrace.event("host-service", hostRegisters[33], service);
             if (service == 166 || service == 167) {
                 auto target = hostRegisters[0];
                 if ((target & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
