@@ -16,7 +16,147 @@ using arm64metal::translate_core::decode_operation;
 using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
+static std::pair<std::uint64_t, std::uint32_t> native_add_sub_carry(
+    bool subtract, bool setFlags, std::uint64_t lhs, std::uint64_t rhs,
+    std::uint32_t flags, std::uint32_t width) {
+  const auto nativeFlags =
+      (std::uint64_t(flags & 2U) << 30U) |
+      (std::uint64_t(flags & 1U) << 30U) |
+      (std::uint64_t(flags & 8U) << 26U) |
+      (std::uint64_t(flags & 4U) << 26U);
+  std::uint64_t result;
+  std::uint64_t observedFlags;
+  if (width == 64U && subtract && setFlags) {
+    asm volatile("msr nzcv, %4\n\tsbcs %0, %2, %3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (width == 64U && !subtract && setFlags) {
+    asm volatile("msr nzcv, %4\n\tadcs %0, %2, %3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (width == 32U && subtract && setFlags) {
+    asm volatile("msr nzcv, %4\n\tsbcs %w0, %w2, %w3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (width == 32U && !subtract && setFlags) {
+    asm volatile("msr nzcv, %4\n\tadcs %w0, %w2, %w3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (width == 64U && subtract) {
+    asm volatile("msr nzcv, %4\n\tsbc %0, %2, %3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (width == 64U) {
+    asm volatile("msr nzcv, %4\n\tadc %0, %2, %3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else if (subtract) {
+    asm volatile("msr nzcv, %4\n\tsbc %w0, %w2, %w3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  } else {
+    asm volatile("msr nzcv, %4\n\tadc %w0, %w2, %w3\n\tmrs %1, nzcv"
+                 : "=&r"(result), "=&r"(observedFlags)
+                 : "r"(lhs), "r"(rhs), "r"(nativeFlags) : "cc");
+  }
+  const auto observed = static_cast<std::uint32_t>(observedFlags >> 28U);
+  const auto internalFlags = ((observed >> 2U) & 2U) |
+                             ((observed >> 2U) & 1U) |
+                             ((observed << 2U) & 8U) |
+                             ((observed << 2U) & 4U);
+  return {width == 32U ? std::uint64_t(std::uint32_t(result)) : result,
+          internalFlags};
+}
+
+static std::pair<std::uint64_t, std::uint32_t> native_alias_add_sub_carry(
+    bool subtract, std::uint64_t value, std::uint32_t flags) {
+  const auto nativeFlags =
+      (std::uint64_t(flags & 2U) << 30U) |
+      (std::uint64_t(flags & 1U) << 30U) |
+      (std::uint64_t(flags & 8U) << 26U) |
+      (std::uint64_t(flags & 4U) << 26U);
+  std::uint64_t observedFlags;
+  if (subtract) {
+    asm volatile("msr nzcv, %2\n\tsbcs %0, %0, %0\n\tmrs %1, nzcv"
+                 : "+&r"(value), "=&r"(observedFlags)
+                 : "r"(nativeFlags) : "cc");
+  } else {
+    asm volatile("msr nzcv, %2\n\tadcs %0, %0, %0\n\tmrs %1, nzcv"
+                 : "+&r"(value), "=&r"(observedFlags)
+                 : "r"(nativeFlags) : "cc");
+  }
+  const auto observed = static_cast<std::uint32_t>(observedFlags >> 28U);
+  const auto internalFlags = ((observed >> 2U) & 2U) |
+                             ((observed >> 2U) & 1U) |
+                             ((observed << 2U) & 8U) |
+                             ((observed << 2U) & 4U);
+  return {value, internalFlags};
+}
+
 int main() {
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+      for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
+        const auto bits = 0x1a000000U | (width == 64U ? 0x80000000U : 0U) |
+                          (subtract << 30U) | (setFlags << 29U) |
+                          (2U << 16U) | (1U << 5U) | 3U;
+        const auto operation = decode_operation(bits);
+        const auto packed = (setFlags << 1U) | subtract;
+        assert(operation.has_value() &&
+               operation->opcode == Opcode::AddSubCarryRegister &&
+               operation->destination == 3 && operation->source == 1 &&
+               operation->immediate == 2 && operation->shift == packed &&
+               operation->width == width);
+        assert((serialize_operation(*operation) ==
+                arm64metal::translate_core::OperationPacket{
+                    26, 3, 1, 2, packed, width}));
+        const auto lowered = make_operation_instruction(
+            *operation, {0x1004}, LoweringMode::Process,
+            std::uint64_t{1} << 48);
+        assert(lowered.code[1].find("add_sub_carry_apply(") !=
+                   std::string::npos &&
+               lowered.code[7] == "x[32] = add_sub_result.flags;");
+      }
+    }
+  }
+  const auto fixtureSbcs = decode_operation(0xfa090129U);
+  assert(fixtureSbcs.has_value() &&
+         fixtureSbcs->opcode == Opcode::AddSubCarryRegister &&
+         fixtureSbcs->destination == 9 && fixtureSbcs->source == 9 &&
+         fixtureSbcs->immediate == 9 && fixtureSbcs->shift == 3 &&
+         fixtureSbcs->width == 64);
+  const std::array<std::uint64_t, 6> carryValues{
+      0, 1, 0xffffffffU, 0x7fffffffU, 0x8000000000000000ULL,
+      0xffffffffffffffffULL};
+  for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+    for (std::uint32_t flags = 0; flags < 16; ++flags) {
+      for (const auto value : carryValues) {
+        const auto expected = arm64metal::add_sub_carry_apply(
+            subtract, value, value, 64, 1, flags);
+        const auto actual = native_alias_add_sub_carry(
+            subtract != 0, value, flags);
+        assert(actual.first == expected.value && actual.second == expected.flags);
+      }
+    }
+  }
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+      for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
+        for (std::uint32_t flags = 0; flags < 16; ++flags) {
+          for (const auto lhs : carryValues) {
+            for (const auto rhs : carryValues) {
+              const auto expected = arm64metal::add_sub_carry_apply(
+                  subtract, lhs, rhs, width, setFlags, flags);
+              const auto actual = native_add_sub_carry(
+                  subtract != 0, setFlags != 0, lhs, rhs, flags, width);
+              assert(actual.first == expected.value &&
+                     actual.second == expected.flags);
+            }
+          }
+        }
+      }
+    }
+  }
   for (const std::uint32_t width : {32U, 64U}) {
     for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
       for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
@@ -225,6 +365,10 @@ int main() {
       std::string_view(arm64metal::typed_integer_msl_source);
   assert(logicalMsl.find("};\ninline LogicalShiftedResult") !=
          std::string_view::npos);
+  const auto carryMsl = logicalMsl.find("inline AddSubImmediateResult add_sub_carry_apply");
+  assert(carryMsl != std::string_view::npos &&
+         logicalMsl.find("}\nstruct LogicalShiftedResult", carryMsl) !=
+             std::string_view::npos);
   assert(logicalMsl.find("flags}; }\ninline bool arm64_condition_holds") !=
          std::string_view::npos);
   assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==

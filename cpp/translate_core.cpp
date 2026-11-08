@@ -285,6 +285,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::AddSubShiftedRegister, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), packed, width};
   }
+  if ((bits & 0x1fe0fc00U) == 0x1a000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto subtract = field(bits, 30, 1);
+    const auto setFlags = field(bits, 29, 1);
+    return Operation{Opcode::AddSubCarryRegister, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5),
+                     (setFlags << 1U) | subtract, width};
+  }
   if ((bits & 0x1f200000U) == 0x0b200000U) {
     const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
     const auto option = field(bits, 13, 3);
@@ -445,6 +453,35 @@ Instruction make_operation_instruction(Operation operation,
                    "u, " + std::to_string(operation.width) + "u, " +
                    std::string(setFlags ? "1u" : "0u") + ", " + flags + ");");
     if (!setFlags || operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = add_sub_result.value;");
+    }
+    code.push_back("z = (add_sub_result.flags & 1u) != 0u;");
+    code.push_back("n = (add_sub_result.flags & 2u) != 0u;");
+    code.push_back("v = (add_sub_result.flags & 4u) != 0u;");
+    code.push_back("c = (add_sub_result.flags & 8u) != 0u;");
+    if (mode == LoweringMode::Process) {
+      code.push_back("x[32] = add_sub_result.flags;");
+    }
+    code.push_back("}");
+  } else if (operation.opcode == Opcode::AddSubCarryRegister) {
+    const bool subtract = (operation.shift & 1U) != 0;
+    const bool setFlags = (operation.shift & 2U) != 0;
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || (operation.width != 32 && operation.width != 64) ||
+        (operation.shift & ~3U) != 0) {
+      throw std::invalid_argument("Typed ADC/SBC register operands are invalid");
+    }
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("{");
+    code.push_back("const AddSubImmediateResult add_sub_result = "
+                   "add_sub_carry_apply(" + std::string(subtract ? "1u" : "0u") +
+                   ", " + reg(operation.source, operation.width == 64) + ", " +
+                   reg(operation.immediate, operation.width == 64) + ", " +
+                   std::to_string(operation.width) + "u, " +
+                   std::string(setFlags ? "1u" : "0u") + ", " + flags + ");");
+    if (operation.destination != 31) {
       code.push_back("x[" + std::to_string(operation.destination) +
                      "] = add_sub_result.value;");
     }

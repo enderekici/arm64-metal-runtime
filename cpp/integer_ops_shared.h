@@ -107,6 +107,30 @@ inline AddSubImmediateResult add_sub_shifted_apply(
         : previousFlags;
     return AddSubImmediateResult{value, flags};
 }
+inline AddSubImmediateResult add_sub_carry_apply(
+    uint subtract, ulong lhs, ulong rhs, uint width, uint setFlags,
+    uint previousFlags) {
+    const ulong left = width == 32u ? ulong(uint(lhs)) : lhs;
+    const ulong right = width == 32u ? ulong(uint(rhs)) : rhs;
+    const ulong carryIn = ulong((previousFlags >> 3u) & 1u);
+    const ulong borrowIn = 1ul - carryIn;
+    const ulong value = width == 32u
+        ? ulong(uint(subtract != 0u ? uint(left) - uint(right) - uint(borrowIn)
+                                    : uint(left) + uint(right) + uint(carryIn)))
+        : (subtract != 0u ? left - right - borrowIn : left + right + carryIn);
+    const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+    const bool carryOut = subtract != 0u
+        ? (left > right || (carryIn != 0ul && left == right))
+        : (value < left || (carryIn != 0ul && value == left));
+    const uint flags = setFlags != 0u
+        ? uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u) |
+              (uint(subtract != 0u
+                        ? (((left ^ right) & (left ^ value) & signBit) != 0ul)
+                        : ((~(left ^ right) & (left ^ value) & signBit) != 0ul))
+               << 2u) | (uint(carryOut) << 3u)
+        : previousFlags;
+    return AddSubImmediateResult{value, flags};
+}
 inline ulong add_sub_extend_register(ulong source, uint option) {
     if (option == 0u) return source & 0xfful;
     if (option == 1u) return source & 0xfffful;
@@ -214,6 +238,44 @@ inline constexpr std::uint64_t adr_apply(std::uint32_t mode, std::uint64_t pc,
   const auto base = mode == 0U ? pc : (pc & ~std::uint64_t{0xfffU});
   const auto scale = mode == 0U ? 1LL : 4096LL;
   return base + static_cast<std::uint64_t>(displacement * scale);
+}
+struct AddSubCarryResult {
+  std::uint64_t value;
+  std::uint32_t flags;
+};
+inline AddSubCarryResult add_sub_carry_apply(
+    std::uint32_t subtract, std::uint64_t lhs, std::uint64_t rhs,
+    std::uint32_t width, std::uint32_t setFlags,
+    std::uint32_t previousFlags) {
+  const auto mask = width == 32U ? std::uint64_t{0xffffffffU} : ~std::uint64_t{0};
+  const auto left = lhs & mask;
+  const auto right = rhs & mask;
+  const auto carryIn = (previousFlags >> 3U) & 1U;
+  const auto borrowIn = 1U - carryIn;
+  std::uint64_t value;
+  bool carryOut;
+  if (subtract != 0U) {
+    value = (left - right - borrowIn) & mask;
+    carryOut = left > right || (carryIn != 0U && left == right);
+  } else if (width == 32U) {
+    const auto sum = left + right + carryIn;
+    value = sum & mask;
+    carryOut = (sum >> 32U) != 0U;
+  } else {
+    value = left + right + carryIn;
+    carryOut = value < left || (carryIn != 0U && value == left);
+  }
+  const auto signBit = width == 32U ? std::uint64_t{0x80000000U}
+                                    : std::uint64_t{0x8000000000000000ULL};
+  const auto overflow = subtract != 0U
+      ? (((left ^ right) & (left ^ value) & signBit) != 0U)
+      : ((~(left ^ right) & (left ^ value) & signBit) != 0U);
+  const auto flags = setFlags != 0U
+      ? std::uint32_t(value == 0U) |
+            (std::uint32_t((value & signBit) != 0U) << 1U) |
+            (std::uint32_t(overflow) << 2U) | (std::uint32_t(carryOut) << 3U)
+      : previousFlags;
+  return {value, flags};
 }
 struct LogicalShiftedResult {
   std::uint64_t value;
@@ -348,6 +410,24 @@ inline constexpr char typed_integer_msl_source[] =
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
         subtract, left, shifted, value, width, signBit))
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
+    "inline AddSubImmediateResult add_sub_carry_apply(uint subtract, ulong lhs, "
+    "ulong rhs, uint width, uint setFlags, uint previousFlags) { "
+    "ulong left = width == 32u ? ulong(uint(lhs)) : lhs; "
+    "ulong right = width == 32u ? ulong(uint(rhs)) : rhs; "
+    "ulong carryIn = ulong((previousFlags >> 3u) & 1u); "
+    "ulong borrowIn = 1ul - carryIn; ulong value = width == 32u "
+    "? ulong(uint(subtract != 0u ? uint(left) - uint(right) - uint(borrowIn) "
+    ": uint(left) + uint(right) + uint(carryIn))) "
+    ": (subtract != 0u ? left - right - borrowIn : left + right + carryIn); "
+    "ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
+    "bool carryOut = subtract != 0u ? (left > right || (carryIn != 0ul && left == right)) "
+    ": (value < left || (carryIn != 0ul && value == left)); "
+    "uint flags = setFlags != 0u ? uint(value == 0ul) | "
+    "(uint((value & signBit) != 0ul) << 1u) | "
+    "(uint(subtract != 0u ? (((left ^ right) & (left ^ value) & signBit) != 0ul) "
+    ": ((~(left ^ right) & (left ^ value) & signBit) != 0ul)) << 2u) | "
+    "(uint(carryOut) << 3u) : previousFlags; "
+    "return AddSubImmediateResult{value, flags}; }\n"
     "struct LogicalShiftedResult { ulong value; uint flags; };\n"
     "inline LogicalShiftedResult logical_immediate_apply(uint opc, ulong lhs, "
     "ulong immediate, uint width, uint setFlags, uint previousFlags) { "

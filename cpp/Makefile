@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -123,6 +123,8 @@ INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 INTERPRETER_TBZ_TBNZ_MAIN := $(BUILD_DIR)/interpreter-tbz-tbnz-main
 INTERPRETER_ADR_ADRP_MAIN := $(BUILD_DIR)/interpreter-adr-adrp-main
+INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
+ADC_SBC_CARRY_DECODE_TEST := $(BUILD_DIR)/adc-sbc-carry-decode-test
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
@@ -283,6 +285,14 @@ $(INTERPRETER_TBZ_TBNZ_MAIN): ../fixtures/interpreter/tbz-tbnz-main.s
 $(INTERPRETER_ADR_ADRP_MAIN): ../fixtures/interpreter/adr-adrp-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_ADC_SBC_CARRY_MAIN): ../fixtures/interpreter/adc-sbc-carry-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(ADC_SBC_CARRY_DECODE_TEST): ../fixtures/handoff/adc-sbc-carry-decode.cpp process_decoder.cpp process_decoder.hpp translate_core.cpp translate_core.hpp integer_ops_shared.h guest_strings.cpp guest_strings.hpp guest_vector_crypto.cpp guest_vector_crypto.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. ../fixtures/handoff/adc-sbc-carry-decode.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
 
 $(GUEST_FORMAT_NATIVE): ../fixtures/handoff/guest-printf-formats.c
 	@mkdir -p "$(BUILD_DIR)"
@@ -515,6 +525,16 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
+
+verify-adc-sbc-carry-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(ADC_SBC_CARRY_DECODE_TEST)
+	@set -eu; \
+		"$(INTERPRETER_TYPED_NATIVE)"; \
+		"$(ADC_SBC_CARRY_DECODE_TEST)"; \
+		set +e; \
+		"$(INTERPRETER_ADC_SBC_CARRY_MAIN)"; native_rc=$$?; \
+		set -e; \
+		test "$$native_rc" -eq 42; \
+		echo "adc-sbc-carry native guest exit=$$native_rc"
 
 verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \

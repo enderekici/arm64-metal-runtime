@@ -193,6 +193,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter add/sub extended-register packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::AddSubCarryRegister) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                (operation[4] & ~3U) != 0 ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter ADC/SBC register packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::LogicalShiftedRegister) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto packed = operation[4];

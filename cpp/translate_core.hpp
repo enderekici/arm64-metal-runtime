@@ -34,6 +34,7 @@ enum class Opcode : std::uint32_t {
   AddSubShiftedRegister = 19,
   LoadSignedScalar = 20,
   AddSubExtendedRegister = 22,
+  AddSubCarryRegister = 26,
   LogicalShiftedRegister = 23,
   LogicalImmediate = 24,
   TestBitBranch = 25,
@@ -80,6 +81,8 @@ enum class Opcode : std::uint32_t {
 // ADR/ADRP uses destination=Rd, source=0 for ADR or 1 for ADRP,
 // immediate=the unsigned encoded immhi:immlo 21-bit value, and width=64.
 // The instruction PC comes from the packet and is passed to adr_apply.
+// ADC/SBC uses destination=Rd, source=Rn, immediate=Rm, shift=(setFlags << 1)
+// | subtract, and width=32 or 64. Register 31 is ZR for all operands.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
