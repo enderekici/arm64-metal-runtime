@@ -2506,11 +2506,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t voucherPort;
         std::int32_t messageId;
         std::vector<std::uint8_t> body;
-        std::optional<std::uint32_t> movedSendName;
+        std::optional<std::uint32_t> transferredSendName;
+        std::uint32_t transferredSendDisposition = 0;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
-    constexpr std::uint32_t machReceiveInvalidData = 0x1000400e;
+    constexpr std::uint32_t machReceiveInvalidData = 0x10004008;
     constexpr std::uint32_t machReceivePortChanged = 0x10004006;
     constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
     const auto copyGuestMachMessage = [&](const GuestLocalMessage& message,
@@ -2532,6 +2533,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::memcpy(output, &header, sizeof(header));
             if (!message.body.empty()) {
                 std::memcpy(output + sizeof(header), message.body.data(), message.body.size());
+            }
+            if (message.transferredSendName) {
+                constexpr auto descriptorOffset = sizeof(mach_msg_header_t) +
+                    sizeof(mach_msg_body_t);
+                mach_msg_port_descriptor_t descriptor{};
+                std::memcpy(&descriptor, output + descriptorOffset, sizeof(descriptor));
+                descriptor.disposition = MACH_MSG_TYPE_MOVE_SEND;
+                std::memcpy(output + descriptorOffset, &descriptor, sizeof(descriptor));
             }
             const mach_msg_trailer_t trailer{0, machTrailerSize};
             std::memcpy(output + message.size, &trailer, sizeof(trailer));
@@ -2610,15 +2619,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         guestUnixReceiveWaiters.erase(waiters);
     };
-    const auto restoreGuestMovedSendRight = [&](const GuestLocalMessage& message) {
-        if (!message.movedSendName) return true;
-        const auto receive = guestReceiveRights.find(*message.movedSendName);
-        const auto send = guestSendRightUrefs.find(*message.movedSendName);
-        if (receive == guestReceiveRights.end() || send == guestSendRightUrefs.end() ||
-            send->second >= std::numeric_limits<std::uint32_t>::max()) return false;
-        ++send->second;
+    const auto restoreGuestTransferredSendRight = [&](const GuestLocalMessage& message) {
+        if (!message.transferredSendName) return true;
+        const auto receive = guestReceiveRights.find(*message.transferredSendName);
+        const auto send = guestSendRightUrefs.find(*message.transferredSendName);
+        if (receive == guestReceiveRights.end() || send == guestSendRightUrefs.end()) {
+            return false;
+        }
+        if (send->second < maxGuestPortUrefs) ++send->second;
         return true;
     };
+    const auto restoreTransferredRightAfterInvalidReceive =
+        [&](const GuestLocalMessage& message) {
+            return message.transferredSendDisposition != MACH_MSG_TYPE_MOVE_SEND ||
+                restoreGuestTransferredSendRight(message);
+        };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
         expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
         auto waiting = guestMachReceiveWaiters.find(port);
@@ -2640,10 +2655,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             progressTrace.event("mach-message-wake", threadId, port);
             guestMachBlockedReceives.erase(blocked);
             auto delivered = result;
-            if (delivered == 0 && !restoreGuestMovedSendRight(queue->second.front())) {
-                delivered = machReceiveInvalidData;
+            if (delivered == 0) {
+                if (!restoreGuestTransferredSendRight(queue->second.front())) {
+                    delivered = machReceiveInvalidData;
+                }
+            } else if (delivered == machReceiveInvalidData) {
+                (void)restoreTransferredRightAfterInvalidReceive(queue->second.front());
             }
-            if (delivered == 0) queue->second.pop_front();
+            if (delivered == 0 || delivered == machReceiveTooLarge ||
+                delivered == machReceiveInvalidData) {
+                queue->second.pop_front();
+            }
             guestScheduler.wake(threadId, static_cast<std::int32_t>(delivered));
         }
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
@@ -7616,7 +7638,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     const auto* bytes = guestMemory.buffer(registers[0], sendSize);
                                     mach_msg_header_t header{};
                                     std::memcpy(&header, bytes, sizeof(header));
-                                    std::optional<std::uint32_t> movedSendName;
+                                    std::optional<std::uint32_t> transferredSendName;
+                                    std::uint32_t transferredSendDisposition = 0;
                                     if (header.msgh_bits != bits || header.msgh_size != sendSize ||
                                         header.msgh_remote_port != remote ||
                                         header.msgh_local_port != 0 ||
@@ -7634,7 +7657,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             guestSendRightUrefs.find(descriptor.name);
                                         if (body.msgh_descriptor_count != 1 ||
                                             descriptor.pad1 != 0 || descriptor.pad2 != 0 ||
-                                            descriptor.disposition != machMsgTypeMoveSend ||
+                                            (descriptor.disposition != machMsgTypeMoveSend &&
+                                             descriptor.disposition != machMsgTypeCopySend) ||
                                             descriptor.type != machPortDescriptorType ||
                                             descriptor.name == 0 ||
                                             descriptor.name ==
@@ -7648,7 +7672,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         } else {
                                             // This local namespace can preserve a transferred
                                             // name only while its receive right remains live.
-                                            movedSendName = descriptor.name;
+                                            transferredSendName = descriptor.name;
+                                            transferredSendDisposition =
+                                                descriptor.disposition;
                                         }
                                     }
                                     if (result != 0) {
@@ -7661,12 +7687,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         bits,
                                         static_cast<std::uint32_t>(registers[3] >> 32),
                                         static_cast<std::uint32_t>(registers[4]),
-                                        static_cast<std::int32_t>(messageId), {}, movedSendName};
+                                        static_cast<std::int32_t>(messageId), {},
+                                        transferredSendName, transferredSendDisposition};
                                     message.body.assign(bytes + sizeof(mach_msg_header_t),
                                                         bytes + sendSize);
                                     guestMachMessageQueues[remote].push_back(std::move(message));
-                                    if (movedSendName) {
-                                        --guestSendRightUrefs.at(*movedSendName);
+                                    if (transferredSendName &&
+                                        transferredSendDisposition == machMsgTypeMoveSend) {
+                                        --guestSendRightUrefs.at(*transferredSendName);
                                     }
                                     progressTrace.event("mach-message-send",
                                         guestScheduler.current_id(),
@@ -7748,13 +7776,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 const auto receiveSize = static_cast<std::uint32_t>(registers[6]);
                                 if (receiveSize < outputSize) {
                                     result = machReceiveTooLarge;
+                                    queue.pop_front();
                                 } else {
                                     result = copyGuestMachMessage(queue.front(), receiveName,
                                         registers[0], receiveSize);
-                                    if (result == 0 && !restoreGuestMovedSendRight(queue.front())) {
-                                        result = machReceiveInvalidData;
+                                    if (result == 0) {
+                                        if (!restoreGuestTransferredSendRight(queue.front())) {
+                                            result = machReceiveInvalidData;
+                                        }
+                                    } else if (result == machReceiveInvalidData) {
+                                        (void)restoreTransferredRightAfterInvalidReceive(
+                                            queue.front());
                                     }
-                                    if (result == 0) queue.pop_front();
+                                    if (result == 0 || result == machReceiveInvalidData) {
+                                        queue.pop_front();
+                                    }
                                 }
                             }
                         }
@@ -8593,6 +8629,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             guestSendRightUrefs.erase(sendRight);
                         }
                         guestReceiveRights.erase(receiveRight);
+                        // Queued MOVE_SEND rights remain discarded; COPY_SEND rights are
+                        // materialized only when copyout succeeds.
                         guestMachMessageQueues.erase(name);
                     }
                 } else if (right == MACH_PORT_RIGHT_DEAD_NAME) {
@@ -8692,6 +8730,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             guestDeadPortNames.insert(name);
                         }
                         guestReceiveRights.erase(right);
+                        // Dropping this port's queue also drops any in-transit descriptors.
                         guestMachMessageQueues.erase(name);
                     }
                 }
