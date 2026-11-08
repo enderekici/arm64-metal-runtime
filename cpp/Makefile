@@ -354,9 +354,11 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/add-sub-sp.native.out" "$$run_dir/add-sub-sp.interpreter.out" && \
 		cmp "$$run_dir/add-sub-sp.native.err" "$$run_dir/add-sub-sp.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
-		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/add-sub-sp.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=5' "$$run_dir/add-sub-sp.interpreter.err" && \
-		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
+		awk '/event=interpreter-block-ready/ { if ($$6 != "detail=8") bad=1 } \
+		     /event=interpreter-dispatch/ { dispatched=1; if ($$5 != "pc=0x42d8" || $$6 != "detail=8") bad=1 } \
+		     /event=dispatch-done/ && dispatched && !completed { completed=1; endpc=$$5; if ($$5 != "pc=0x42ec" || $$6 != "detail=3") bad=1 } \
+		     /event=compile-start/ && completed { compiled=1; if ($$5 != endpc) bad=1 } \
+		     END { if (!dispatched || !completed || !compiled || bad) exit 1 }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_METALLIB)
