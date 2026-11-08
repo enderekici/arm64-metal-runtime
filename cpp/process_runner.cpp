@@ -2965,6 +2965,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t inheritance;
         std::uint32_t tag;
         std::uint64_t offset = 0;
+        bool jit = false;
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
     std::map<std::uint64_t, VmReservation> vmReservations;
@@ -4954,7 +4955,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     hostServiceState.machVmReserve = [&](std::uint64_t address, std::uint64_t size,
                                           std::uint32_t currentProtection,
                                           std::uint32_t maximumProtection,
-                                          std::uint32_t inheritance, std::uint32_t tag) {
+                                          std::uint32_t inheritance, std::uint32_t tag,
+                                          bool jitMapping) {
         const auto pageSize = bootstrap.pageSize;
         if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
             address % pageSize != 0 || size == 0 ||
@@ -4976,7 +4978,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (address < resident[row + 1] && resident[row] < end) return kernNoSpace;
         }
         if ((currentProtection & ~maximumProtection) != 0) return kernInvalidArgument;
-        if ((currentProtection & 6U) == 6U) return kernProtectionFailure;
+        if ((currentProtection & 6U) == 6U && !jitMapping) return kernProtectionFailure;
         if (currentProtection != 0) {
             if (resident[0] >= residentCapacity || pageSize > static_cast<std::uint64_t>(
                     std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
@@ -5041,7 +5043,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         try {
             const auto [unused, inserted] = vmReservations.emplace(address,
                 VmReservation{address, end, currentProtection, maximumProtection,
-                              inheritance, tag, 0});
+                              inheritance, tag, 0, jitMapping});
             (void)unused;
             return inserted ? kernSuccess : kernNoSpace;
         } catch (...) {
@@ -5057,7 +5059,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             size > std::numeric_limits<std::uint64_t>::max() - guestMappingBase) {
             return kernInvalidArgument;
         }
-        if (!jitMapping && currentProtection == 0) {
+        if (currentProtection == 0) {
             auto candidate = std::uint64_t{0x7180000000};
             if (candidate > std::numeric_limits<std::uint64_t>::max() - (alignment - 1)) {
                 return kernNoSpace;
@@ -5103,7 +5105,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     continue;
                 }
                 const auto result = hostServiceState.machVmReserve(
-                    candidate, size, currentProtection, maximumProtection, inheritance, tag);
+                    candidate, size, currentProtection, maximumProtection, inheritance, tag,
+                    jitMapping);
                 if (result == kernSuccess) {
                     guestAddress = candidate;
                     return kernSuccess;
@@ -5906,7 +5909,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return kernSuccess;
     };
     hostServiceState.machVmProtect = [&](std::uint64_t address, std::uint64_t size,
-                                          bool setMaximum, std::uint32_t protection) {
+                                          bool setMaximum, std::uint32_t protection,
+                                          bool mprotect) {
         if (size == 0) return kernSuccess;
         const auto pageSize = bootstrap.pageSize;
         if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
@@ -5955,7 +5959,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     const auto effective = (region->readable ? 1U : 0U) |
                         (region->writable ? 2U : 0U) | (region->executable ? 4U : 0U);
-                    if (region->jit && (setMaximum || protection != effective)) {
+                    const bool jitProtectionRequest = mprotect && region->jit && !setMaximum &&
+                        (protection == 0 || protection == region->maximumProtection);
+                    if ((mprotect && (protection & 6U) == 6U && !region->jit) ||
+                        (region->jit && (setMaximum ||
+                            (protection != effective && !jitProtectionRequest)))) {
                         return kernProtectionFailure;
                     }
                     if (std::find(ownerKeys.begin(), ownerKeys.end(), owner->first) ==
@@ -5972,6 +5980,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     return kernInvalidAddress;
                 }
                 if ((protection & ~reservation->second.maximumProtection) != 0) {
+                    return kernProtectionFailure;
+                }
+                const bool jitProtectionRequest = mprotect && reservation->second.jit &&
+                    !setMaximum && protection == reservation->second.maximumProtection;
+                if ((reservation->second.jit &&
+                     (setMaximum || (protection != 0 && !jitProtectionRequest))) ||
+                    ((protection & 6U) == 6U && !jitProtectionRequest)) {
                     return kernProtectionFailure;
                 }
                 touchedReservations.push_back(reservation->second);
@@ -5997,11 +6012,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) +
                                     static_cast<std::size_t>(*backing), 0,
                                 static_cast<std::size_t>(length));
+                    auto current = protection;
+                    if (reservation.jit && protection == reservation.maximumProtection) {
+                        current = guestScheduler.current().jitWriteProtect ? 5U : 3U;
+                    }
                     const VmRegion region{rangeBegin, rangeEnd,
-                        static_cast<std::size_t>(*backing), (protection & 1U) != 0,
-                        (protection & 2U) != 0, (protection & 4U) != 0,
-                        reservation.maximumProtection, false, reservation.inheritance,
-                        reservation.tag};
+                        static_cast<std::size_t>(*backing), (current & 1U) != 0,
+                        (current & 2U) != 0, (current & 4U) != 0,
+                        reservation.maximumProtection, reservation.jit,
+                        reservation.inheritance, reservation.tag};
                     committedRegions.push_back({region, {*backing, length}});
                 }
             } catch (...) {
@@ -6041,7 +6060,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         const auto maximum = setMaximum ? protection : region.maximumProtection;
                         const auto effective = (region.readable ? 1U : 0U) |
                             (region.writable ? 2U : 0U) | (region.executable ? 4U : 0U);
-                        const auto current = setMaximum ? (effective & protection) : protection;
+                        auto current = setMaximum ? (effective & protection) : protection;
+                        if (mprotect && !setMaximum && region.jit &&
+                            protection == region.maximumProtection) {
+                            current = guestScheduler.current().jitWriteProtect ? 5U : 3U;
+                        }
                         replacement.push_back({middleBegin, middleEnd,
                             region.backing + static_cast<std::size_t>(middleBegin - region.begin),
                             (current & 1U) != 0, (current & 2U) != 0,
@@ -6142,7 +6165,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if ((protection & ~region.maximumProtection) != 0) return kernProtectionFailure;
             const auto effective = (region.readable ? 1U : 0U) |
                 (region.writable ? 2U : 0U) | (region.executable ? 4U : 0U);
-            if (region.jit && (setMaximum || protection != effective)) {
+            const bool jitProtectionRequest = mprotect && region.jit && !setMaximum &&
+                (protection == 0 || protection == region.maximumProtection);
+            if ((mprotect && (protection & 6U) == 6U && !region.jit) ||
+                (region.jit && (setMaximum ||
+                    (protection != effective && !jitProtectionRequest)))) {
                 return kernProtectionFailure;
             }
             cursor = std::min(end, region.end);
@@ -6164,10 +6191,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             region.inheritance, region.tag});
             }
             const auto maximumProtection = setMaximum ? protection : region.maximumProtection;
-            const auto currentProtection = setMaximum
+            auto currentProtection = setMaximum
                 ? ((region.readable ? 1U : 0U) | (region.writable ? 2U : 0U) |
                    (region.executable ? 4U : 0U)) & protection
                 : protection;
+            if (mprotect && !setMaximum && region.jit &&
+                protection == region.maximumProtection) {
+                currentProtection = guestScheduler.current().jitWriteProtect ? 5U : 3U;
+            }
             replacement.push_back({middleBegin, middleEnd,
                 region.backing + static_cast<std::size_t>(middleBegin - region.begin),
                 (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
@@ -6318,7 +6349,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             for (auto& [unused, allocation] : stagedAllocations) {
                 (void)unused;
                 for (auto& region : allocation.regions) {
-                    if (!region.jit) continue;
+                    if (!region.jit ||
+                        (!region.readable && !region.writable && !region.executable)) continue;
                     const bool writable = !enabled &&
                         (region.maximumProtection & 2U) != 0;
                     const bool executable = enabled &&
@@ -6343,7 +6375,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             allocation.regions.begin(), allocation.regions.end());
                 }
                 auto stagedCodeRegions = prepareDynamicCodeRegions(
-                    guestMappingBase, guestMappingBase + image.mapping_backing_end(),
+                    0, std::numeric_limits<std::uint64_t>::max(),
                     stagedCodeInputs);
                 guestMemory.replace_mappings(removedBegins, addedMappings);
                 vmAllocations.swap(stagedAllocations);
@@ -9366,7 +9398,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else {
                     registers[0] = hostServiceState.machVmProtect(
                         registers[1], registers[2], registers[3] != 0,
-                        static_cast<std::uint32_t>(registers[4]));
+                        static_cast<std::uint32_t>(registers[4]), false);
                 }
                 registers[34] = 0;
                 continue;

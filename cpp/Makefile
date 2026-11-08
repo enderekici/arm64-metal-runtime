@@ -39,7 +39,7 @@ $(INTERPRETER_ASSETS_TEST): ../fixtures/handoff/interpreter-assets-selection.cpp
 verify-interpreter-assets: $(INTERPRETER_ASSETS_TEST)
 	"$(INTERPRETER_ASSETS_TEST)"
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -185,6 +185,8 @@ ADC_SBC_CARRY_DECODE_TEST := $(BUILD_DIR)/adc-sbc-carry-decode-test
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
+JIT_CODE_CACHE_RESERVE_NATIVE := $(BUILD_DIR)/jit-code-cache-reserve
+JIT_CODE_CACHE_INVALID_NATIVE := $(BUILD_DIR)/jit-code-cache-invalid
 CHAINED_ADDENDS_TEST := $(BUILD_DIR)/chained-addends-test
 CHAINED_ADDENDS_FIXTURE := $(BUILD_DIR)/libchained-addend-fixture.dylib
 CHAINED_ADDEND_PROVIDER := $(BUILD_DIR)/libchained-addend-provider.dylib
@@ -1924,6 +1926,19 @@ verify-map-jit-policy: $(MAP_JIT_POLICY_TEST) $(MAP_JIT_POLICY_FIXTURE)
 	../fixtures/handoff/run-map-jit-policy-test.sh "$(abspath $(MAP_JIT_POLICY_TEST))" \
 		"$(abspath $(MAP_JIT_POLICY_FIXTURE))" "$(abspath ../fixtures/handoff)" \
 		"$(abspath $(BUILD_DIR))"
+
+$(JIT_CODE_CACHE_RESERVE_NATIVE): ../fixtures/handoff/jit-code-cache-reserve.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -pthread "$<" -o "$@"
+
+$(JIT_CODE_CACHE_INVALID_NATIVE): ../fixtures/handoff/jit-code-cache-invalid.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-jit-code-cache-native
+verify-jit-code-cache-native: $(JIT_CODE_CACHE_RESERVE_NATIVE) $(JIT_CODE_CACHE_INVALID_NATIVE)
+	"$(JIT_CODE_CACHE_RESERVE_NATIVE)"
+	"$(JIT_CODE_CACHE_INVALID_NATIVE)"
 
 .PHONY: prepare-map-jit-guest-fixtures
 prepare-map-jit-guest-fixtures:

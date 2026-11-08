@@ -2239,7 +2239,7 @@ HostServiceResult dispatch_guest_host_service(
                 }
                 const auto result = state.machVmReserve(
                     address, size, currentProtection, maximumProtection, inheritance,
-                    rawFlags >> 24U);
+                    rawFlags >> 24U, false);
                 registers[0] = result;
                 break;
             }
@@ -2277,7 +2277,7 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = kernInvalidArgument;
             } else {
                 registers[0] = state.machVmProtect(registers[1], registers[2],
-                    registers[3] != 0, static_cast<std::uint32_t>(registers[4]));
+                    registers[3] != 0, static_cast<std::uint32_t>(registers[4]), false);
             }
             break;
         }
@@ -2439,11 +2439,6 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = std::numeric_limits<std::uint32_t>::max();
                 break;
             }
-            if ((protection & 2U) != 0 && (protection & 4U) != 0) {
-                set_errno(EACCES);
-                registers[0] = std::numeric_limits<std::uint32_t>::max();
-                break;
-            }
             if (size == 0) {
                 registers[0] = 0;
                 break;
@@ -2454,7 +2449,7 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = std::numeric_limits<std::uint32_t>::max();
                 break;
             }
-            const auto result = state.machVmProtect(address, length, false, protection);
+            const auto result = state.machVmProtect(address, length, false, protection, true);
             if (result == kernSuccess) {
                 registers[0] = 0;
             } else {
@@ -2985,8 +2980,10 @@ HostServiceResult dispatch_guest_host_service(
             const auto page_size = bootstrap.pageSize;
             const auto flags = static_cast<std::uint32_t>(registers[3]);
             const auto jit_flag = static_cast<std::uint32_t>(MAP_JIT);
+            const auto no_reserve_flag = static_cast<std::uint32_t>(MAP_NORESERVE);
             const bool jit_mapping = (flags & jit_flag) != 0;
-            const auto anonymous_flags = flags & ~jit_flag;
+            auto anonymous_flags = flags & ~jit_flag;
+            if (jit_mapping) anonymous_flags &= ~no_reserve_flag;
             if (jit_mapping && anonymous_flags != (MAP_PRIVATE | MAP_ANON)) {
                 set_errno(EINVAL);
                 registers[0] = failure;
@@ -2997,7 +2994,8 @@ HostServiceResult dispatch_guest_host_service(
                 if (page_size == 0 || (page_size & (page_size - 1)) != 0 ||
                     registers[0] != 0 || registers[1] == 0 ||
                     registers[1] > std::numeric_limits<std::uint64_t>::max() - (page_size - 1) ||
-                    (protection & ~7U) != 0 || (jit_mapping && protection != 7U) ||
+                    (protection & ~7U) != 0 ||
+                    (jit_mapping && protection != 0 && protection != 7U) ||
                     static_cast<std::int32_t>(registers[4]) != -1 || registers[5] != 0) {
                     set_errno(EINVAL);
                     registers[0] = failure;
@@ -3021,7 +3019,8 @@ HostServiceResult dispatch_guest_host_service(
                 const auto length = (registers[1] + page_size - 1) & ~(page_size - 1);
                 std::uint64_t address = 0;
                 const std::uint32_t effective_protection = jit_mapping
-                    ? (state.jitWriteProtected ? 5U : 3U) : protection;
+                    ? (protection == 0 ? 0U : (state.jitWriteProtected ? 5U : 3U))
+                    : protection;
                 const auto result = state.machVmAllocate(length, page_size,
                     effective_protection, 7, address, jit_mapping, 1, 0);
                 if (result != 0) {

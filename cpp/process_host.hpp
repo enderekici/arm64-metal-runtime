@@ -252,7 +252,8 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
-                                std::uint32_t inheritance, std::uint32_t tag)> machVmReserve;
+                                std::uint32_t inheritance, std::uint32_t tag,
+                                bool jitMapping)> machVmReserve;
     std::function<std::uint32_t(std::uint64_t& guestAddress, std::uint64_t size,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
@@ -260,7 +261,8 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
-                                bool setMaximum, std::uint32_t protection)> machVmProtect;
+                                bool setMaximum, std::uint32_t protection,
+                                bool mprotect)> machVmProtect;
     std::function<std::optional<HostMachVmRegion>(std::uint64_t guestAddress)> machVmRegion;
     std::uint64_t nextFile = 0x7000000000000000ULL;
     std::size_t optionIndex = 1;
