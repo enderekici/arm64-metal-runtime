@@ -1934,8 +1934,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         hostServiceState.heap->release(static_cast<std::int64_t>(address));
     };
+    std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
+        {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
+    std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
+    std::set<std::uint64_t> guestWorkqueueThreadIds;
+    std::uint32_t nextGuestThreadPortName = 0x40000003U;
     const auto finishGuestThread = [&](std::uint64_t result,
                                        std::vector<std::uint64_t>& live) {
+        const auto completedId = guestScheduler.current_id();
+        if (guestWorkqueueThreadIds.erase(completedId) != 0) {
+            const auto port = guestThreadPortNames.find(completedId);
+            if (port != guestThreadPortNames.end()) {
+                guestSendRightUrefs.erase(port->second);
+                guestThreadPortNames.erase(port);
+            }
+        }
         const auto threadTsd = guestScheduler.current().tsdAddress;
         if (threadTsd <= 0) throw std::runtime_error("Guest thread has no TSD for TLV teardown");
         guestTlvRuntime.release_thread(static_cast<std::uint64_t>(threadTsd),
@@ -2051,7 +2064,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
     };
     std::uint32_t nextGuestReceiveName = 0x80000003U;
-    std::uint32_t nextGuestThreadPortName = 0x40000003U;
     struct GuestBsdthreadRegistration {
         std::uint64_t threadStart;
         std::uint64_t workqueueStart;
@@ -2092,17 +2104,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return name;
     };
-=======
     struct GuestWorkqueueDispatchConfig {
-        std::uint32_t version;
-        std::uint32_t flags;
-        std::uint64_t queueSerialNumberOffset;
-        std::uint64_t queueLabelOffset;
-    };
-    std::optional<GuestWorkqueueDispatchConfig> guestWorkqueueDispatchConfig;
-    bool guestWorkqueueOpened = false;
->>>>>>> e900b02 (feat: model guest workqueue setup)
-        struct GuestWorkqueueDispatchConfig {
         std::uint32_t version;
         std::uint32_t flags;
         std::uint64_t queueSerialNumberOffset;
@@ -6899,6 +6901,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == 372) {
+                registers[0] = guestScheduler.current_id();
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 367) {
                 // Native workq_open is argument-free and succeeds even before
                 // an individual workqueue request is made.
@@ -6910,9 +6917,144 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 368) {
                 constexpr std::uint64_t carryMask = 8U;
+                constexpr std::uint64_t threadReturn = 0x4;
+                constexpr std::uint64_t requestThreads = 0x20;
                 constexpr std::uint64_t setupDispatch = 0x400;
                 constexpr std::uint64_t dispatchConfigSize = 24;
+                constexpr std::uint64_t qosClassMask = 0x00003f00;
+                constexpr std::uint64_t overcommitFlag = 0x80000000;
                 static_assert(sizeof(GuestWorkqueueDispatchConfig) == dispatchConfigSize);
+                if (registers[0] == threadReturn &&
+                    guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0 &&
+                    registers[1] == 0 && registers[2] == 0 && registers[3] == 0) {
+                    std::vector<std::uint64_t> live(registers, registers + 36);
+                    const bool exited = finishGuestThread(0, live);
+                    std::copy_n(live.begin(), 36, registers);
+                    if (exited) return 0;
+                    continue;
+                }
+                if (registers[0] == requestThreads) {
+                    const auto priority = registers[3];
+                    const auto classBits = priority & qosClassMask;
+                    const auto encodedQos = classBits >> 8;
+                    const auto qos = encodedQos == 0 || (encodedQos & (encodedQos - 1)) != 0
+                        ? 0U : static_cast<unsigned>(__builtin_ffs(
+                            static_cast<int>(encodedQos)));
+                    std::uint64_t error = 0;
+                    if (!guestWorkqueueOpened || !guestWorkqueueDispatchConfig ||
+                        !guestBsdthreadRegistration) {
+                        error = EINVAL;
+                    } else if (registers[1] != 0 || registers[2] != 1) {
+                        error = ENOTSUP;
+                    } else if (qos == 0 || qos >= 7 ||
+                               (priority & ~(qosClassMask | 0xffU | overcommitFlag)) != 0) {
+                        error = EINVAL;
+                    } else {
+                        const auto workqueueToken = guestBsdthreadRegistration->workqueueStart;
+                        const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
+                        const auto workerEntry = decode_guest_ia0_callback(
+                            state, stateBuffer.size() / sizeof(std::uint64_t), workqueueToken);
+                        if (!workerEntry || *workerEntry > static_cast<std::uint64_t>(
+                                std::numeric_limits<std::int64_t>::max()) ||
+                            !image.is_code(static_cast<std::int64_t>(*workerEntry))) {
+                            error = EINVAL;
+                        } else if (bootstrap.pageSize == 0 ||
+                                   (bootstrap.pageSize & (bootstrap.pageSize - 1)) != 0) {
+                            error = EINVAL;
+                        } else {
+                            constexpr std::uint64_t pthreadSize = 0x18e0;
+                            constexpr std::uint64_t pthreadStackOffset = 12U * 1024U;
+                            constexpr std::uint64_t stackSize = 512U * 1024U;
+                            constexpr std::uint64_t errnoOffset = 172;
+                            constexpr std::uint64_t threadIdOffset = 216;
+                            constexpr std::uint64_t tsdOffset = 224;
+                            const auto pageSize = bootstrap.pageSize;
+                            if (pthreadSize + pthreadStackOffset >
+                                std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+                                error = EINVAL;
+                            } else {
+                                const auto pthreadTail = (pthreadSize + pthreadStackOffset +
+                                    pageSize - 1) & ~(pageSize - 1);
+                                const auto allocationSize = pageSize + stackSize + pthreadTail;
+                                const auto allocation = allocateGuestHeap(
+                                    allocationSize, pageSize);
+                                if (!allocation) {
+                                    error = EAGAIN;
+                                } else if (nextGuestThreadPortName >=
+                                    std::numeric_limits<std::uint32_t>::max() - 4) {
+                                    hostServiceState.heap->release(*allocation);
+                                    error = EAGAIN;
+                                } else {
+                                    const auto allocationAddress =
+                                        static_cast<std::uint64_t>(*allocation);
+                                    const auto stackBottom = allocationAddress + pageSize;
+                                    const auto self = stackBottom + stackSize +
+                                        pthreadStackOffset;
+                                    const auto threadId = guestScheduler.next_thread_id();
+                                    const auto threadPort = nextGuestThreadPortName;
+                                    nextGuestThreadPortName += 4;
+                                    try {
+                                        auto* bytes = guestMemory.buffer(
+                                            allocationAddress, allocationSize, true);
+                                        std::memset(bytes, 0,
+                                            static_cast<std::size_t>(allocationSize));
+                                        std::uint64_t idValue = threadId;
+                                        std::memcpy(bytes + (self - allocationAddress) +
+                                            threadIdOffset, &idValue, sizeof(idValue));
+                                        std::uint64_t portValue = threadPort;
+                                        std::memcpy(bytes + (self - allocationAddress) +
+                                            tsdOffset + guestMachThreadSlotOffset,
+                                            &portValue, sizeof(portValue));
+                                        const auto upcallFlags = std::uint64_t{0x00040000} |
+                                            std::uint64_t{0x00004000} | qos |
+                                            std::uint64_t{0x00200000} |
+                                            ((priority & overcommitFlag) != 0
+                                                ? std::uint64_t{0x00010000} : 0);
+                                        auto thread = GuestScheduler::make_thread_frame(
+                                            {static_cast<std::int64_t>(stackBottom),
+                                             static_cast<std::int64_t>(self)},
+                                            *allocation,
+                                            static_cast<std::int64_t>(self + errnoOffset),
+                                            static_cast<std::int64_t>(self + tsdOffset),
+                                            *workerEntry, self, registers[
+                                                guestSchedulerFPCR], registers[
+                                                guestSchedulerFPSR],
+                                            hostServiceState.threadSignalMask);
+                                        thread.id = threadId;
+                                        thread.detached = true;
+                                        thread.registers[1] = threadPort;
+                                        thread.registers[2] = stackBottom;
+                                        thread.registers[3] = 0;
+                                        thread.registers[4] = upcallFlags;
+                                        thread.registers[5] = 0;
+                                        guestWorkqueueThreadIds.insert(threadId);
+                                        guestThreadPortNames.emplace(threadId, threadPort);
+                                        guestSendRightUrefs.emplace(threadPort, 1);
+                                        if (guestScheduler.add_thread(std::move(thread)) !=
+                                            threadId) {
+                                            throw std::logic_error(
+                                                "Unexpected guest workqueue thread id");
+                                        }
+                                        registers[0] = 0;
+                                        registers[32] &= ~carryMask;
+                                    } catch (...) {
+                                        guestWorkqueueThreadIds.erase(threadId);
+                                        guestThreadPortNames.erase(threadId);
+                                        guestSendRightUrefs.erase(threadPort);
+                                        hostServiceState.heap->release(*allocation);
+                                        throw;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (error != 0) {
+                        registers[0] = error;
+                        registers[32] |= carryMask;
+                    }
+                    registers[34] = 0;
+                    continue;
+                }
                 if (registers[0] != setupDispatch) {
                     throw std::runtime_error("Unsupported guest workqueue operation 0x" +
                         hexadecimal(registers[0]) + (guestWorkqueueOpened
