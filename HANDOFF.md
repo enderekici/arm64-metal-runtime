@@ -64,11 +64,18 @@ Both libz-root and libz-provider reach
 __dyld_call_with_writable_tpro_memory after reading dyld4::gAPIs. The latest
 trace reports guest 134, startup=0, prefix=0, target=0x44b0, LR=0x10089a95c
 in libsystem_platform. The callback token authenticates, but no callback runs.
-The TPRO parser/callback candidate remains isolated. The next work is to fix
-initialization ordering and deferred system roots, not relax the guard.
+The native late path rejects this request after libSystem initialization
+and terminates with SIGABRT. Preserve that behavior. Do not invoke the callback
+after initialization or relax the guard. Investigate initialization ordering
+and deferred system roots to reproduce native behavior.
+
 Candidate commit 00541caf adds typed MOVZ/RET handling, with a fixed GPU
-interpreter regression test still in progress. Do not claim whole-app parity
-from this candidate.
+interpreter regression test still in progress. Astra recommends a precompiled
+GPU interpreter as the eventual default while retaining translation during
+migration and for later hot code. Migrate one typed instruction slice at a
+time, sharing GPU semantics between interpreter and translator. Compare native,
+translator, and interpreter behavior before expanding. This improves coverage
+work but does not fill missing dyld, Darwin, GUI, or JIT behavior.
 
 The JIT candidate at b545de0 passes its positive RW-to-RX call and
 revocation tests in isolation. Its full gate is running. This does not establish
@@ -99,12 +106,22 @@ contains the same launcher digest. Receipts are under
 /tmp/metal-vm-integrated.C6e4d6.
 
 The latest plutil trace showed kernel compilation continuing late into its
-bounded run before timeout. Both libz controls reach the same TPRO callback
-path. The latest trace reports guest 134, startup=0, prefix=0, target=0x44b0,
-LR=0x10089a95c in libsystem_platform. The authenticated callback token does not
-lead to callback execution. Fix initialization ordering and deferred system
-roots before considering any guard change. Typed MOVZ/RET commit 00541caf and
-its fixed GPU interpreter test are WIP. JIT commit b545de0 passes positive
-RW-to-RX and revocation cases in isolation, with full gate running. Neither
-candidate proves whole-app behavior. General unchanged-app compatibility
-remains the project goal.
+bounded run before timeout. Both libz controls reach the same TPRO path. The
+trace reports guest 134, startup=0, prefix=0, target=0x44b0, LR=0x10089a95c in
+libsystem_platform. The authenticated callback token does not lead to callback
+execution. Native late behavior rejects after libSystem initialization and
+terminates with SIGABRT. Preserve it. Investigate initialization ordering and
+deferred system roots, without calling the callback late or relaxing the guard.
+Typed MOVZ/RET commit 00541caf and its fixed GPU interpreter test are WIP.
+
+Astra recommends growing a precompiled GPU interpreter as the eventual default,
+keeping the translator during migration and for hot code, and sharing GPU
+instruction semantics across both paths. The interpreter regression should
+compare native, translator, and interpreter results. This does not replace the
+full goal of general unchanged-app compatibility or solve other missing
+subsystems.
+
+Anonymous JIT transaction support and protection-revocation/partial-unmap
+changes are integrated on the branch. The positive RW-to-RX fixture matches
+native. MAP_JIT and whole-app use remain open. General unchanged-app
+compatibility remains the project goal.
