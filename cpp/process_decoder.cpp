@@ -120,9 +120,12 @@ Instruction hostCall(const std::string &name,
       code.push_back("x[35] = " + str(kMemcpyChkFailureService) + "ul; x[34] = 4; return;");
       code.push_back("}");
     }
+    const std::string failureAddress = zero
+        ? "x[" + str(guestFaultAddress) + "] = x[0]; "
+        : "";
     code.insert(code.end(), {"if (" + count + " != 0) {",
          "if (" + destinationBounds + sourceBounds +
-             ") { x[33] = pc; x[34] = 2; return; }",
+             ") { " + failureAddress + "x[33] = pc; x[34] = 2; return; }",
          operation, "}", "if (x[30] == ~0ul) { x[34] = 0; return; }",
          "if (x[30] >= " + str(guestCodeLimit) + "ul) { x[874] = x[30]; x[33] = pc; x[34] = 3; return; }",
          "pc = x[30]; break;"});

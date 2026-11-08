@@ -1206,7 +1206,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     // The lower bound remains the current thread's errno slot. The linear heap
     // above it remains writable by existing policy, including reclaimed
-    // allocations; explicit ranges grant older live stacks below it access.
+    // allocations; explicit ranges grant live stacks below it access.
     std::vector<std::uint64_t> writableTable;
     SharedBuffer writableBuffer;
     const auto syncWritableTable = [&](std::uint64_t errnoAddress) {
