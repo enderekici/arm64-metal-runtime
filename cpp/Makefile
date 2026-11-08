@@ -358,7 +358,7 @@ $(MACH_VM_OVERWRITE_NATIVE): ../fixtures/handoff/mach-vm-map-overwrite.c
 
 $(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
 	@mkdir -p "$(BUILD_DIR)"
-	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@" -ldl
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
 verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
