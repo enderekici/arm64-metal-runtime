@@ -68,3 +68,27 @@ Expected output from both runs is
 Each negative case prints `calling revoked code` before the native fault. The
 translated runtime reports a code rejection instead of reproducing Unix signal
 delivery.
+
+## Typed MOVZ and RET slice
+
+The ARM64 assembly fixture provides a native oracle for X/W MOVZ shifts,
+zero-register discard, zero-extension, and RET:
+
+```sh
+xcrun clang -arch arm64 -c fixtures/handoff/typed-movz-ret.s \
+  -o .build/handoff-probes/typed-movz-ret.o
+xcrun clang -arch arm64 fixtures/handoff/typed-movz-main.c \
+  .build/handoff-probes/typed-movz-ret.o \
+  -o .build/handoff-probes/typed-movz-ret
+.build/handoff-probes/typed-movz-ret
+```
+
+The host-side decoder test verifies the fixed six-word operation packet and
+the translator's MOVZ/RET lowering:
+
+```sh
+xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
+  fixtures/handoff/typed-operation.cpp cpp/translate_core.cpp \
+  -o .build/handoff-probes/typed-operation
+.build/handoff-probes/typed-operation
+```

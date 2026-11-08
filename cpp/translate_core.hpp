@@ -2,22 +2,66 @@
 #define ARM64METAL_TRANSLATE_CORE_HPP
 
 #include <cstdint>
+#include <array>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace arm64metal::translate_core {
 
+enum class Opcode : std::uint32_t {
+  MoveWideZero = 1,
+  Return = 2,
+};
+
+// Fixed-width semantic operands suitable for explicit interpreter packets.
+// Fields unused by an opcode are zero.
+struct Operation {
+  Opcode opcode;
+  std::uint32_t destination;
+  std::uint32_t source;
+  std::uint32_t immediate;
+  std::uint32_t shift;
+  std::uint32_t width;
+};
+
+using OperationPacket = std::array<std::uint32_t, 6>;
+
+OperationPacket serialize_operation(const Operation& operation);
+
+enum class LoweringMode {
+  Process,
+  Function,
+};
+
 // One lowered ARM64 instruction. `code` contains generated Metal statements;
-// `next` lists guest PCs which may execute next.
+// `next` lists guest PCs which may execute next. `operation` retains typed
+// semantics for the GPU interpreter while `code` remains the translator form.
 struct Instruction {
   std::vector<std::string> code;
   std::vector<std::int64_t> next;
+  std::optional<Operation> operation;
+
+  Instruction() = default;
+  Instruction(std::vector<std::string> statements,
+              std::vector<std::int64_t> successors,
+              std::optional<Operation> typed_operation = std::nullopt)
+      : code(std::move(statements)),
+        next(std::move(successors)),
+        operation(std::move(typed_operation)) {}
 
   // An instruction ends its basic block if control flow is not straight-line.
   bool ends_block_at(std::int64_t pc) const;
 };
+
+std::optional<Operation> decode_operation(std::uint32_t bits);
+Instruction make_operation_instruction(Operation operation,
+                                       std::vector<std::int64_t> next,
+                                       LoweringMode mode,
+                                       std::uint64_t guest_code_limit = 0);
 
 // Decode one supported integer ARM64 instruction to the runtime's Metal form.
 // Throws std::runtime_error for unsupported encodings. `address_suffix` is

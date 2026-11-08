@@ -30,6 +30,12 @@ std::string pc_literal(std::int64_t pc, const std::string& suffix) {
 
 }  // namespace
 
+OperationPacket serialize_operation(const Operation& operation) {
+  return {static_cast<std::uint32_t>(operation.opcode),
+          operation.destination, operation.source, operation.immediate,
+          operation.shift, operation.width};
+}
+
 bool Instruction::ends_block_at(std::int64_t pc) const {
   const auto straight_line = next.size() == 1 && next.front() == pc + 4;
   const auto ends_with = [](const std::string& value, const std::string& suffix) {
@@ -39,6 +45,55 @@ bool Instruction::ends_block_at(std::int64_t pc) const {
   const auto terminal = !code.empty() &&
                         (ends_with(code.back(), "break;") || ends_with(code.back(), "return;"));
   return !straight_line || terminal;
+}
+
+std::optional<Operation> decode_operation(std::uint32_t bits) {
+  if (bits == 0xd65f03c0) {
+    return Operation{Opcode::Return, 0, 30, 0, 0, 64};
+  }
+
+  if ((bits & 0x7f800000) != 0x52800000) return std::nullopt;
+
+  const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
+  const auto shift = field(bits, 21, 2) * 16u;
+  if (shift >= width) {
+    throw std::runtime_error("Invalid MOVZ shift for destination width");
+  }
+  return Operation{Opcode::MoveWideZero, field(bits, 0, 5), 0,
+                   field(bits, 5, 16), shift, width};
+}
+
+Instruction make_operation_instruction(Operation operation,
+                                       std::vector<std::int64_t> next,
+                                       LoweringMode mode,
+                                       std::uint64_t guest_code_limit) {
+  std::vector<std::string> code;
+  if (operation.opcode == Opcode::MoveWideZero) {
+    if (operation.destination != 31) {
+      const auto type = operation.width == 64 ? "ulong" : "uint";
+      const auto value = std::uint64_t{operation.immediate} << operation.shift;
+      code.push_back("x[" + std::to_string(operation.destination) + "] = " +
+                     type + "(" + std::to_string(value) + "ul);");
+    }
+  } else if (operation.opcode == Opcode::Return) {
+    if (mode == LoweringMode::Function) {
+      code = {"returns[id] = uint(x[0]); status[id] = 0; return;"};
+    } else {
+      if (guest_code_limit == 0) {
+        throw std::invalid_argument("Process return lowering needs a code limit");
+      }
+      code = {
+          "if (x[30] == ~0ul) { x[34] = 0; return; }",
+          "if (x[30] >= " + std::to_string(guest_code_limit) +
+              "ul) { x[34] = 3; return; }",
+          "x[33] = x[30];",
+          "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
+          "x[34] = 7; return;"};
+    }
+  } else {
+    throw std::invalid_argument("Unknown typed ARM64 operation");
+  }
+  return Instruction{std::move(code), std::move(next), operation};
 }
 
 Instruction decode(std::uint32_t bits, std::int64_t pc,
@@ -57,15 +112,19 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
   const auto advance = [following](std::vector<std::string> code) {
     return Instruction{std::move(code), {following}};
   };
+
+  if (const auto operation = decode_operation(bits)) {
+    return make_operation_instruction(*operation,
+        operation->opcode == Opcode::Return ? std::vector<std::int64_t>{}
+                                             : std::vector<std::int64_t>{following},
+        LoweringMode::Function);
+  }
   const auto branch = [&](const std::string& condition, std::int64_t target) {
     return Instruction{{"pc = " + condition + " ? " + pc_literal(target, address_suffix) +
                         " : " + pc_literal(following, address_suffix) + "; break;"},
                        {target, following}};
   };
 
-  if (bits == 0xd65f03c0) {
-    return {{"returns[id] = uint(x[0]); status[id] = 0; return;"}, {}};
-  }
   if ((bits & 0x7e000000) == 0x34000000) {
     const auto op = field(bits, 24, 1) == 0 ? "==" : "!=";
     return branch(reg(rd, wide) + " " + op + " 0",

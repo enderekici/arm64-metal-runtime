@@ -348,6 +348,15 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   };
   auto next = pc + 4;
   auto rd = field(0, 5), rn = field(5, 5);
+  if (const auto operation = translate_core::decode_operation(bits)) {
+    const auto successors =
+        operation->opcode == translate_core::Opcode::Return
+            ? PCs{}
+            : PCs{next};
+    return translate_core::make_operation_instruction(
+        *operation, successors, translate_core::LoweringMode::Process,
+        guestCodeLimit);
+  }
   auto emit = [&](auto... lines) -> Instruction {
     std::vector<std::string> code{lines...};
     for (auto &line : code)
@@ -440,7 +449,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return make_instruction(checkReturn(signer), PCs{next});
   }
   auto authenticated = (bits & 0xffe0001f) == 0x5520001f || bits == 0xd65f0fff;
-  if (bits == 0xd65f03c0 || authenticated) {
+  if (authenticated) {
     std::optional<int64_t> signer =
         bits == 0xd65f0fff
             ? std::nullopt
@@ -741,12 +750,11 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return emit((std::string(str(reg(rd))) + " = " + str(address) + "ul;"));
   }
   auto wideImmediate = bits & 0x7f800000;
-  if ((contains({0x12800000, 0x52800000}, wideImmediate)) && (rd != 31) &&
+  if (wideImmediate == 0x12800000 && (rd != 31) &&
       (field(31, 1) == 1 || field(21, 2) < 2)) {
     auto type =
         field(31, 1) == 1 ? (std::string("ulong")) : (std::string("uint"));
-    auto invert =
-        wideImmediate == 0x12800000 ? (std::string("~")) : (std::string(""));
+    auto invert = std::string("~");
     auto value = uint64_t(field(5, 16)) << (16 * field(21, 2));
     return emit((std::string(str(reg(rd))) + " = " + str(type) + "(" +
                  str(invert) + str(value) + "ul);"));
