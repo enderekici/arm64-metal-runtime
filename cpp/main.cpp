@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <mach-o/dyld.h>
 
 namespace {
 
@@ -54,13 +56,51 @@ void print_help() {
       "Launch executes the guest process on Metal.\n";
 }
 
-int run_command(const std::vector<std::string>& args) {
+std::filesystem::path host_executable_path() {
+  std::uint32_t capacity = 0;
+  (void)_NSGetExecutablePath(nullptr, &capacity);
+  std::vector<char> path(capacity);
+  if (_NSGetExecutablePath(path.data(), &capacity) != 0) {
+    throw std::runtime_error("Unable to resolve arm64-metal executable path");
+  }
+  std::error_code error;
+  auto resolved = std::filesystem::weakly_canonical(path.data(), error);
+  if (error) throw std::runtime_error("Unable to canonicalize arm64-metal executable path");
+  return resolved;
+}
+
+void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& options,
+                                  const std::filesystem::path& executablePath) {
+  const char* configuredLibrary = std::getenv("ARM64_METAL_INTERPRETER_LIBRARY");
+  if (configuredLibrary != nullptr && configuredLibrary[0] != '\0') {
+    options.interpreterLibrary = configuredLibrary;
+    return;
+  }
+  const auto packagedLibrary = executablePath.parent_path() /
+      "resources/interpreter/runtime-interpreter.metallib";
+  std::error_code error;
+  if (std::filesystem::is_regular_file(packagedLibrary, error) && !error) {
+    options.interpreterLibrary = packagedLibrary;
+    return;
+  }
+  const char* configuredSource = std::getenv("ARM64_METAL_INTERPRETER_SOURCE");
+  if (configuredSource != nullptr && configuredSource[0] != '\0') {
+    options.interpreterSource = configuredSource;
+  } else {
+    options.interpreterSource = executablePath.parent_path() /
+        "../../cpp/gpu_interpreter.metal";
+    options.interpreterSource = options.interpreterSource.lexically_normal();
+  }
+}
+
+int run_command(const std::vector<std::string>& args,
+                const std::filesystem::path& executablePath) {
   if (args.empty() || (args.size() == 1 && args[0] == "--help")) {
     print_help();
     return 0;
   }
 
-  if (args[0] == "interpreter-probe" && args.size() == 1) {
+  if (args[0] == "interpreter-probe" && args.size() == 2) {
     using arm64metal::gpu_interpreter::InstructionPacket;
     using arm64metal::gpu_interpreter::Interpreter;
     using arm64metal::gpu_interpreter::ProcessState;
@@ -79,10 +119,14 @@ int run_command(const std::vector<std::string>& args) {
 
     auto backend = arm64metal::Backend::createDefault();
     const auto initialCompiles = backend.compiledPipelineCount();
+    const auto initialSourceCompiles = backend.sourceLibraryCompileCount();
     const auto initialDispatches = backend.completedDispatchCount();
-    const Interpreter interpreter(backend);
+    const Interpreter interpreter(backend, args[1]);
     const auto compiled = backend.compiledPipelineCount() - initialCompiles;
-    if (compiled != 1) throw std::runtime_error("Interpreter did not compile exactly one pipeline");
+    const auto sourceCompiles = backend.sourceLibraryCompileCount() - initialSourceCompiles;
+    if (compiled != 1 || sourceCompiles != 0) {
+      throw std::runtime_error("AOT interpreter load counters mismatch");
+    }
 
     const auto execute = [&backend, &interpreter](const auto& packets) {
       ProcessState initial{};
@@ -118,6 +162,7 @@ int run_command(const std::vector<std::string>& args) {
       throw std::runtime_error("Fixed GPU interpreter MOVZ/RET probe mismatch");
     }
     std::cerr << "pipeline_compiles=" << compiled
+              << " runtime_source_compiles=" << sourceCompiles
               << " completed_dispatches=" << dispatches << '\n';
     std::cout << "wide=" << first.state[0] << " narrow=" << second.state[0] << '\n';
     return 0;
@@ -132,6 +177,7 @@ int run_command(const std::vector<std::string>& args) {
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
     options.interpreter = environment_enabled("ARM64_METAL_INTERPRETER");
+    if (options.interpreter) configure_interpreter_assets(options, executablePath);
     return arm64metal::process_runner::launch_executable(args[1], arguments, options);
   }
 
@@ -187,7 +233,8 @@ int main(int argc, char** argv) {
   args.reserve(argc > 1 ? static_cast<std::size_t>(argc - 1) : 0);
   for (int index = 1; index < argc; ++index) args.emplace_back(argv[index]);
   try {
-    return run_command(args);
+    const auto executablePath = host_executable_path();
+    return run_command(args, executablePath);
   } catch (const std::exception& error) {
     std::cerr << "arm64-metal: " << error.what() << '\n';
     return 1;

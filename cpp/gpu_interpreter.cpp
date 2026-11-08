@@ -2,89 +2,31 @@
 
 #include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <utility>
 #include <stdexcept>
 #include <string_view>
 
 namespace arm64metal::gpu_interpreter {
-namespace {
 
-constexpr std::string_view kInterpreterMsl = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
+Interpreter::Interpreter(const Backend& backend, std::string_view libraryPath)
+    : kernel_(backend.loadComputeLibrary(libraryPath, "run_interpreter")) {}
 
-struct InstructionPacket {
-    uint operation[6];
-    ulong pc;
-};
+Interpreter::Interpreter(ComputeKernel kernel) : kernel_(std::move(kernel)) {}
 
-kernel void run_interpreter(device ulong *state [[buffer(0)]],
-                            device const InstructionPacket *packets [[buffer(1)]],
-                            constant uint &packetCount [[buffer(2)]]) {
-    if (state[36] == 0) {
-        state[34] = 1;
-        return;
+Interpreter Interpreter::fromSourceFile(const Backend& backend,
+                                         std::string_view sourcePath) {
+    if (sourcePath.empty()) throw std::invalid_argument("Interpreter source path must be nonempty");
+    std::ifstream sourceFile(std::string(sourcePath), std::ios::binary);
+    if (!sourceFile) {
+        throw std::runtime_error("Unable to read interpreter MSL source: " + std::string(sourcePath));
     }
-    --state[36];
-    ulong pc = state[33];
-    for (uint step = 0; step < packetCount; ++step) {
-        const InstructionPacket instruction = packets[step];
-        if (instruction.pc != pc) {
-            state[33] = pc;
-            state[34] = 7;
-            return;
-        }
-        const uint opcode = instruction.operation[0];
-        if (opcode == 1u) {
-            const uint rd = instruction.operation[1];
-            const uint immediate = instruction.operation[3];
-            const uint shift = instruction.operation[4];
-            const uint width = instruction.operation[5];
-            if ((width != 32u && width != 64u) || rd > 31u ||
-                shift >= width || (shift & 15u) != 0u ||
-                instruction.operation[3] > 0xffffu) {
-                state[33] = pc;
-                state[34] = 7;
-                return;
-            }
-            ulong value = ulong(immediate) << shift;
-            if (width == 32u) value = uint(value);
-            if (rd < 31u) state[rd] = value;
-            pc = instruction.pc + 4ul;
-            continue;
-        }
-        if (opcode == 2u) {
-            const uint source = instruction.operation[2];
-            if (source != 30u) {
-                state[33] = pc;
-                state[34] = 7;
-                return;
-            }
-            const ulong target = state[source];
-            if (target == ~0ul) {
-                state[34] = 0;
-                return;
-            }
-            if (target >= (1ul << 48)) {
-                state[34] = 3;
-                return;
-            }
-            state[33] = target;
-            state[34] = 7;
-            return;
-        }
-        state[33] = pc;
-        state[34] = 7;
-        return;
-    }
-    state[33] = pc;
-    state[34] = 7;
+    const std::string source{std::istreambuf_iterator<char>(sourceFile),
+                             std::istreambuf_iterator<char>()};
+    return Interpreter(backend.compileCompute(source, "run_interpreter"));
 }
-)MSL";
-
-}  // namespace
-
-Interpreter::Interpreter(const Backend& backend)
-    : kernel_(backend.compileCompute(kInterpreterMsl, "run_interpreter")) {}
 
 Result Interpreter::run(const Backend& backend,
                         const std::vector<InstructionPacket>& packets,

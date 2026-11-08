@@ -910,7 +910,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::unique_ptr<gpu_interpreter::Interpreter> interpreter;
     if (options.interpreter) {
         const auto pipelinesBefore = backend.compiledPipelineCount();
-        interpreter = std::make_unique<gpu_interpreter::Interpreter>(backend);
+        if (!options.interpreterLibrary.empty()) {
+            interpreter = std::make_unique<gpu_interpreter::Interpreter>(
+                backend, options.interpreterLibrary.string());
+        } else if (!options.interpreterSource.empty()) {
+            interpreter = std::make_unique<gpu_interpreter::Interpreter>(
+                gpu_interpreter::Interpreter::fromSourceFile(
+                    backend, options.interpreterSource.string()));
+        } else {
+            throw std::runtime_error("GPU interpreter has no selected AOT library or development source");
+        }
         progressTrace.event("interpreter-pipeline-ready", startup.front(),
                             backend.compiledPipelineCount() - pipelinesBefore);
     }

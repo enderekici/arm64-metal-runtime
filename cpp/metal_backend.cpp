@@ -56,6 +56,7 @@ struct Backend::Impl {
     MTL::CommandQueue* queue = nullptr;
     std::string name;
     std::atomic<std::uint64_t> compiledPipelines{0};
+    std::atomic<std::uint64_t> sourceLibraryCompiles{0};
     std::atomic<std::uint64_t> completedDispatches{0};
 
     ~Impl() {
@@ -148,9 +149,47 @@ ComputeKernel Backend::compileCompute(std::string_view source,
     const std::string functionString(functionName);
     NS::Error* error = nullptr;
     NS::String* msl = NS::String::string(sourceString.c_str(), NS::UTF8StringEncoding);
+    impl_->sourceLibraryCompiles.fetch_add(1, std::memory_order_relaxed);
     MTL::Library* library = impl_->device->newLibrary(msl, nullptr, &error);
     if (library == nullptr) {
         throw std::runtime_error(errorMessage("Metal shader compilation failed", error));
+    }
+    NS::String* entryPoint = NS::String::string(functionString.c_str(), NS::UTF8StringEncoding);
+    MTL::Function* function = library->newFunction(entryPoint);
+    if (function == nullptr) {
+        library->release();
+        throw std::runtime_error("Metal library does not contain compute function: " + functionString);
+    }
+    MTL::ComputePipelineState* pipeline = impl_->device->newComputePipelineState(function, &error);
+    function->release();
+    library->release();
+    if (pipeline == nullptr) {
+        throw std::runtime_error(errorMessage("Metal compute pipeline creation failed", error));
+    }
+    impl_->compiledPipelines.fetch_add(1, std::memory_order_relaxed);
+    std::unique_ptr<ComputeKernel::Impl> kernel(new ComputeKernel::Impl());
+    kernel->pipeline = pipeline;
+    return ComputeKernel(std::move(kernel));
+}
+
+ComputeKernel Backend::loadComputeLibrary(std::string_view libraryPath,
+                                          std::string_view functionName) const {
+    if (impl_ == nullptr || impl_->device == nullptr) {
+        throw std::logic_error("Metal backend is not initialized");
+    }
+    if (libraryPath.empty() || functionName.empty()) {
+        throw std::invalid_argument("Metal library path and compute function name must be nonempty");
+    }
+    AutoreleasePool pool;
+    const std::string pathString(libraryPath);
+    const std::string functionString(functionName);
+    NS::Error* error = nullptr;
+    NS::String* path = NS::String::string(pathString.c_str(), NS::UTF8StringEncoding);
+    NS::URL* url = NS::URL::fileURLWithPath(path);
+    if (url == nullptr) throw std::runtime_error("Unable to form Metal library file URL");
+    MTL::Library* library = impl_->device->newLibrary(url, &error);
+    if (library == nullptr) {
+        throw std::runtime_error(errorMessage("Metal library load failed", error));
     }
     NS::String* entryPoint = NS::String::string(functionString.c_str(), NS::UTF8StringEncoding);
     MTL::Function* function = library->newFunction(entryPoint);
@@ -197,6 +236,11 @@ std::size_t Backend::maxBufferLength() const noexcept {
 std::uint64_t Backend::compiledPipelineCount() const noexcept {
     return impl_ == nullptr ? 0 :
         impl_->compiledPipelines.load(std::memory_order_relaxed);
+}
+
+std::uint64_t Backend::sourceLibraryCompileCount() const noexcept {
+    return impl_ == nullptr ? 0 :
+        impl_->sourceLibraryCompiles.load(std::memory_order_relaxed);
 }
 
 std::uint64_t Backend::completedDispatchCount() const noexcept {

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace arm64metal::gpu_interpreter {
@@ -36,11 +37,13 @@ struct Result {
     DispatchTiming timing{};
 };
 
-// Compiles one fixed MSL interpreter kernel. Guest programs never contribute
-// shader source. The same instance can dispatch any sequence in this slice.
+// Loads one fixed AOT Metal interpreter library. Guest programs never
+// contribute shader source. The same instance can dispatch any sequence.
 class Interpreter final {
 public:
-    explicit Interpreter(const Backend& backend);
+    Interpreter(const Backend& backend, std::string_view libraryPath);
+    [[nodiscard]] static Interpreter fromSourceFile(const Backend& backend,
+                                                   std::string_view sourcePath);
 
     [[nodiscard]] Result run(const Backend& backend,
                              const std::vector<InstructionPacket>& packets,
@@ -50,6 +53,7 @@ public:
                                   SharedBuffer& processState) const;
 
 private:
+    explicit Interpreter(ComputeKernel kernel);
     ComputeKernel kernel_;
 };
 

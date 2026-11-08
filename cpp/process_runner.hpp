@@ -16,6 +16,10 @@ struct LaunchOptions {
     bool cacheBootstrap = false;
     bool cachedInitializers = false;
     bool interpreter = false;
+    // A selected AOT library is strict: load errors do not fall back to MSL.
+    std::filesystem::path interpreterLibrary;
+    // Used only when no AOT library was selected (development mode).
+    std::filesystem::path interpreterSource;
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;

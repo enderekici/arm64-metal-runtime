@@ -122,13 +122,20 @@ bundle: verify
 
 # Package a previously verified C++ launcher without changing the Swift bundle.
 CPP_RUNTIME ?= $(BUILD)/cpp/arm64-metal
+CPP_INTERPRETER_METALLIB ?= $(BUILD)/cpp/interpreter/runtime-interpreter.metallib
 CPP_PACKAGE := $(BUILD)/arm64-metal-cpp-macos
 
-.PHONY: bundle-cpp
-bundle-cpp:
+.PHONY: cpp-release bundle-cpp
+cpp-release:
+	$(MAKE) -C cpp app interpreter-metallib
+
+bundle-cpp: cpp-release
 	@test -x "$(CPP_RUNTIME)" || { echo 'Set CPP_RUNTIME to the verified C++ launcher' >&2; exit 1; }
+	@test -f "$(CPP_INTERPRETER_METALLIB)" || { echo 'Missing AOT interpreter library; run make cpp-release' >&2; exit 1; }
 	@mkdir -p "$(CPP_PACKAGE)"
 	@cp "$(CPP_RUNTIME)" "$(CPP_PACKAGE)/arm64-metal"
+	@mkdir -p "$(CPP_PACKAGE)/resources/interpreter"
+	@cp "$(CPP_INTERPRETER_METALLIB)" "$(CPP_PACKAGE)/resources/interpreter/runtime-interpreter.metallib"
 	@cp README.md LEDGER.md HANDOFF.md "$(CPP_PACKAGE)/"
 	@cd "$(BUILD)" && tar -czf arm64-metal-cpp-macos.tar.gz arm64-metal-cpp-macos
 
