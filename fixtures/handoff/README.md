@@ -13,6 +13,8 @@ xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typ
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
 xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
+xcrun clang -Wall -Wextra -Werror "$src/mach-vm-partial-deallocate.c" \
+  -o "$out/mach-vm-partial-deallocate"
 xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/darwin" \
   "$src/jni-entry.c" -o "$out/jni-entry"
 
@@ -22,6 +24,7 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/dyld-interposition"
 "$out/mach-reply-port"
 "$out/commpage-page-shift"
+"$out/mach-vm-partial-deallocate"
 "$out/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
 ```
 

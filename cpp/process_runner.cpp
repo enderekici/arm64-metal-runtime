@@ -2542,15 +2542,73 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return kernSuccess;
     };
     hostServiceState.machVmDeallocate = [&](std::uint64_t address, std::uint64_t size) {
-        auto found = vmAllocations.find(address);
-        if (found == vmAllocations.end()) return kernInvalidArgument;
-        const auto length = found->second.end - found->second.begin;
-        if (size > length || size <= length - bootstrap.pageSize) return kernInvalidArgument;
-        const auto backing = found->second.backing;
-        const auto regions = found->second.regions;
-        for (const auto& region : regions) removeVmRegion(region);
-        mappingHeap.release(static_cast<std::int64_t>(backing));
-        vmAllocations.erase(found);
+        const auto pageSize = bootstrap.pageSize;
+        if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
+            address > std::numeric_limits<std::uint64_t>::max() - size) {
+            return kernInvalidArgument;
+        }
+        const auto requestedEnd = address + size;
+        if (requestedEnd > std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+            return kernInvalidArgument;
+        }
+        const auto begin = address & ~(pageSize - 1);
+        const auto end = (requestedEnd + pageSize - 1) & ~(pageSize - 1);
+        auto found = vmAllocations.end();
+        for (auto allocation = vmAllocations.begin(); allocation != vmAllocations.end(); ++allocation) {
+            if (allocation->second.end <= begin || allocation->second.begin >= end) continue;
+            if (found != vmAllocations.end()) return kernInvalidAddress;
+            found = allocation;
+        }
+        if (found == vmAllocations.end()) return kernSuccess;
+        auto& allocation = found->second;
+        const auto mappedBegin = std::max(begin, allocation.begin);
+        const auto mappedEnd = std::min(end, allocation.end);
+
+        std::vector<VmRegion> replacement;
+        for (const auto& region : allocation.regions) {
+            if (region.end <= mappedBegin || region.begin >= mappedEnd) {
+                replacement.push_back(region);
+                continue;
+            }
+            if (region.begin < mappedBegin) {
+                replacement.push_back({region.begin, mappedBegin, region.backing,
+                                        region.readable, region.writable});
+            }
+            if (region.end > mappedEnd) {
+                replacement.push_back({mappedEnd, region.end,
+                    region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
+                    region.readable, region.writable});
+            }
+        }
+        if (resident[0] < allocation.regions.size() ||
+            resident[0] - allocation.regions.size() + replacement.size() > residentCapacity) {
+            return kernNoSpace;
+        }
+
+        const auto oldRegions = allocation.regions;
+        std::vector<VmRegion> publishedRegions;
+        publishedRegions.reserve(replacement.size());
+        for (const auto& region : oldRegions) removeVmRegion(region);
+        try {
+            for (const auto& region : replacement) {
+                publishVmRegion(region);
+                publishedRegions.push_back(region);
+            }
+        } catch (...) {
+            for (const auto& region : publishedRegions) removeVmRegion(region);
+            try {
+                for (const auto& region : oldRegions) publishVmRegion(region);
+            } catch (...) {
+                throw std::runtime_error("Unable to restore guest VM mappings after deallocation failure");
+            }
+            syncResidentTable();
+            return kernNoSpace;
+        }
+        allocation.regions = std::move(replacement);
+        if (allocation.regions.empty()) {
+            mappingHeap.release(static_cast<std::int64_t>(allocation.backing));
+            vmAllocations.erase(found);
+        }
         syncResidentTable();
         return kernSuccess;
     };
