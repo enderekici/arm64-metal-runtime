@@ -758,8 +758,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/branch-register.native.out" "$$run_dir/branch-register.interpreter.out" && \
 		cmp "$$run_dir/branch-register.native.err" "$$run_dir/branch-register.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch-register.interpreter.err" && \
-		grep -q 'interpreter-dispatch' "$$run_dir/branch-register.interpreter.err" && \
-		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit found }' "$$run_dir/branch-register.interpreter.err" && \
+		awk '/event=interpreter-dispatch pc=0x42d8/ { step=1; next } step == 1 && /event=interpreter-dispatch pc=0x42f8/ { step=2; next } step == 2 && /event=interpreter-dispatch pc=0x42e4/ { step=3; next } step == 3 && /event=interpreter-dispatch pc=0x42f4/ { step=4; next } /event=compile-start/ { compile=1 } END { exit !(step == 4 && !compile) }' "$$run_dir/branch-register.interpreter.err" && \
 		sed '/^arm64-metal trace /d' "$$run_dir/branch-register.interpreter.err" >"$$run_dir/branch-register.interpreter.no-trace.err" && \
 		cmp "$$run_dir/branch-register.native.err" "$$run_dir/branch-register.interpreter.no-trace.err" || exit 1; \
 		set +e; \
@@ -777,7 +776,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/branch-register-import.native.err" "$$run_dir/branch-register-import.translated.err" && \
 		grep -qx 'blr-import' "$$run_dir/branch-register-import.native.out" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch-register-import.interpreter.err" && \
-		grep -q 'interpreter-dispatch' "$$run_dir/branch-register-import.interpreter.err" && \
+		awk '/event=interpreter-dispatch pc=0x4370/ { step=1; next } step == 1 && /event=dispatch-done pc=0x80000000/ { step=2; next } step == 2 && /event=compile-start pc=0x80000000/ { step=3; next } step == 3 && /event=compile-done pc=0x80000000/ { step=4; next } step == 4 && /event=dispatch-start pc=0x80000000/ { step=5; next } step == 5 && /event=dispatch-done pc=0x4384/ { step=6; next } step == 6 && /event=host-service pc=0x4384/ { step=7; next } step == 7 && /event=interpreter-dispatch pc=0x4384/ { step=8; next } END { exit !(step == 8) }' "$$run_dir/branch-register-import.interpreter.err" && \
 		sed '/^arm64-metal trace /d' "$$run_dir/branch-register-import.interpreter.err" >"$$run_dir/branch-register-import.interpreter.no-trace.err" && \
 		cmp "$$run_dir/branch-register-import.native.err" "$$run_dir/branch-register-import.interpreter.no-trace.err" || exit 1; \
 		set +e; \
