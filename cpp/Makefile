@@ -451,7 +451,7 @@ verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 
 verify-mach-vm-sparse-reservation-native: $(BUILD_DIR)/mach-vm-sparse-reservation-native
 	"$(BUILD_DIR)/mach-vm-sparse-reservation-native" >"$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
-	printf '%s\n' 'reserve_align32m=1 fixed_24g=0 fixed_exact=1' 'fixed_overlap=3 protect_none_to_rw=2 overwrite_tag2=0 zero_fill=1 write_read=1 left_reserved_read=1 right_reserved_read=1 left_fixed_overlap=3 right_fixed_overlap=3 overwrite_tag2_mte=0 repeated_overwrite=0 repeated_zero=1' 'deallocate=0 fixed_reuse=0 reuse_exact=1' 'anywhere_4m=0 aligned4m=1' 'anywhere_mte=0' 'anywhere_purgable=0' >"$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out"
+	printf '%s\n' 'reserve_align32m=1 fixed_24g=0 fixed_exact=1' 'fixed_overlap=3 protect_none_to_rw=2 overwrite_tag2=0 zero_fill=1 write_read=1 left_reserved_read=1 right_reserved_read=1 left_fixed_overlap=3 right_fixed_overlap=3 overwrite_tag2_mte=0 repeated_overwrite=0 repeated_zero=1' 'multi_owner_overwrite=0 exact=1 zero=1/1/1 reads=0/0/0' 'adjacent_owners=0/0 protect_cross=0 query=0/0 current=1/1' 'reserved_fixed=3 partial_deallocate=0 failed_owner_hole=3 marker=0:6c hole=1 reuse=0 exact=1 zero=1' 'deallocate=0 fixed_reuse=0 reuse_exact=1' 'anywhere_4m=0 aligned4m=1' 'anywhere_mte=0' 'anywhere_purgable=0' >"$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out" "$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
 
 verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIVE)
