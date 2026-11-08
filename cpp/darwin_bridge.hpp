@@ -43,6 +43,7 @@ int guest_feature_enabled(const char* domain, const char* feature);
 // Returns 0 on success or the errno value from the host sandbox check.
 int guest_sandbox_check_path(const char* operation, const char* path,
                              std::uint64_t* result);
+int guest_sandbox_check_write_data_status(std::uint64_t* result);
 
 }  // namespace arm64metal
 
@@ -62,4 +63,5 @@ int guest_entropy(void* buffer, std::uint64_t size);
 int guest_feature_enabled(const char* domain, const char* feature);
 int guest_sandbox_check_path(const char* operation, const char* path,
                              std::uint64_t* result);
+int guest_sandbox_check_write_data_status(std::uint64_t* result);
 }
