@@ -56,11 +56,10 @@ smoke returned `mixed42`. Receipts: `/tmp/metal-vm-protect-gate.7ep6a4`.
 Focused Mach host-info and port-release cases from `dcc1488` match native,
 including invalid-host/flavor/count and rights cleanup controls. Isolated
 allowlisted raw-core candidate `8b67998` matched native byte-for-byte with
-status 0 and no diagnostics on its raw and stack fixtures. Full four-flag libz
-on the virtualized stack still exits 1 at `___pthread_init.cold.2` with
-`BUG IN LIBPTHREAD: Token from the kernel is 0`; startup x3's Apple vector is
-empty. The candidate is in progress. These focused cases do not establish full
-libz or general Mach IPC compatibility.
+status 0 and no diagnostics on its raw and stack fixtures. The latest isolated libz candidate `ffd7da2` advances past `bzero` and now
+stops at raw Darwin trap `-27` (`thread_self`). This supersedes the earlier
+virtualized-stack stop at `___pthread_init.cold.2`; neither candidate establishes
+full libz or general Mach IPC compatibility.
 
 ## Combined typed interpreter qualification
 
@@ -148,10 +147,10 @@ fallback. The exact archive SHA-256 is
 `.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
 `/tmp/metal-format-gate.wQXVyM` and `/tmp/metal-stack-registry-gate.zgf0Ez`.
 
-The separate demand-cache candidate now passes 32 cases in all three modes
-with same-PC trace verification. It remains pending integration and is not in
-the packaged archive described here. No broad application compatibility claim
-follows from these service and formatting fixtures.
+The separate demand-cache candidate's fixture returns exit status 32 in all
+three modes with same-PC trace verification. It remains pending integration
+and is not in the packaged archive described here. No broad application
+compatibility claim follows from these service and formatting fixtures.
 
 ## Evidence locations
 
