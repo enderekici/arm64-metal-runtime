@@ -2026,8 +2026,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             guestSendRightUrefs.emplace(name, 0);
         }
         auto& references = guestSendRightUrefs[threadPort->second];
-        if (references == maxGuestPortUrefs) return std::uint32_t{0};
-        ++references;
+        if (references < maxGuestPortUrefs) ++references;
         return threadPort->second;
     };
     const auto finishGuestThread = [&](std::uint64_t result,
