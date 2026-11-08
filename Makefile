@@ -136,6 +136,7 @@ bundle-cpp: cpp-release
 	@cp "$(CPP_RUNTIME)" "$(CPP_PACKAGE)/arm64-metal"
 	@mkdir -p "$(CPP_PACKAGE)/resources/interpreter"
 	@cp "$(CPP_INTERPRETER_METALLIB)" "$(CPP_PACKAGE)/resources/interpreter/runtime-interpreter.metallib"
+	@printf '%s\n' 'AOT interpreter library required' >"$(CPP_PACKAGE)/resources/interpreter/AOT_REQUIRED"
 	@cp README.md LEDGER.md HANDOFF.md "$(CPP_PACKAGE)/"
 	@cd "$(BUILD)" && tar -czf arm64-metal-cpp-macos.tar.gz arm64-metal-cpp-macos
 

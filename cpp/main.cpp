@@ -74,12 +74,44 @@ void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& opt
   const char* configuredLibrary = std::getenv("ARM64_METAL_INTERPRETER_LIBRARY");
   if (configuredLibrary != nullptr && configuredLibrary[0] != '\0') {
     options.interpreterLibrary = configuredLibrary;
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(options.interpreterLibrary, error) || error) {
+      throw std::runtime_error("Selected GPU interpreter library is missing or not a file: " +
+                               options.interpreterLibrary.string());
+    }
     return;
   }
-  const auto packagedLibrary = executablePath.parent_path() /
-      "resources/interpreter/runtime-interpreter.metallib";
+  const auto interpreterResources = executablePath.parent_path() / "resources/interpreter";
+  const auto packagedLibrary = interpreterResources / "runtime-interpreter.metallib";
+  const auto packageMarker = interpreterResources / "AOT_REQUIRED";
   std::error_code error;
-  if (std::filesystem::is_regular_file(packagedLibrary, error) && !error) {
+  const bool packageMode = std::filesystem::exists(packageMarker, error);
+  if (error) {
+    throw std::runtime_error("Unable to inspect GPU interpreter package marker: " +
+                             packageMarker.string());
+  }
+  if (packageMode) {
+    if (!std::filesystem::is_regular_file(packagedLibrary, error) || error) {
+      throw std::runtime_error("Packaged GPU interpreter library is missing or not a file: " +
+                               packagedLibrary.string());
+    }
+    options.interpreterLibrary = packagedLibrary;
+    return;
+  }
+  const bool packagedLibraryExists = std::filesystem::exists(packagedLibrary, error);
+  if (error) {
+    throw std::runtime_error("Unable to inspect packaged GPU interpreter library: " +
+                             packagedLibrary.string());
+  }
+  if (packagedLibraryExists && !std::filesystem::is_regular_file(packagedLibrary, error)) {
+    throw std::runtime_error("Packaged GPU interpreter library is not a regular file: " +
+                             packagedLibrary.string());
+  }
+  if (error) {
+    throw std::runtime_error("Unable to inspect packaged GPU interpreter library: " +
+                             packagedLibrary.string());
+  }
+  if (packagedLibraryExists) {
     options.interpreterLibrary = packagedLibrary;
     return;
   }
