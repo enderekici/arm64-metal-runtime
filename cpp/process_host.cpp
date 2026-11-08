@@ -712,6 +712,9 @@ HostServiceResult dispatch_guest_host_service(
                signal == SIGALRM || signal == SIGTERM || signal == SIGUSR1 || signal == SIGUSR2 ||
                signal == SIGINFO;
     };
+    const auto synchronous_signal_supported = [](std::int32_t signal) {
+        return signal == SIGSEGV || signal == SIGBUS || signal == SIGILL;
+    };
     const auto guest_format = [&](std::uint64_t address) {
         const auto text = string_at(address);
         return std::vector<std::uint8_t>(text.begin(), text.end());
@@ -2335,12 +2338,14 @@ HostServiceResult dispatch_guest_host_service(
                 std::memcpy(output + 8, &packed, sizeof(packed));
             }
             if (action) {
-                if (!host_signal_supported(signal)) {
+                if (!host_signal_supported(signal) &&
+                    !synchronous_signal_supported(signal)) {
                     set_errno(ENOTSUP);
                     registers[0] = failure;
                     break;
                 }
-                if (guest_signal_listen(signal, action->handler == 1 ? 1 : 0,
+                if (host_signal_supported(signal) &&
+                    guest_signal_listen(signal, action->handler == 1 ? 1 : 0,
                                         (action->flags & SA_RESTART) != 0 ? 1 : 0) != 0) {
                     set_errno(errno);
                     registers[0] = failure;
