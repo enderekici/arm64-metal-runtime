@@ -3077,8 +3077,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 bootstrap.mainThreadSpecificData +
                     static_cast<std::uint64_t>(key) * sizeof(published), sizeof(published));
             std::memcpy(&published, slot, sizeof(published));
-            if (published != *storage) {
-                throw std::runtime_error("Initial-image TLV key was not published to guest TSD");
+            if (published == 0 ||
+                published > std::numeric_limits<std::uint64_t>::max() - offset ||
+                published + offset != *storage) {
+                dyldBootstrapTrace.event("initial-tlv-publication-mismatch",
+                                         initializedDescriptors);
+                throw std::runtime_error(
+                    "Initial-image TLV TSD base disagrees with its resolved descriptor address");
             }
             ++initializedDescriptors;
         };
