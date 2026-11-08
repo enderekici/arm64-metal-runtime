@@ -3066,6 +3066,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::optional<std::uint64_t> activeExitCallbackImage;
         std::vector<std::uint64_t> activeExitLease;
         std::optional<std::int32_t> exitStatus;
+        std::optional<std::uint64_t> exitThreadResult;
         std::uint64_t exitThread = 0;
     };
     std::unordered_map<std::uint64_t, std::vector<GuestCallbackFrame>> callbackFramesByThread;
@@ -6157,11 +6158,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         resident.size() * sizeof(std::uint64_t));
         }
     };
-    std::function<bool(std::vector<std::uint64_t>)> beginImageExitDrain;
+    std::function<bool(std::vector<std::uint64_t>, std::optional<std::int32_t>,
+                       std::optional<std::uint64_t>)> beginImageExitDrain;
     const auto beginExitDrain = [&](std::uint64_t dso,
                                     std::optional<std::int32_t> exitStatus) {
         const auto handler = exitRegistry.take_next(dso);
-        if (!handler) return beginImageExitDrain(takePendingDynamicUnloads());
+        if (!handler)
+            return beginImageExitDrain(takePendingDynamicUnloads(), exitStatus, std::nullopt);
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         GuestCallbackFrame frame;
         frame.savedRegisters.assign(live, live + 36);
@@ -6230,7 +6233,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return false;
     };
-    beginImageExitDrain = [&](std::vector<std::uint64_t> images) {
+    beginImageExitDrain = [&](std::vector<std::uint64_t> images,
+                              std::optional<std::int32_t> exitStatus,
+                              std::optional<std::uint64_t> exitThreadResult) {
         if (images.empty()) return false;
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         GuestCallbackFrame frame;
@@ -6239,6 +6244,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
         frame.authenticationDepth = live[37];
         frame.exitImages = std::move(images);
+        frame.exitStatus = exitStatus;
+        frame.exitThreadResult = exitThreadResult;
         if (scheduleNextImageExitHandler(frame)) return true;
         unloadDynamicImages(frame.drainedExitImages);
         return false;
@@ -6371,6 +6378,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 unloadDynamicImages(frame.drainedExitImages);
                 if (frame.exitStatus) return *frame.exitStatus;
+                if (frame.exitThreadResult) {
+                    auto* restored = static_cast<std::uint64_t*>(stateBuffer.data());
+                    std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), restored);
+                    std::copy(frame.savedVectorAndAuth.begin(),
+                              frame.savedVectorAndAuth.end(), restored + 806);
+                    restored[37] = frame.authenticationDepth;
+                    std::vector<std::uint64_t> live(
+                        restored, restored + stateBuffer.size() / sizeof(std::uint64_t));
+                    if (finishGuestThread(*frame.exitThreadResult, live)) return 0;
+                    continue;
+                }
                 if (frame.nextImageNotification < frame.imageNotifications.size()) {
                     const auto notification =
                         frame.imageNotifications[frame.nextImageNotification++];
@@ -6450,7 +6468,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (registers[30] == kNoFault && guestScheduler.current_id() != 1) {
                 discardThreadCallbacks(guestScheduler.current_id());
-                if (beginImageExitDrain(takePendingDynamicUnloads())) continue;
+                if (beginImageExitDrain(takePendingDynamicUnloads(), std::nullopt,
+                                        std::nullopt)) continue;
                 std::vector<std::uint64_t> live(
                     static_cast<const std::uint64_t*>(stateBuffer.data()),
                     static_cast<const std::uint64_t*>(stateBuffer.data()) +
@@ -7314,7 +7333,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 discardThreadCallbacks(guestScheduler.current_id());
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
-                if (beginImageExitDrain(takePendingDynamicUnloads())) continue;
+                if (beginImageExitDrain(takePendingDynamicUnloads(), std::nullopt,
+                                        hostRegisters[0])) continue;
                 if (finishGuestThread(hostRegisters[0], hostRegisters)) return 0;
                 continue;
             }
@@ -7646,7 +7666,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     std::copy_n(hostRegisters.begin(), 36,
                                 static_cast<std::uint64_t*>(stateBuffer.data()));
-                    if (beginImageExitDrain(std::move(finalizableImages))) continue;
+                    if (beginImageExitDrain(std::move(finalizableImages), std::nullopt,
+                                            std::nullopt)) continue;
                     continue;
                 }
                 std::copy_n(hostRegisters.begin(), 36,
