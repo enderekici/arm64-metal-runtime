@@ -112,3 +112,26 @@ the translator emits calls to the shared move-wide MSL helper. The helper's
 value expression lives in `cpp/move_wide_shared.h`; the same header supplies
 the runtime-generated translator/function shader source and the AOT
 interpreter implementation.
+
+## Multi-allocation Mach VM deallocation
+
+The fixture allocates three adjacent anonymous regions, removes the middle
+allocation, then deallocates a range crossing the surviving allocations and the
+hole. It verifies the surviving edge data and confirms the five removed pages
+are inaccessible before releasing the edges.
+
+```sh
+src=fixtures/handoff/mach-vm-multi-deallocate.c
+out=.build/handoff-probes/mach-vm-multi-deallocate
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o "$out"
+"$out" > "$out.native.out" 2> "$out.native.err"
+printf '%s\n' "$?" > "$out.native.status"
+.build/cpp/arm64-metal launch "$out" > "$out.runtime.out" 2> "$out.runtime.err"
+printf '%s\n' "$?" > "$out.runtime.status"
+cmp "$out.native.out" "$out.runtime.out"
+cmp "$out.native.err" "$out.runtime.err"
+cmp "$out.native.status" "$out.runtime.status"
+```
+
+Expected stdout is `page=16384 deltas=49152,81920 removed=0 span=0 data=49,115 protection=0,12,12,12,12,12,0` followed by `release=0,0`; stderr is empty and status is 0.
