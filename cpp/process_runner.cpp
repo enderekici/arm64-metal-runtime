@@ -4960,6 +4960,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto result = build ? guest_version_token_at_least(
                     (static_cast<std::uint64_t>(build->sdk) << 32U) | build->platform,
                     hostRegisters[1]) : 0;
+                const char* sdkTrace = std::getenv("ARM64_METAL_TRACE_SERVICE185");
+                if (sdkTrace != nullptr && std::strcmp(sdkTrace, "1") == 0) {
+                    const auto requestedPlatform = static_cast<std::uint32_t>(hostRegisters[1]);
+                    const auto requestedVersion = static_cast<std::uint32_t>(hostRegisters[1] >> 32U);
+                    const auto mapped = image.image_paths.find(hostRegisters[0]);
+                    const char* category = mapped == image.image_paths.end()
+                        ? "unmapped" : build ? "mapped-with-version" : "mapped-no-version";
+                    std::cerr << "arm64-metal dyld-sdk service185 platform=" << requestedPlatform
+                              << " version=" << requestedVersion << " header=" << category
+                              << " result=" << (result > 0 ? 1 : 0) << '\n';
+                }
                 hostRegisters[0] = static_cast<std::uint64_t>(result > 0);
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
