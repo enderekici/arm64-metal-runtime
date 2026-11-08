@@ -501,9 +501,9 @@ verify-interpreter-cmeq-zero: $(APP) $(INTERPRETER_CMEQ_ZERO_MAIN) $(INTERPRETER
 	test "$$binary_sha" = "$$(shasum -a 256 "$(INTERPRETER_CMEQ_ZERO_MAIN)" | awk '{print $$1}')" && \
 		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq "$$native_rc" && \
 		test "$$interpreter_rc" -eq "$$native_rc" && \
-		cmp "$$run_dir/native.out" "$$translated.out" && \
-		cmp "$$run_dir/native.out" "$$interpreter.out" && \
-		cmp "$$run_dir/native.err" "$$translated.err" && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
 		awk '/event=interpreter-block-ready/ { blocks++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { block=$$i; sub(/^detail=/,"",block) } } \
 		     /event=interpreter-dispatch/ { dispatches++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { dispatch=$$i; sub(/^detail=/,"",dispatch) } } \
