@@ -10,6 +10,8 @@
 
 namespace arm64metal {
 
+class GuestMemory;
+
 inline constexpr std::size_t guestSignalFrameLimit = 32;
 inline constexpr std::size_t guestSignalPC = 33;
 inline constexpr std::size_t guestSignalLR = 30;
@@ -37,6 +39,13 @@ struct GuestSignalResume {
     bool recompile = false;
 };
 
+struct GuestSynchronousFault {
+    std::int32_t signal = 0;
+    std::int32_t code = 0;
+    std::uint64_t address = 0;
+    std::uint64_t programCounter = 0;
+};
+
 // Owns signal frames only. GuestSignals owns process actions/pending state;
 // the scheduler owns thread masks, Metal execution, and executable regions.
 class GuestSignalRuntime final {
@@ -56,7 +65,15 @@ public:
         GuestSignals& signals, std::uint32_t& processPending,
         std::uint32_t& threadPending, std::uint32_t& threadMask,
         std::vector<std::uint64_t>& registers,
-        std::uint64_t authenticationDepth, std::uint64_t executionContext);
+        std::uint64_t authenticationDepth, std::uint64_t executionContext,
+        GuestMemory* memory = nullptr);
+
+    [[nodiscard]] GuestSignalDelivery deliver_synchronous(
+        GuestSignals& signals, std::uint32_t& threadMask,
+        std::vector<std::uint64_t>& registers, GuestMemory& memory,
+        const GuestSynchronousFault& fault, std::uint64_t authenticationDepth,
+        std::uint64_t executionContext,
+        const GuestSignals::Action* selectedAction = nullptr);
 
     // Call when the Metal runner reports the handler's sentinel return.
     // Returns the saved PC/context for the scheduler to resume or recompile.
@@ -65,7 +82,7 @@ public:
         std::vector<std::uint64_t>& registers,
         std::uint64_t authenticationDepth,
         const std::function<std::optional<std::uint64_t>(std::uint64_t)>&
-            restartableRecovery = {});
+            restartableRecovery = {}, GuestMemory* memory = nullptr);
 
     [[nodiscard]] bool has_frames() const noexcept { return !frames_.empty(); }
     [[nodiscard]] std::size_t frame_depth() const noexcept { return frames_.size(); }
@@ -77,6 +94,7 @@ private:
         std::uint32_t signalMask = 0;
         std::uint64_t authenticationDepth = 0;
         std::uint64_t executionContext = 0;
+        std::uint64_t synchronousContext = 0;
     };
     std::vector<Frame> frames_;
 };

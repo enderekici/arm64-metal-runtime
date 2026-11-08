@@ -29,6 +29,7 @@
 #include <pthread.h>
 #include <runetype.h>
 #include <set>
+#include <signal.h>
 #include <sstream>
 #include <stdexcept>
 #include <sys/sysctl.h>
@@ -200,9 +201,15 @@ void decode_reachable(const ExecutableImage& image,
                                              guestStubs, true);
             }
         } catch (const std::exception& error) {
-            decodeErrors[pc] = error.what();
-            instruction = {{"x[33] = " + std::to_string(pc) +
-                            "ul; x[34] = 5; return;"}, {}};
+            const auto word = selectorWord ? *selectorWord : image.instruction(pc);
+            if ((word & 0xffe0001fU) == 0) {
+                instruction = {{"x[33] = " + std::to_string(pc) +
+                                "ul; x[34] = 14; return;"}, {}};
+            } else {
+                decodeErrors[pc] = error.what();
+                instruction = {{"x[33] = " + std::to_string(pc) +
+                                "ul; x[34] = 5; return;"}, {}};
+            }
         }
         if (!image.deferred_cache.empty()) {
             const auto checkpoint = "x[33] = " + std::to_string(pc) +
@@ -2995,7 +3002,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             static_cast<const std::uint64_t*>(stateBuffer.data()) +
                 stateBuffer.size() / sizeof(std::uint64_t));
         const auto resumed = signalRuntime.resume(hostServiceState.signals,
-            hostServiceState.threadSignalMask, live, live[37]);
+            hostServiceState.threadSignalMask, live, live[37], {}, &guestMemory);
         if (!resumed) return false;
         std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
         const auto entry = resumed->recompile
@@ -3013,7 +3020,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto delivery = signalRuntime.deliver(
             hostServiceState.signals, hostServiceState.queuedProcessSignals,
             hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
-            live, live[37], static_cast<std::uint64_t>(activeEntry));
+            live, live[37], static_cast<std::uint64_t>(activeEntry), &guestMemory);
         if (delivery.outcome == GuestSignalOutcome::ProcessExit) return delivery.exitStatus;
         if (delivery.outcome == GuestSignalOutcome::UnsupportedStop) {
             throw std::runtime_error("Guest stop and continue signals are unsupported");
@@ -4683,13 +4690,53 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             const auto address = registers[guestFaultAddress];
+            std::vector<std::uint64_t> live(
+                registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+            const bool protectionFault = guestMemory.is_protection_fault(address);
+            const GuestSynchronousFault fault{
+                protectionFault ? SIGBUS : SIGSEGV,
+                protectionFault ? BUS_ADRALN : SEGV_MAPERR,
+                address, registers[33]};
+            const auto delivery = signalRuntime.deliver_synchronous(
+                hostServiceState.signals, hostServiceState.threadSignalMask,
+                live, guestMemory, fault, live[37],
+                static_cast<std::uint64_t>(activeEntry));
+            if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                return delivery.exitStatus;
+            }
+            if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
+                selectKernel(static_cast<std::int64_t>(delivery.handler));
+                continue;
+            }
             throw std::runtime_error("Guest process memory access fault at 0x" +
                 hexadecimal(address) + " at PC 0x" + hexadecimal(registers[33]) +
                 " width " + std::to_string(registers[guestCacheFaultWidth]) +
                 " x10=0x" + hexadecimal(registers[10]) +
                 " tp=0x" + hexadecimal(registers[guestThreadPointer]));
         }
-        if (status == 3) throw std::runtime_error("Guest process reached an invalid code address");
+        if (status == 3 || status == 14) {
+            const auto address = status == 3 ? registers[guestFaultAddress] : registers[33];
+            const GuestSynchronousFault fault{
+                status == 3 ? SIGSEGV : SIGILL,
+                status == 3 ? SEGV_MAPERR : ILL_ILLTRP,
+                address, registers[33]};
+            std::vector<std::uint64_t> live(
+                registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+            const auto delivery = signalRuntime.deliver_synchronous(
+                hostServiceState.signals, hostServiceState.threadSignalMask,
+                live, guestMemory, fault, live[37],
+                static_cast<std::uint64_t>(activeEntry));
+            if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                return delivery.exitStatus;
+            }
+            if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
+                selectKernel(static_cast<std::int64_t>(delivery.handler));
+                continue;
+            }
+            throw std::runtime_error("Guest synchronous signal was not delivered");
+        }
         if (status == 5) {
             const auto pc = static_cast<std::int64_t>(registers[33]);
             const auto error = decodeErrors.find(pc);

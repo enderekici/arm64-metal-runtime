@@ -97,6 +97,7 @@ verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@cmp "$(BUILD)/gzip-invalid.native" "$(BUILD)/gzip-invalid.gpu"
 	@cmp "$(BUILD)/gzip-invalid.native.err" "$(BUILD)/gzip-invalid.gpu.err"
 	@echo "Unmodified /usr/bin/gzip malformed-input rejection matches native"
+
 	@/usr/bin/bzip2 -c "$(BUILD)/gzip-input" >"$(BUILD)/bzip2-input.bz2"
 	@/usr/bin/xattr -w com.example.metal-bzip metadata-check "$(BUILD)/bzip2-input.bz2"
 	@rm -f "$(BUILD)/bzip2.native" "$(BUILD)/bzip2.gpu"
@@ -108,6 +109,14 @@ verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@test "$$(/usr/bin/xattr -p com.example.metal-bzip "$(BUILD)/bzip2.native")" = metadata-check
 	@test "$$(/usr/bin/xattr -p com.example.metal-bzip "$(BUILD)/bzip2.gpu")" = metadata-check
 	@echo "Unmodified /usr/bin/bzip2 decompression of 37,000 bytes and copied xattr match native"
+
+SYNCHRONOUS_FAULT_ORACLE := $(BUILD)/synchronous-fault-oracle
+.PHONY: verify-synchronous-fault-oracle
+$(SYNCHRONOUS_FAULT_ORACLE): fixtures/handoff/synchronous-fault-oracle.c | $(BUILD)
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+verify-synchronous-fault-oracle: $(SYNCHRONOUS_FAULT_ORACLE)
+	$(SYNCHRONOUS_FAULT_ORACLE)
 
 $(CACHE_ZLIB): cache-zlib.c | $(BUILD)
 	xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$<" -lz -o "$@"

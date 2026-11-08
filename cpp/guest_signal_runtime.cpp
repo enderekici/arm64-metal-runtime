@@ -1,10 +1,12 @@
 #include "guest_signal_runtime.hpp"
 
 #include "darwin_bridge.hpp"
+#include "process_host.hpp"
 
 #include <signal.h>
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <utility>
 
@@ -12,6 +14,23 @@ namespace arm64metal {
 namespace {
 
 constexpr std::uint64_t kSignalReturnSentinel = ~std::uint64_t{0};
+constexpr std::size_t kGuestSiginfoSize = 104;
+constexpr std::size_t kGuestUcontextSize = 56;
+constexpr std::size_t kGuestMcontextSize = 816;
+constexpr std::size_t kGuestMcontextThreadState = 16;
+constexpr std::size_t kGuestMcontextNeonState = 288;
+constexpr std::size_t kGuestSiginfoAddress = 24;
+constexpr std::size_t kGuestUcontextSignalMask = 4;
+constexpr std::size_t kGuestUcontextMcontextPointer = 48;
+
+std::uint64_t aligned_down(std::uint64_t value, std::uint64_t alignment) {
+    return value & ~(alignment - 1U);
+}
+
+void write_context_integer(std::uint8_t* bytes, std::size_t offset,
+                           const void* value, std::size_t size) {
+    std::memcpy(bytes + offset, value, size);
+}
 
 bool ignored_by_default(std::int32_t signal) noexcept {
     return signal == SIGCHLD || signal == SIGURG || signal == SIGWINCH || signal == SIGINFO;
@@ -55,7 +74,8 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
     GuestSignals& signals, std::uint32_t& processPending,
     std::uint32_t& threadPending, std::uint32_t& threadMask,
     std::vector<std::uint64_t>& registers,
-    std::uint64_t authenticationDepth, std::uint64_t executionContext) {
+    std::uint64_t authenticationDepth, std::uint64_t executionContext,
+    GuestMemory* memory) {
     validate_registers(registers);
     signals.set_mask_value(threadMask);
     while (true) {
@@ -75,6 +95,13 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
             }
             threadMask = signals.mask();
             return {GuestSignalOutcome::ProcessExit, signal, 128 + signal, 0};
+        }
+        if ((action.flags & SA_SIGINFO) != 0) {
+            if (memory == nullptr)
+                throw std::runtime_error("Guest SA_SIGINFO delivery requires guest memory");
+            return deliver_synchronous(signals, threadMask, registers, *memory,
+                GuestSynchronousFault{signal, SI_USER, 0, registers[guestSignalPC]},
+                authenticationDepth, executionContext, &action);
         }
         if (frames_.size() >= guestSignalFrameLimit) {
             throw std::runtime_error("Guest signal nesting limit exceeded");
@@ -98,12 +125,104 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
     }
 }
 
+GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
+    GuestSignals& signals, std::uint32_t& threadMask,
+    std::vector<std::uint64_t>& registers, GuestMemory& memory,
+    const GuestSynchronousFault& fault, std::uint64_t authenticationDepth,
+    std::uint64_t executionContext, const GuestSignals::Action* selectedAction) {
+    validate_registers(registers);
+    if (!GuestSignals::valid(fault.signal))
+        throw std::invalid_argument("Invalid synchronous guest signal");
+    signals.set_mask_value(threadMask);
+    const auto action = selectedAction == nullptr
+        ? signals.action(fault.signal) : *selectedAction;
+    // Synchronous faults cannot be ignored: resuming at the same instruction
+    // would immediately fault again.
+    if (action.handler <= 1) {
+        return {GuestSignalOutcome::ProcessExit, fault.signal,
+                128 + fault.signal, 0};
+    }
+    if ((action.flags & SA_SIGINFO) == 0) {
+        signals.raise(fault.signal);
+        std::uint32_t processPending = 0;
+        std::uint32_t threadPending = 0;
+        auto delivered = deliver(signals, processPending, threadPending, threadMask,
+                                 registers, authenticationDepth, executionContext);
+        return delivered;
+    }
+    if (frames_.size() >= guestSignalFrameLimit)
+        throw std::runtime_error("Guest signal nesting limit exceeded");
+
+    constexpr auto faultStateSize = kGuestSiginfoSize + kGuestUcontextSize +
+                                    kGuestMcontextSize;
+    const auto sp = registers[31];
+    if (sp < faultStateSize + 16U)
+        throw std::runtime_error("Guest stack cannot hold synchronous signal context");
+    const auto siginfoAddress = aligned_down(sp - kGuestSiginfoSize, 16);
+    const auto ucontextAddress = aligned_down(siginfoAddress - kGuestUcontextSize, 16);
+    const auto mcontextAddress = aligned_down(ucontextAddress - kGuestMcontextSize, 16);
+
+    auto* siginfo = memory.buffer(siginfoAddress, kGuestSiginfoSize, true);
+    auto* ucontext = memory.buffer(ucontextAddress, kGuestUcontextSize, true);
+    auto* mcontext = memory.buffer(mcontextAddress, kGuestMcontextSize, true);
+    std::memset(siginfo, 0, kGuestSiginfoSize);
+    std::memset(ucontext, 0, kGuestUcontextSize);
+    std::memset(mcontext, 0, kGuestMcontextSize);
+    write_context_integer(siginfo, 0, &fault.signal, sizeof(fault.signal));
+    write_context_integer(siginfo, 8, &fault.code, sizeof(fault.code));
+    write_context_integer(siginfo, kGuestSiginfoAddress, &fault.address,
+                          sizeof(fault.address));
+    write_context_integer(ucontext, kGuestUcontextSignalMask, &threadMask,
+                          sizeof(threadMask));
+    const std::uint64_t machineContextSize = kGuestMcontextSize;
+    write_context_integer(ucontext, 40, &machineContextSize, sizeof(machineContextSize));
+    write_context_integer(ucontext, kGuestUcontextMcontextPointer, &mcontextAddress,
+                          sizeof(mcontextAddress));
+    for (std::size_t index = 0; index < 29; ++index) {
+        write_context_integer(mcontext, kGuestMcontextThreadState + index * 8,
+                              &registers[index], sizeof(std::uint64_t));
+    }
+    for (std::size_t index = 29; index <= 31; ++index) {
+        const auto stateOffset = kGuestMcontextThreadState + 232 + (index - 29) * 8;
+        write_context_integer(mcontext, stateOffset, &registers[index],
+                              sizeof(std::uint64_t));
+    }
+    write_context_integer(mcontext, kGuestMcontextThreadState + 256,
+                          &registers[guestSignalPC], sizeof(std::uint64_t));
+    std::memcpy(mcontext + kGuestMcontextNeonState,
+                registers.data() + guestSignalVectorStart,
+                (guestSignalVectorEnd - guestSignalVectorStart) * sizeof(std::uint64_t));
+
+    Frame frame;
+    frame.registers.assign(registers.begin(), registers.begin() + guestSignalGPRCount);
+    frame.vectors.assign(registers.begin() + guestSignalVectorStart,
+                         registers.begin() + guestSignalVectorEnd);
+    frame.signalMask = signals.mask();
+    frame.authenticationDepth = authenticationDepth;
+    frame.executionContext = executionContext;
+    frame.synchronousContext = ucontextAddress;
+    frames_.push_back(std::move(frame));
+
+    if ((action.flags & SA_RESETHAND) != 0) {
+        signals.set_action(GuestSignals::Action{}, fault.signal);
+    }
+    signals.enter(fault.signal, action);
+    threadMask = signals.mask();
+    registers[0] = static_cast<std::uint64_t>(fault.signal);
+    registers[1] = siginfoAddress;
+    registers[2] = ucontextAddress;
+    registers[31] = mcontextAddress;
+    registers[guestSignalLR] = kSignalReturnSentinel;
+    registers[guestSignalPC] = action.handler;
+    return {GuestSignalOutcome::HandlerEntered, fault.signal, 0, action.handler};
+}
+
 std::optional<GuestSignalResume> GuestSignalRuntime::resume(
     GuestSignals& signals, std::uint32_t& threadMask,
     std::vector<std::uint64_t>& registers,
     std::uint64_t authenticationDepth,
     const std::function<std::optional<std::uint64_t>(std::uint64_t)>&
-        restartableRecovery) {
+        restartableRecovery, GuestMemory* memory) {
     if (frames_.empty()) return std::nullopt;
     validate_registers(registers);
     Frame frame = std::move(frames_.back());
@@ -114,9 +233,32 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
     std::copy(frame.registers.begin(), frame.registers.end(), registers.begin());
     std::copy(frame.vectors.begin(), frame.vectors.end(),
               registers.begin() + guestSignalVectorStart);
+    bool recompile = false;
+    if (frame.synchronousContext != 0 && memory != nullptr) {
+        const auto* ucontext = memory->buffer(frame.synchronousContext, kGuestUcontextSize);
+        std::uint64_t mcontextAddress = 0;
+        std::memcpy(&mcontextAddress, ucontext + kGuestUcontextMcontextPointer,
+                    sizeof(mcontextAddress));
+        const auto* mcontext = memory->buffer(mcontextAddress, kGuestMcontextSize);
+        for (std::size_t index = 0; index < 29; ++index) {
+            std::memcpy(&registers[index], mcontext + kGuestMcontextThreadState + index * 8,
+                        sizeof(std::uint64_t));
+        }
+        for (std::size_t index = 29; index <= 31; ++index) {
+            const auto stateOffset = kGuestMcontextThreadState + 232 + (index - 29) * 8;
+            std::memcpy(&registers[index], mcontext + stateOffset, sizeof(std::uint64_t));
+        }
+        std::memcpy(&registers[guestSignalPC],
+                    mcontext + kGuestMcontextThreadState + 256, sizeof(std::uint64_t));
+        recompile = registers[guestSignalPC] != frame.registers[guestSignalPC];
+        std::memcpy(registers.data() + guestSignalVectorStart,
+                    mcontext + kGuestMcontextNeonState,
+                    (guestSignalVectorEnd - guestSignalVectorStart) * sizeof(std::uint64_t));
+        std::memcpy(&frame.signalMask, ucontext + kGuestUcontextSignalMask,
+                    sizeof(frame.signalMask));
+    }
     signals.set_mask_value(frame.signalMask);
     threadMask = signals.mask();
-    bool recompile = false;
     if (restartableRecovery) {
         const auto recovery = restartableRecovery(registers[guestSignalPC]);
         if (recovery.has_value()) {

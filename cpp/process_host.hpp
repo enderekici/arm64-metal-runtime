@@ -140,6 +140,7 @@ public:
                                             std::uint64_t length) const;
     [[nodiscard]] std::uint64_t contiguous_readable_size(std::uint64_t address) const;
     [[nodiscard]] bool is_readonly(std::uint64_t address, std::uint64_t length) const;
+    [[nodiscard]] bool is_protection_fault(std::uint64_t address) const;
     void rebind(std::uint8_t* bytes, std::size_t size);
     void add_mapping(GuestMemoryMapping mapping);
     void replace_mappings(const std::vector<std::uint64_t>& logicalBegins,

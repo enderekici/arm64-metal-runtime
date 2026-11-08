@@ -477,6 +477,15 @@ bool GuestMemory::is_readonly(std::uint64_t address, std::uint64_t length) const
         });
 }
 
+bool GuestMemory::is_protection_fault(std::uint64_t address) const {
+    for (const auto& mapping : mappings_) {
+        if (address >= mapping.logicalBegin && address < mapping.logicalEnd) {
+            return !mapping.readable || !mapping.writable;
+        }
+    }
+    return is_readonly(address, 1);
+}
+
 void GuestMemory::add_mapping(GuestMemoryMapping mapping) {
     if (mapping.logicalBegin >= mapping.logicalEnd || mapping.backingBegin > size_ ||
         mapping.logicalEnd - mapping.logicalBegin > size_ - mapping.backingBegin) {
@@ -2311,7 +2320,8 @@ HostServiceResult dispatch_guest_host_service(
                 std::memcpy(&packed, memory.buffer(requested + 8, sizeof(packed)), sizeof(packed));
                 GuestSignals::Action next{handler, static_cast<std::uint32_t>(packed),
                     static_cast<std::int32_t>(static_cast<std::uint32_t>(packed >> 32U))};
-                constexpr std::int32_t supported = SA_RESTART | SA_RESETHAND | SA_NODEFER;
+                constexpr std::int32_t supported = SA_RESTART | SA_RESETHAND |
+                                                   SA_NODEFER | SA_SIGINFO;
                 if ((next.flags & ~supported) != 0) {
                     throw std::runtime_error("Guest sigaction flags unsupported");
                 }

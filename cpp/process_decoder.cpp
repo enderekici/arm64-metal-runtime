@@ -115,7 +115,7 @@ Instruction hostCall(const std::string &name,
          "if (" + destinationBounds + sourceBounds +
              ") { x[33] = pc; x[34] = 2; return; }",
          operation, "}", "if (x[30] == ~0ul) { x[34] = 0; return; }",
-         "if (x[30] >= " + str(guestCodeLimit) + "ul) { x[34] = 3; return; }",
+         "if (x[30] >= " + str(guestCodeLimit) + "ul) { x[874] = x[30]; x[33] = pc; x[34] = 3; return; }",
          "pc = x[30]; break;"},
         returnAddress ? PCs{*returnAddress} : PCs{}};
   }
@@ -487,7 +487,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
             Strings{
                 (std::string("if (x[30] == ~0ul) { x[34] = 0; return; }")),
                 (std::string("if (x[30] >= ") + str(guestCodeLimit) +
-                 "ul) { x[34] = 3; return; }"),
+                 "ul) { x[874] = x[30]; x[33] = pc; x[34] = 3; return; }"),
                 (std::string("x[33] = x[30];")),
                 (std::string("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << "
                              "2) | (uint(c) << 3);")),
@@ -583,7 +583,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         Strings{
             (std::string("{ ulong target = ") + str(reg(rn)) + ";"),
             (std::string("if (target >= ") + str(guestCodeLimit) +
-             "ul) { x[34] = 3; return; }"),
+             "ul) { x[874] = target; x[33] = pc; x[34] = 3; return; }"),
             linked ? (std::string("x[30] = ") + str(next) + "ul;")
                    : (std::string("")),
             (std::string("pc = target; } break;")),
