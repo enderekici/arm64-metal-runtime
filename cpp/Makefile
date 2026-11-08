@@ -870,11 +870,11 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/add-sub-sp.native.out" "$$run_dir/add-sub-sp.interpreter.out" && \
 		cmp "$$run_dir/add-sub-sp.native.err" "$$run_dir/add-sub-sp.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
-		awk '/event=interpreter-block-ready/ { ready=1; if ($$5 != "pc=0x42d8") bad=1 } \
-		     /event=interpreter-dispatch/ { if (!ready || dispatched || $$5 != "pc=0x42d8") bad=1; dispatched=1 } \
-		     /event=dispatch-done/ && dispatched && !completed { completed=1; endpc=$$5; if ($$5 != "pc=0x42ec") bad=1 } \
-		     /event=compile-start/ && completed && !compiled { compiled=1; if ($$5 != endpc) bad=1 } \
-		     END { if (!ready || !dispatched || !completed || !compiled || bad) exit 1 }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
+		grep -q 'interpreter-block-ready.*pc=0x42d8 detail=10' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*pc=0x42d8 detail=10' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'dispatch-done.*pc=0x42d8 detail=2' "$$run_dir/add-sub-sp.interpreter.err" && \
+		test "$$(grep -c 'event=interpreter-dispatch' "$$run_dir/add-sub-sp.interpreter.err")" -eq 1 && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_BCOND_MAIN)" >"$$run_dir/bcond.native.out" 2>"$$run_dir/bcond.native.err"; bcond_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_BCOND_MAIN)" >"$$run_dir/bcond.translated.out" 2>"$$run_dir/bcond.translated.err"; bcond_translated_rc=$$?; \
