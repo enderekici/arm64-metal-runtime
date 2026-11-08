@@ -2520,6 +2520,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                           std::uint32_t capacity) -> std::uint32_t {
         const auto outputSize = static_cast<std::uint64_t>(message.size) + machTrailerSize;
         if (capacity < outputSize) return machReceiveTooLarge;
+        if (!guestMemory.is_guest_readable(outputAddress, outputSize) ||
+            guestMemory.is_readonly(outputAddress, outputSize)) {
+            return machReceiveInvalidData;
+        }
         try {
             auto* output = guestMemory.buffer(outputAddress, outputSize, true);
             mach_msg_header_t header{};
