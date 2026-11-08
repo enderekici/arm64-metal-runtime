@@ -216,7 +216,13 @@ void decode_reachable(const ExecutableImage& image,
             }
         } catch (const std::exception& error) {
             const auto word = selectorWord ? *selectorWord : image.instruction(pc);
-            if ((word & 0xffe0001fU) == 0) {
+            if (word == 0xd4200020U) {
+                // Process execution turns BRK #1 into the guest's synchronous
+                // SIGTRAP path. Keep decode_process unchanged so the raw
+                // function translator continues to reject the instruction.
+                instruction = {{"x[33] = " + std::to_string(pc) +
+                                "ul; x[34] = 15; return;"}, {}};
+            } else if ((word & 0xffe0001fU) == 0) {
                 instruction = {{"x[33] = " + std::to_string(pc) +
                                 "ul; x[34] = 14; return;"}, {}};
             } else {
@@ -6000,11 +6006,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 " x10=0x" + hexadecimal(registers[10]) +
                 " tp=0x" + hexadecimal(registers[guestThreadPointer]));
         }
-        if (status == 3 || status == 14) {
+        if (status == 3 || status == 14 || status == 15) {
             const auto address = status == 3 ? registers[guestFaultAddress] : registers[33];
             const GuestSynchronousFault fault{
-                status == 3 ? SIGSEGV : SIGILL,
-                status == 3 ? SEGV_MAPERR : ILL_ILLTRP,
+                status == 3 ? SIGSEGV : status == 14 ? SIGILL : SIGTRAP,
+                status == 3 ? SEGV_MAPERR : status == 14 ? ILL_ILLTRP : 0,
                 address, registers[33]};
             std::vector<std::uint64_t> live(
                 registers, registers + stateBuffer.size() / sizeof(std::uint64_t));

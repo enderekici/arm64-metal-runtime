@@ -40,6 +40,25 @@ and require `workq libpthread worker callback ok`. With
 `ARM64_METAL_TRACE_WORKQ=1`, registration diagnostics report only branch names,
 status, sizes, offsets, and nullness; they do not print pointers or payload.
 
+## Process BRK #1 and SIGTRAP
+
+`brk-sigtrap.c` branches around an adjacent `BRK #1`, then executes it. The
+SIGINFO handler records signal 5, native `si_code` 0, the fault address and PC,
+and advances the saved PC by four bytes so execution resumes. Native output is
+`untaken=0 untaken_resumed=1 taken=1 signal=5 code=0 address_match=1 pc_match=1 resumed=1`.
+
+```sh
+xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
+  fixtures/handoff/brk-sigtrap.c -o .build/handoff-probes/brk-sigtrap
+.build/handoff-probes/brk-sigtrap
+```
+
+`make verify-apps APP_VERIFY_CASES=brk` compares native and process-mode guest
+stdout, stderr, and exit status. Process mode delivers only the exact BRK #1
+encoding as a synchronous SIGTRAP; `decode_process` and the standalone function
+translator continue to reject raw BRK instructions. PAC decoding and checks are
+unchanged.
+
 ## Loader probes
 
 ## Late writable-TPRO rejection

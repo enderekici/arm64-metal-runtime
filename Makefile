@@ -58,7 +58,7 @@ verify: all
 
 APP_VERIFY_RUNTIME ?= $(BUILD)/cpp/arm64-metal
 APP_VERIFY_RESULTS ?= $(BUILD)/app-verification
-APP_VERIFY_CASES ?= dyld-sdk plutil tar libz-root libz-provider
+APP_VERIFY_CASES ?= brk dyld-sdk plutil tar libz-root libz-provider
 
 verify-apps:
 	@test -x "$(APP_VERIFY_RUNTIME)" || { echo "Build the C++ runtime first with make -C cpp app" >&2; exit 2; }

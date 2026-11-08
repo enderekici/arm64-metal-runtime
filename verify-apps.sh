@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf 'Usage: %s RUNTIME RESULTS_ROOT CASE...\n' "$0" >&2
-    printf 'Cases: dyld-sdk plutil tar libz-root libz-provider jni\n' >&2
+    printf 'Cases: brk dyld-sdk plutil tar libz-root libz-provider jni\n' >&2
     exit 2
 }
 
@@ -12,7 +12,7 @@ runtime=$1
 results_root=$2
 shift 2
 if [ "$#" -eq 1 ] && [ "$1" = all ]; then
-    set -- dyld-sdk plutil tar libz-root libz-provider
+    set -- brk dyld-sdk plutil tar libz-root libz-provider
     if [ -n "${JDK_HOME:-}" ]; then
         set -- "$@" jni
     fi
@@ -99,6 +99,12 @@ compare() {
 
 for case_name do
     case "$case_name" in
+        brk)
+            [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
+            xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
+                fixtures/handoff/brk-sigtrap.c -o "$probe_dir/brk-sigtrap"
+            compare brk-sigtrap 0 "$probe_dir/brk-sigtrap"
+            ;;
         dyld-sdk)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
             xcrun clang -Wall -Wextra -Werror fixtures/handoff/dyld-sdk-at-least.c \
