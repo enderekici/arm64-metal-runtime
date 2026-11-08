@@ -60,6 +60,16 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      width};
   }
 
+  if ((bits & 0x7e000000U) == 0x36000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
+    const auto bit = field(bits, 19, 5) | (field(bits, 31, 1) << 5U);
+    const auto displacement = signed_field(field(bits, 5, 14), 14) * 4;
+    return Operation{Opcode::TestBitBranch, bit, field(bits, 0, 5),
+                     field(bits, 24, 1),
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     width};
+  }
+
   if ((bits & 0xff000010U) == 0x54000000U) {
     const auto displacement = signed_field(field(bits, 5, 19), 19) * 4;
     return Operation{Opcode::BranchCondition, 0, field(bits, 0, 4),
@@ -454,6 +464,19 @@ Instruction make_operation_instruction(Operation operation,
     code.push_back("pc = (" + condition + ") ? " +
                    pc_literal(next[0], "ul") + " : " +
                    pc_literal(next[1], "ul") + "; break;");
+  } else if (operation.opcode == Opcode::TestBitBranch) {
+    if (operation.destination >= operation.width || operation.source > 31 ||
+        operation.immediate > 1 || (operation.width != 32 && operation.width != 64) ||
+        next.size() != 2) {
+      throw std::invalid_argument("Typed TBZ/TBNZ needs a valid bit and two resolved guest edges");
+    }
+    const auto value = reg(operation.source, operation.width == 64);
+    const auto bitSet = "((" + value + " >> " +
+                        std::to_string(operation.destination) + ") & 1ul) != 0";
+    const auto takeTarget = operation.immediate == 0 ? "!(" + bitSet + ")" : bitSet;
+    code.push_back("pc = (" + takeTarget + ") ? " +
+                   pc_literal(next[0], "ul") + " : " +
+                   pc_literal(next[1], "ul") + "; break;");
   } else if (operation.opcode == Opcode::BranchCondition) {
     if (operation.source > 15 || next.size() != 2 || operation.width != 64) {
       throw std::invalid_argument("Typed B.cond needs a condition and two resolved guest edges");
@@ -516,6 +539,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
     } else if (operation->opcode == Opcode::BranchZero) {
+      successors.push_back(pc + static_cast<std::int32_t>(operation->shift));
+      successors.push_back(following);
+    } else if (operation->opcode == Opcode::TestBitBranch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->shift));
       successors.push_back(following);
     } else if (operation->opcode == Opcode::BranchCondition) {

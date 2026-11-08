@@ -35,6 +35,7 @@ enum class Opcode : std::uint32_t {
   LoadSignedScalar = 20,
   AddSubExtendedRegister = 22,
   LogicalShiftedRegister = 23,
+  TestBitBranch = 25,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -55,6 +56,9 @@ enum class Opcode : std::uint32_t {
 // shift=(target-is-X << 2) | mode (0=scaled unsigned, 1=unscaled, 2=post,
 // 3=pre), and width=8/16/32 access bits.
 // BranchCondition uses source for the condition and immediate for byte offset.
+// TestBitBranch uses destination for bit index, source for Rt, immediate for
+// TBNZ sense, shift for signed byte displacement, and width for W/X form.
+// Its full-width target and fallthrough PCs are carried in Instruction::next.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.
 // ADD/SUB shifted register uses destination=Rd, source=Rn, immediate=Rm,

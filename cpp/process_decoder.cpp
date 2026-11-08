@@ -187,6 +187,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                                decodedOperation->opcode == translate_core::Opcode::BranchZero;
   const bool typedBranchCondition = decodedOperation &&
       decodedOperation->opcode == translate_core::Opcode::BranchCondition;
+  const bool typedTestBitBranch = decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::TestBitBranch;
   if (typedBranch) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
     if (!imports.count(target) && !guestStubs.count(target)) {
@@ -207,7 +209,14 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
         guestCodeLimit);
   }
+  if (typedTestBitBranch) {
+    const auto target = pc + static_cast<std::int32_t>(decodedOperation->shift);
+    return translate_core::make_operation_instruction(
+        *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
+        guestCodeLimit);
+  }
   if (decodedOperation && !typedBranch && !typedBranchZero && !typedBranchCondition &&
+      !typedTestBitBranch &&
       decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::LoadPair &&
@@ -524,16 +533,6 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                    str(target) + "ul : " + str(next) + "ul; break;")},
           PCs{target, next});
     }
-  }
-  if ((bits & 0x7e000000) == 0x36000000) {
-    auto index = field(19, 5) | (field(31, 1) << 5);
-    auto test = field(24, 1) == 0 ? (std::string("==")) : (std::string("!="));
-    auto target = pc + sign_extend(field(5, 14), 14) * 4;
-    return make_instruction(
-        Strings{(std::string("pc = ((") + str(reg(rd)) + " >> " + str(index) +
-                 ") & 1ul) " + str(test) + " 0 ? " + str(target) +
-                 "ul : " + str(next) + "ul; break;")},
-        PCs{target, next});
   }
   auto flagsImmediate = (bits & 0x3f800000) == 0x31000000;
   auto flagsShifted = (bits & 0x3f200000) == 0x2b000000;

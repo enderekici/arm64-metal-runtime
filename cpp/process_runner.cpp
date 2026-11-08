@@ -350,6 +350,22 @@ ProcessKernelPlan plan_process_kernel(
                 complete = true;
                 break;
             }
+            if (opcode == translate_core::Opcode::TestBitBranch) {
+                const auto& operation = *instruction.operation;
+                const auto target = static_cast<std::int64_t>(pc) +
+                    static_cast<std::int32_t>(operation.shift);
+                if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
+                    instruction.next[0] != target || instruction.next[1] != pc + 4 ||
+                    instruction.next[0] < 0 || instruction.next[1] < 0 ||
+                    operation.destination >= operation.width || operation.source > 31 ||
+                    operation.immediate > 1 ||
+                    (operation.width != 32 && operation.width != 64)) {
+                    break;
+                }
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
             if (opcode == translate_core::Opcode::BranchCondition) {
                 if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
                     instruction.next[0] < 0 || instruction.next[1] < 0) {

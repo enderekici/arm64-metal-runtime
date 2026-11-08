@@ -270,6 +270,36 @@ int main() {
   assert(branchEqualLowered.code == std::vector<std::string>{
       "pc = arm64_condition_holds(0u, (uint(z) | (uint(n) << 1u) | "
       "(uint(v) << 2u) | (uint(c) << 3u))) ? 4104ul : 4100ul; break;"});
+  const auto tbzW31 = decode_operation(0x36f80041U);
+  assert(tbzW31.has_value() && tbzW31->opcode == Opcode::TestBitBranch &&
+         tbzW31->destination == 31 && tbzW31->source == 1 &&
+         tbzW31->immediate == 0 && tbzW31->shift == 8 && tbzW31->width == 32);
+  assert((serialize_operation(*tbzW31) ==
+          arm64metal::translate_core::OperationPacket{25, 31, 1, 0, 8, 32}));
+  const auto tbzX48 = decode_operation(0xb6800041U);
+  assert(tbzX48.has_value() && tbzX48->opcode == Opcode::TestBitBranch &&
+         tbzX48->destination == 48 && tbzX48->source == 1 &&
+         tbzX48->immediate == 0 && tbzX48->shift == 8 && tbzX48->width == 64);
+  const auto tbnzX48 = decode_operation(0xb7800041U);
+  assert(tbnzX48.has_value() && tbnzX48->destination == 48 &&
+         tbnzX48->immediate == 1 && tbnzX48->width == 64);
+  const auto tbnzXNegative = decode_operation(0xb7ffffffU);
+  assert(tbnzXNegative.has_value() && tbnzXNegative->destination == 63 &&
+         tbnzXNegative->source == 31 && tbnzXNegative->immediate == 1 &&
+         static_cast<std::int32_t>(tbnzXNegative->shift) == -4 &&
+         tbnzXNegative->width == 64);
+  const auto tbzWLowered = make_operation_instruction(
+      *tbzW31, {0x120000008LL, 0x120000004LL}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert((tbzWLowered.next == std::vector<std::int64_t>{0x120000008LL,
+                                                        0x120000004LL}));
+  assert(tbzWLowered.code.size() == 1 &&
+         tbzWLowered.code[0].find("4831838216ul : 4831838212ul") !=
+             std::string::npos);
+  const auto tbzGuestEdges = arm64metal::translate_core::decode(
+      0x36f80041U, 0x120000000LL, "ul");
+  assert((tbzGuestEdges.next == std::vector<std::int64_t>{0x120000008LL,
+                                                          0x120000004LL}));
   const auto expectedCondition = [](std::uint32_t condition, std::uint32_t flags) {
     const bool z = (flags & 1U) != 0;
     const bool n = (flags & 2U) != 0;
