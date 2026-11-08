@@ -11,6 +11,7 @@ xcrun clang -Wall -Wextra -Werror -dynamiclib "$src/cache-provider.c" -lz -o "$o
 xcrun clang -Wall -Wextra -Werror "$src/cache-provider-main.c" -o "$out/cache-provider"
 xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typefilter"
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
+xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
 xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/darwin" \
   "$src/jni-entry.c" -o "$out/jni-entry"
 
@@ -18,6 +19,7 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/cache-provider" "$out/libprovider.dylib"
 "$out/kdebug-typefilter"
 "$out/dyld-interposition"
+"$out/mach-reply-port"
 "$out/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
 ```
 

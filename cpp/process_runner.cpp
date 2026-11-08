@@ -4552,6 +4552,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-26))) {
+                constexpr std::uint32_t replyPortFlag = 0x00001000;
+                if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+                    registers[0] = 0;
+                } else {
+                    const auto name = nextGuestReceiveName;
+                    nextGuestReceiveName += 4;
+                    guestReceiveRights.emplace(name, GuestReceiveRight{replyPortFlag, 0});
+                    registers[0] = name;
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-28))) {
                 constexpr std::uint64_t kernInvalidAddress = 1;
                 constexpr std::uint64_t kernInvalidTask = 5;
@@ -4620,9 +4633,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     result = kernInvalidName;
                 } else {
                     const auto right = guestReceiveRights.find(name);
-                    if (right == guestReceiveRights.end() || registers[2] != 0 ||
-                        ((right->second.flags & MPO_CONTEXT_AS_GUARD) != 0 &&
-                         right->second.context != registers[3])) {
+                    if (right == guestReceiveRights.end()) {
+                        result = kernInvalidName;
+                    } else if (registers[2] != 0 ||
+                               ((right->second.flags & MPO_CONTEXT_AS_GUARD) != 0 &&
+                                right->second.context != registers[3])) {
                         result = machSendInvalidRight;
                     } else {
                         guestReceiveRights.erase(right);
