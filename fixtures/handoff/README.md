@@ -468,3 +468,35 @@ The guest maps these queries only through its synthetic right namespace;
 clock and bootstrap host send rights are kept in host-owned maps and are never
 returned as guest names. Fixture `host-clock-service.c` is the existing end to
 end clock-right query/release control.
+
+## Mach port reference query (`mach_port_get_refs`, MIG 3207)
+
+`mach-port-get-refs.c` exercises the public MIG path used by
+`host-clock-service.c` after acquiring a clock service. The SDK maps
+`mach_port_get_refs` to request ID 3207; the success reply is ID 3307. The
+runtime supports exact send, receive, and dead-name counts from its guest
+namespace, including zero counts for absent right kinds on known names. It
+returns `KERN_INVALID_TASK` for a host port used as a task target and preserves
+the caller's output on MIG errors. Null/dead sentinel names follow native
+send-right count behavior. This fixture contacts only the task/host ports
+already used by the local Mach slice and the previously scoped clock/bootstrap
+service probes.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-get-refs.c -o /tmp/mach-port-get-refs
+/tmp/mach-port-get-refs
+```
+
+Native normalized output:
+
+```text
+special_send=1
+receive allocate=0 right=0:1 send_zero=0:0 insert=0 send=0:1 remove=0 send_after=0:0 destroy=0 gone=1
+dead destroy=0 dead_name=0:1 send=0:0 release=0 gone=1
+sentinels null_send=0:1 dead_send=0:1 null_receive_invalid=1 dead_name_invalid=1
+errors unknown=1 invalid_task=1 host_task=1 right=1 send_once=0:0 port_set=0:0
+```
+
+Status is 0. The strict guest error precedence and the no-cache public
+`_mach_host_self` import boundary remain separate from this MIG message.

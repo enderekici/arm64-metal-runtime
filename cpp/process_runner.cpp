@@ -6561,6 +6561,136 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                if (messageId == 3207) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr kern_return_t kernInvalidTask = 16;
+                    constexpr kern_return_t kernInvalidName = 15;
+                    constexpr kern_return_t kernInvalidValue = 18;
+                    constexpr std::uint32_t machPortNull = 0;
+                    constexpr std::uint32_t machPortDead =
+                        std::numeric_limits<std::uint32_t>::max();
+
+                    struct MachPortGetRefsErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct MachPortGetRefsReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                        mach_port_urefs_t refs;
+                    };
+                    static_assert(sizeof(MachPortGetRefsErrorReply) == 36);
+                    static_assert(sizeof(MachPortGetRefsReply) == 40);
+
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto hostSendRight = guestSendRightUrefs.find(remote);
+                    if ((remote != guestMachTaskPort && remote != guestMachHostPort) ||
+                        hostSendRight == guestSendRightUrefs.end() ||
+                        hostSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        (registers[2] >> 32) != 40 ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        (registers[4] >> 32) != messageId ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        (registers[5] >> 32) != reply ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        throw std::runtime_error("Unsupported guest mach_port_get_refs message shape");
+                    }
+                    const auto* request = guestMemory.buffer(registers[0], 40);
+                    mach_msg_header_t requestHeader{};
+                    NDR_record_t requestNdr{};
+                    mach_port_name_t name = 0;
+                    mach_port_right_t right = MACH_PORT_RIGHT_NUMBER;
+                    std::memcpy(&requestHeader, request, sizeof(requestHeader));
+                    std::memcpy(&requestNdr, request + sizeof(requestHeader),
+                                sizeof(requestNdr));
+                    std::memcpy(&name, request + sizeof(requestHeader) + sizeof(requestNdr),
+                                sizeof(name));
+                    std::memcpy(&right, request + sizeof(requestHeader) +
+                                sizeof(requestNdr) + sizeof(name), sizeof(right));
+                    if (requestHeader.msgh_bits != 0x1513 || requestHeader.msgh_size != 40 ||
+                        requestHeader.msgh_id != static_cast<mach_msg_id_t>(messageId) ||
+                        requestHeader.msgh_remote_port != remote ||
+                        requestHeader.msgh_local_port != reply ||
+                        requestHeader.msgh_voucher_port != MACH_PORT_NULL ||
+                        std::memcmp(&requestNdr, &NDR_record, sizeof(requestNdr)) != 0) {
+                        registers[0] = 0x1000000a; // MACH_SEND_INVALID_DATA
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    kern_return_t result = KERN_SUCCESS;
+                    mach_port_urefs_t refs = 0;
+                    if (remote == guestMachHostPort) {
+                        result = kernInvalidTask;
+                    } else if (right >= MACH_PORT_RIGHT_NUMBER) {
+                        result = kernInvalidValue;
+                    } else if (name == machPortNull || name == machPortDead) {
+                        if (right == MACH_PORT_RIGHT_SEND ||
+                            right == MACH_PORT_RIGHT_SEND_ONCE) {
+                            refs = 1;
+                        } else {
+                            result = kernInvalidName;
+                        }
+                    } else {
+                        const auto receiveRight = guestReceiveRights.find(name);
+                        const auto sendRight = guestSendRightUrefs.find(name);
+                        const bool hasReceive = receiveRight != guestReceiveRights.end();
+                        const bool hasSend = sendRight != guestSendRightUrefs.end() &&
+                                             sendRight->second != 0;
+                        const bool isDead = guestDeadPortNames.count(name) != 0;
+                        if (!hasReceive && !hasSend && !isDead) {
+                            result = kernInvalidName;
+                        } else if (right == MACH_PORT_RIGHT_SEND) {
+                            refs = !isDead && hasSend ? sendRight->second : 0;
+                        } else if (right == MACH_PORT_RIGHT_RECEIVE) {
+                            refs = hasReceive ? 1U : 0U;
+                        } else if (right == MACH_PORT_RIGHT_DEAD_NAME) {
+                            refs = isDead && hasSend ? sendRight->second : 0;
+                        }
+                    }
+
+                    const auto responseSize = result == KERN_SUCCESS
+                        ? sizeof(MachPortGetRefsReply) : sizeof(MachPortGetRefsErrorReply);
+                    if (registers[6] < responseSize) {
+                        registers[0] = 0x1000000a; // MACH_SEND_INVALID_DATA
+                        registers[34] = 0;
+                        continue;
+                    }
+                    auto* replyBuffer = guestMemory.buffer(registers[0], responseSize, true);
+                    MachPortGetRefsErrorReply errorReply{};
+                    errorReply.header.msgh_bits = 0x1200;
+                    errorReply.header.msgh_size = sizeof(errorReply);
+                    errorReply.header.msgh_remote_port = MACH_PORT_NULL;
+                    errorReply.header.msgh_local_port = reply;
+                    errorReply.header.msgh_voucher_port = MACH_PORT_NULL;
+                    errorReply.header.msgh_id = messageId + 100;
+                    errorReply.ndr = NDR_record;
+                    errorReply.returnCode = result;
+                    if (result == KERN_SUCCESS) {
+                        MachPortGetRefsReply response{};
+                        response.header = errorReply.header;
+                        response.header.msgh_size = sizeof(response);
+                        response.ndr = NDR_record;
+                        response.returnCode = KERN_SUCCESS;
+                        response.refs = refs;
+                        std::memcpy(replyBuffer, &response, sizeof(response));
+                    } else {
+                        std::memcpy(replyBuffer, &errorReply, sizeof(errorReply));
+                    }
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (registers[1] != 0x2'0000'0003ULL ||
                     static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
                     static_cast<std::uint32_t>(registers[3]) != guestMachTaskPort ||
