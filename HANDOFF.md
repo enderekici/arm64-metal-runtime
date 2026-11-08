@@ -259,3 +259,23 @@ metallib SHA-256 was
 `55f6b96e9288afa3ac88b3d0291393a452607aa75c1e65c1bc221fc513fa933c`. The
 copied tested archive SHA-256 is
 `787ce90ad393c4b123c44b4e94481f4eaf3f22d66d63d13455ae3e6623956c8f`.
+
+## Cross-stack permission package proof
+
+Source `8963a80` (`1cef7d7` plus the completion-revocation fix) permits a
+thread to write into another currently live guest stack interval and revokes
+that permission when the stack owner finishes. The pre-existing linear-heap
+write policy is unchanged. Regression, interpreter, and demand-cache gates
+exited 0. The extracted package's `pthread-stack-cross-write` fixture exited 0
+with byte-identical native and guest stdout (`cross-stack writes ok`) and empty
+stderr. The focused exact-baseline native/guest run at
+`/tmp/metal-stack-fortified-exact.QXB4K4` also matched output and status.
+
+This is a focused live-stack interval/lifetime case, not full pthread or stack
+permission parity. Runtime SHA-256 before and after was
+`e34a9c0b8d6982c4ebf100454331ab3984d07fb9986d67c97b25c6d1f0691cc8`;
+interpreter metallib SHA-256 was
+`55f6b96e9288afa3ac88b3d0291393a452607aa75c1e65c1bc221fc513fa933c`. The
+promoted archive SHA-256 is
+`2ae3bb42387bac78ac60d7515334d9180609a2927130f037d2f73bec27c738e6`.
+Release receipts: `/tmp/metal-stack-fortified-release.aYBcnE`.
