@@ -830,3 +830,13 @@ name, and atomic error replies for an invalid task, flavor, or info count. Run
 the native oracle with `make -C cpp verify-mach-vm-region-native`. Guest runtime
 parity is a separate replay gate.
 
+## Guest pthread stack attributes and guard pages
+
+The guest pthread runner applies stack size and detach state, enforces a
+page-rounded guard for runtime-owned stacks, and uses caller-owned stack memory
+without adding a guard; caller-owned guard pages remain controlled by guest
+`mprotect`. Attribute import IDs are checked by
+`process-attribute-import-map.cpp`. Native controls are `pthread-custom-stack.c`
+and `../interpreter/pthread-runtime-owned-guard-retry.c`.
+`pthread-attribute-fields.c` checks default values, set/get stack and guard size,
+detached creation, and the null-attribute joinable path.
