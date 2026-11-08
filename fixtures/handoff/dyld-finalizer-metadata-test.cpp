@@ -9,7 +9,15 @@ int main(int argc, char** argv) {
   if (argc != 2) return 2;
   try {
     constexpr std::size_t placement = 0x100000000ULL;
-    arm64metal::MachImage image(argv[1], false, placement);
+    bool defaultRejected = false;
+    try {
+      arm64metal::MachImage rejected(argv[1], false, placement);
+      (void)rejected;
+    } catch (const std::exception&) {
+      defaultRejected = true;
+    }
+    if (!defaultRejected) return 9;
+    arm64metal::MachImage image(argv[1], false, placement, true);
     if (image.initializers.size() != 2 || image.finalizers.size() != 1) return 3;
     for (const auto target : image.finalizers) {
       bool executable = false;
@@ -28,7 +36,8 @@ int main(int argc, char** argv) {
     auto value = reinterpret_cast<int (*)()>(dlsym(handle, "dyld_finalizer_fixture_value"));
     if (value == nullptr || value() != 42) return 6;
     if (dlclose(handle) != 0) return 7;
-    std::puts("metadata initializers=2 finalizers=1 finalizer_text=1 native_value=42");
+    std::puts("default_reject=1 metadata initializers=2 finalizers=1 "
+              "finalizer_text=1 native_value=42");
   } catch (const std::exception& error) {
     std::fprintf(stderr, "%s\n", error.what());
     return 8;

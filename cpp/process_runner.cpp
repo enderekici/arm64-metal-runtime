@@ -3274,6 +3274,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         auto* guestBytes = static_cast<std::uint8_t*>(memoryBuffer.data());
         std::vector<std::uint64_t> initializerTargets;
+        std::vector<std::vector<std::uint64_t>> unloadBoundSlots(plan.images.size());
+        std::vector<std::vector<std::uint64_t>> unloadSyntheticImportStubs(
+            plan.images.size());
+        std::vector<std::vector<std::size_t>> unloadAuthenticationTokens(
+            plan.images.size());
         std::uint64_t synthetic = 0x80000000ULL;
         for (const auto& [address, unused] : imports) {
             (void)unused;
@@ -3284,7 +3289,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 synthetic = static_cast<std::uint64_t>(address) + 4;
             }
         }
-        const auto makeImportStub = [&](const std::string& name) {
+        const auto makeImportStub = [&](const std::string& name,
+                                        std::vector<std::uint64_t>& ownedAddresses) {
             while (synthetic <= static_cast<std::uint64_t>(
                        std::numeric_limits<std::int64_t>::max()) &&
                    (imports.find(static_cast<std::int64_t>(synthetic)) != imports.end() ||
@@ -3298,10 +3304,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto address = synthetic;
             synthetic += 4;
             imports.emplace(static_cast<std::int64_t>(address), name);
+            ownedAddresses.push_back(address);
             return address;
         };
         for (std::size_t index = 0; index < plan.images.size(); ++index) {
             auto& staged = plan.images[index];
+            auto& ownedBoundSlots = unloadBoundSlots[index];
+            auto& ownedSyntheticStubs = unloadSyntheticImportStubs[index];
+            auto& ownedAuthenticationTokens = unloadAuthenticationTokens[index];
             const auto backing = static_cast<std::size_t>(allocations[index]);
             std::memcpy(guestBytes + backing, staged.image.memory.data(), staged.image_bytes);
             const auto storeGuestWord = [&](std::uint64_t address, std::uint64_t value) {
@@ -3319,6 +3329,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             };
             for (const auto& bind : staged.binds) {
                 if (bind.ignored_eager_lazy_binder) continue;
+                ownedBoundSlots.push_back(bind.guest_slot);
                 if (bind.is_stub) {
                     if (bind.host_service_id || bind.guest_memory_import) {
                         imports[static_cast<std::int64_t>(bind.guest_slot)] = bind.resolved_name;
@@ -3343,7 +3354,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     ? bind.resolved_target : bind.deferred_target;
                 std::uint64_t target = resolvedTarget.value_or(0);
                 if (bind.host_service_id || bind.guest_memory_import) {
-                    target = makeImportStub(bind.resolved_name);
+                    target = makeImportStub(bind.resolved_name, ownedSyntheticStubs);
                 } else if (!resolvedTarget && !bind.weak_null) {
                     throw std::runtime_error("Unresolved staged guest binding " +
                                              bind.resolved_name);
@@ -3374,6 +3385,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live[tokenSlot + 1] = authentication.modifier;
                 live[tokenSlot + 2] = authentication.key;
                 live[guestTokenCount] = token + 1;
+                ownedBoundSlots.push_back(staged.guest_header + offset);
+                ownedAuthenticationTokens.push_back(token);
                 const auto encoded = encode_guest_pointer(target, authentication.key, token);
                 for (unsigned byte = 0; byte < sizeof(encoded); ++byte) {
                     slotBytes[byte] = static_cast<std::uint8_t>(encoded >> (byte * 8U));
@@ -3444,6 +3457,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             record.image_size = staged.image_bytes;
             record.initializer_targets = staged.initializer_targets;
             record.finalizer_targets = staged.finalizer_targets;
+            record.binding_slots = std::move(unloadBoundSlots[index]);
+            record.synthetic_import_stubs =
+                std::move(unloadSyntheticImportStubs[index]);
+            record.authentication_tokens =
+                std::move(unloadAuthenticationTokens[index]);
             record.dynamic_unload_candidate = true;
             record.dependencies.reserve(staged.dependencies.size());
             for (const auto& dependency : staged.dependencies) {
@@ -7075,8 +7093,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     ~(imageAlignment - 1);
                                 for (const auto& staged : plan.images) {
                                     loadedImageHeaders.insert(staged.guest_header);
-                                    if (staged.guest_header == plan.requested_header &&
-                                        (mode & RTLD_LOCAL) != 0) continue;
+                                    const bool globallyVisible =
+                                        staged.guest_header != plan.requested_header ||
+                                        (mode & RTLD_LOCAL) == 0;
+                                    const auto manifest = std::find_if(
+                                        image.loaded_image_graph.begin(),
+                                        image.loaded_image_graph.end(), [&staged](const auto& item) {
+                                            return item.guest_header == staged.guest_header;
+                                        });
+                                    if (manifest != image.loaded_image_graph.end() &&
+                                        manifest->dynamic_unload_candidate) {
+                                        manifest->global_scope = globallyVisible;
+                                    }
+                                    if (!globallyVisible) continue;
                                     if (std::find(image.global_scope_headers.begin(),
                                                   image.global_scope_headers.end(),
                                                   staged.guest_header) ==
@@ -7159,6 +7188,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                     image.global_scope_headers.end(), *header) ==
                                               image.global_scope_headers.end()) {
                                 image.global_scope_headers.push_back(*header);
+                            }
+                            if (const auto header = imageHandles.loaded_header(hostRegisters[0])) {
+                                const auto manifest = std::find_if(
+                                    image.loaded_image_graph.begin(),
+                                    image.loaded_image_graph.end(), [header](const auto& item) {
+                                        return item.guest_header == *header;
+                                    });
+                                if (manifest != image.loaded_image_graph.end() &&
+                                    manifest->dynamic_unload_candidate) {
+                                    manifest->global_scope = true;
+                                }
                             }
                         }
                         if (hostRegisters[0] != 0) clearGuestDlerror();

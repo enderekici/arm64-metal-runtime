@@ -116,7 +116,8 @@ std::uint64_t GuestBuildVersion::token(bool query_sdk) const noexcept {
   return (static_cast<std::uint64_t>(query_sdk ? sdk : minimum) << 32) | platform;
 }
 
-MachImage::MachImage(const std::filesystem::path& path, bool executable, std::size_t placement) {
+MachImage::MachImage(const std::filesystem::path& path, bool executable, std::size_t placement,
+                     bool capture_finalizer_metadata) {
   MachO file(path, true);
   if (executable) code_policy = guest_code_policy(path, file.bytes());
   arm64e_code_abi = arm64e_from_subtype(file.word(8));
@@ -198,6 +199,7 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
           }
           const auto type = file.word(section + 64) & 0xffU;
           if (type == 10) {
+            if (!capture_finalizer_metadata) fail("Guest image finalizers are unsupported");
             const auto [address_value, size] = section_named(bytes, section);
             finalizer_sections.push_back({address_value, size, true});
           }

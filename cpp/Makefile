@@ -723,7 +723,7 @@ verify-dyld-finalizer-metadata-native: $(DYLD_FINALIZER_FIXTURE) $(DYLD_FINALIZE
 		>"$(BUILD_DIR)/dyld-finalizer-metadata.out" \
 		2>"$(BUILD_DIR)/dyld-finalizer-metadata.err"
 	printf '%s\n' 'native-init' 'native-final' \
-		'metadata initializers=2 finalizers=1 finalizer_text=1 native_value=42' \
+		'default_reject=1 metadata initializers=2 finalizers=1 finalizer_text=1 native_value=42' \
 		>"$(BUILD_DIR)/dyld-finalizer-metadata.expected"
 	cmp "$(BUILD_DIR)/dyld-finalizer-metadata.expected" \
 		"$(BUILD_DIR)/dyld-finalizer-metadata.out"

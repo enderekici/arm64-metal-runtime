@@ -47,6 +47,10 @@ struct LoadedImageGraphRecord {
   std::vector<std::pair<std::uint64_t, std::uint64_t>> mapped_ranges;
   std::vector<std::uint64_t> initializer_targets;
   std::vector<std::uint64_t> finalizer_targets;
+  std::vector<std::uint64_t> binding_slots;
+  std::vector<std::uint64_t> synthetic_import_stubs;
+  std::vector<std::size_t> authentication_tokens;
+  bool global_scope = false;
   bool dynamic_unload_candidate = false;
 };
 
@@ -192,7 +196,8 @@ struct MachImage {
   std::optional<ThreadLocalImageMetadata> thread_locals;
   GuestCodePolicy code_policy;
 
-  MachImage(const std::filesystem::path& path, bool executable, std::size_t placement);
+  MachImage(const std::filesystem::path& path, bool executable, std::size_t placement,
+            bool capture_finalizer_metadata = false);
 };
 
 struct StagedNamedImage {
