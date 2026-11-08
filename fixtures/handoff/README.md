@@ -103,6 +103,38 @@ right/name cases. It uses `MACH64_SEND_ANY` on raw sends, matching the generic
 send classification selected by libSystem. Native normalized output is
 `task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
+## Bootstrap service lookup boundary
+
+`bootstrap-lookup-native.c` is a native, headless oracle for the allowed
+WindowServer bootstrap lookup and a nonexistent service. It validates the
+returned send right and releases it. `bootstrap-lookup.c` exercises the guest
+imports and synthetic-right deallocation path with the same positive and
+negative requests. Neither fixture sends a WindowServer protocol message or
+opens UI.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  fixtures/handoff/bootstrap-lookup-native.c -o /tmp/bootstrap-lookup-native
+/tmp/bootstrap-lookup-native
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  fixtures/handoff/bootstrap-lookup.c -o /tmp/bootstrap-lookup
+/tmp/bootstrap-lookup
+```
+
+The native oracle's normalized output is
+`lookup=windowserver-active status=0 port_valid=1 type_status=0 send_right=1 deallocate_status=0`
+and `lookup=windowserver-active-duplicate status=0 port_valid=1 type_status=0 send_right=1 deallocate_status=0`,
+and `lookup=missing status=1102 port_valid=0 type_status=15 send_right=0 deallocate_status=15`.
+The guest fixture prints `lookup=windowserver-active status=0 port_valid=1 deallocate_status=0`
+and `lookup=windowserver-active-duplicate status=0 port_valid=1 deallocate_status=0`,
+and `lookup=missing status=1102 port_valid=0 deallocate_status=15`.
+The translated slice exposes a synthetic guest `_bootstrap_port` and maps only
+`_bootstrap_look_up` for `com.apple.windowserver.active`; a guest port name is
+never the host Mach name. The host send right belongs to the guest process and
+is released when its guest send-right reference reaches zero or the process
+ends. The native fixture establishes platform behavior; it does not claim a
+guest runtime lookup without executing that runtime.
+
 ## Unchanged application parity gate
 
 Build the C++ runtime with `make -C cpp app METAL_CPP=/path/to/metal-cpp`, then run the bounded app probes from the repository root:

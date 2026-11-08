@@ -204,6 +204,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_get_stackaddr_np", 180, true, true},
     {"_pthread_get_stacksize_np", 181, true, true},
     {"_pthread_jit_write_protect_np", 182, true, true},
+    {"_bootstrap_look_up", 183, true, true},
     {"___memcpy_chk", kMemcpyChkFailureService, true, true},
 };
 

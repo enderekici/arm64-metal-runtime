@@ -32,6 +32,7 @@ inline constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
 inline constexpr std::uint64_t guestInitialTokenCapacity = 4096;
 inline constexpr std::uint64_t guestMachTaskPort = 0x103;
 inline constexpr std::uint64_t guestMachHostPort = 0x104;
+inline constexpr std::uint64_t guestMachBootstrapPort = 0x105;
 inline constexpr std::uint64_t guestMainThreadID = 1;
 inline constexpr std::uint64_t guestThreadLocalPrefixBytes = 0x100;
 
@@ -107,6 +108,7 @@ struct ProcessBootstrapResult {
     std::uint64_t vmPageShiftSlot = 0;
     std::uint64_t vmKernelPageSizeSlot = 0;
     std::uint64_t taskPortSlot = 0;
+    std::uint64_t bootstrapPortSlot = 0;
     std::uint64_t guestTaskPort = guestMachTaskPort;
     std::uint64_t pageSize = 4096;
     std::uint64_t mainHeader = 0;
@@ -191,6 +193,11 @@ struct HostServiceState {
     std::map<std::uint64_t, std::FILE*> files;
     std::map<std::uint64_t, MappedFile> mappedFiles;
     std::map<std::uint64_t, GuestLineBuffer> fgetlnBuffers;
+    // Native send rights are process-owned and never exposed as guest names.
+    std::map<std::uint32_t, std::uint32_t> guestBootstrapSendRights;
+    // Consumes the host send right on both success and allocation failure.
+    std::function<std::optional<std::uint32_t>(std::uint32_t hostPort)>
+        allocateGuestBootstrapSendRight;
     // Cached FILE record addresses mapped from authoritative dyld metadata to
     // the launcher's canonical standard-stream slot addresses.
     std::map<std::uint64_t, std::uint64_t> standardFileAliases;

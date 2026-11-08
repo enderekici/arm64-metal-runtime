@@ -20,6 +20,8 @@
 #include <libgen.h>
 #include <poll.h>
 #include <mach/mach_time.h>
+#include <mach/mach.h>
+#include <bootstrap.h>
 #include <sys/stat.h>
 #include <sys/attr.h>
 #include <sys/mman.h>
@@ -211,8 +213,10 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
                                               "Guest stack overflow");
     result.taskPortSlot = checked_add(result.vmKernelPageSizeSlot, 8,
                                       "Guest stack overflow");
+    result.bootstrapPortSlot = checked_add(result.taskPortSlot, 8,
+                                          "Guest stack overflow");
     const auto threadLocalPrefixBegin = checked_add(
-        checked_add(result.taskPortSlot, 8, "Guest stack overflow"),
+        checked_add(result.bootstrapPortSlot, 8, "Guest stack overflow"),
         guestThreadLocalPrefixBytes, "Guest TSD prefix overflow");
     result.mainThreadSpecificData = checked_align(threadLocalPrefixBegin, 16);
     std::fill(result.memory.begin() + static_cast<std::ptrdiff_t>(
@@ -260,6 +264,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     store_u64(result.memory, result.vmPageShiftSlot, page_shift);
     store_u64(result.memory, result.vmKernelPageSizeSlot, input.kernelPageSize);
     store_u64(result.memory, result.taskPortSlot, input.guestTaskPort);
+    store_u64(result.memory, result.bootstrapPortSlot, guestMachBootstrapPort);
     store_u64(result.memory, result.optindSlot, 1);
     store_u64(result.memory, result.environSlot, result.environmentAddress);
     store_u64(result.memory, result.canarySlot,
@@ -289,6 +294,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         {"_vm_page_shift", result.vmPageShiftSlot},
         {"_vm_kernel_page_size", result.vmKernelPageSizeSlot},
         {"_mach_task_self_", result.taskPortSlot},
+        {"_bootstrap_port", result.bootstrapPortSlot},
     };
     if (!input.defaultRuneLocaleBytes.empty()) {
         result.modeledGlobalAddresses.emplace("__DefaultRuneLocale", result.runeLocaleSlot);
@@ -603,6 +609,9 @@ void GuestMemory::unprotect_readonly(GuestMemoryRange range) {
 }
 
 HostServiceState::~HostServiceState() {
+    for (const auto& right : guestBootstrapSendRights) {
+        (void)mach_port_deallocate(mach_task_self(), right.second);
+    }
     for (const auto& file : files) std::fclose(file.second);
     for (const auto& mapping : mappedFiles) {
         if (mapping.second.hostAddress != nullptr) {
@@ -769,6 +778,55 @@ HostServiceResult dispatch_guest_host_service(
         }, guest_string_reader);
     };
     switch (service) {
+        case 183: {  // bootstrap_look_up (restricted, read-only service discovery)
+            constexpr std::uint32_t bootstrapUnknownService = BOOTSTRAP_UNKNOWN_SERVICE;
+            std::uint8_t* output = nullptr;
+            try {
+                output = memory.buffer(registers[2], sizeof(std::uint32_t), true);
+            } catch (const std::exception&) {
+                registers[0] = 1;  // KERN_INVALID_ADDRESS
+                break;
+            }
+            const std::uint32_t nullPort = MACH_PORT_NULL;
+            std::memcpy(output, &nullPort, sizeof(nullPort));
+            if (registers[0] != guestMachBootstrapPort) {
+                registers[0] = BOOTSTRAP_NOT_PRIVILEGED;
+                break;
+            }
+            std::string name;
+            try {
+                name = string_at(registers[1]);
+            } catch (const std::exception&) {
+                registers[0] = 1;  // KERN_INVALID_ADDRESS
+                break;
+            }
+            if (name != "com.apple.windowserver.active") {
+                registers[0] = bootstrapUnknownService;
+                break;
+            }
+            if (!state.allocateGuestBootstrapSendRight) {
+                registers[0] = BOOTSTRAP_NO_MEMORY;
+                break;
+            }
+            mach_port_t hostPort = MACH_PORT_NULL;
+            const auto lookup = ::bootstrap_look_up(::bootstrap_port, name.c_str(), &hostPort);
+            if (lookup != BOOTSTRAP_SUCCESS) {
+                if (hostPort != MACH_PORT_NULL) {
+                    (void)mach_port_deallocate(mach_task_self(), hostPort);
+                }
+                registers[0] = static_cast<std::uint32_t>(lookup);
+                break;
+            }
+            const auto guestName = state.allocateGuestBootstrapSendRight(
+                static_cast<std::uint32_t>(hostPort));
+            if (!guestName) {
+                registers[0] = BOOTSTRAP_NO_MEMORY;
+                break;
+            }
+            std::memcpy(output, &*guestName, sizeof(*guestName));
+            registers[0] = BOOTSTRAP_SUCCESS;
+            break;
+        }
         case 1: {  // puts
             const auto value = string_at(registers[0]);
             const auto first = write_all(STDOUT_FILENO,

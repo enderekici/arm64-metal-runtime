@@ -2036,6 +2036,41 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t workqueueStart;
     };
     std::optional<GuestBsdthreadRegistration> guestBsdthreadRegistration;
+    hostServiceState.allocateGuestBootstrapSendRight = [&](std::uint32_t hostPort)
+        -> std::optional<std::uint32_t> {
+        while (nextGuestReceiveName < std::numeric_limits<std::uint32_t>::max() - 4 &&
+               (guestReceiveRights.count(nextGuestReceiveName) != 0 ||
+                guestSendRightUrefs.count(nextGuestReceiveName) != 0)) {
+            nextGuestReceiveName += 4;
+        }
+        if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+            (void)mach_port_deallocate(mach_task_self(), hostPort);
+            return std::nullopt;
+        }
+        const auto name = nextGuestReceiveName;
+        nextGuestReceiveName += 4;
+        try {
+            const auto [right, inserted] = guestSendRightUrefs.emplace(name, 1U);
+            (void)right;
+            if (!inserted) {
+                (void)mach_port_deallocate(mach_task_self(), hostPort);
+                return std::nullopt;
+            }
+            const auto [owned, hostInserted] =
+                hostServiceState.guestBootstrapSendRights.emplace(name, hostPort);
+            (void)owned;
+            if (!hostInserted) {
+                guestSendRightUrefs.erase(name);
+                (void)mach_port_deallocate(mach_task_self(), hostPort);
+                return std::nullopt;
+            }
+        } catch (...) {
+            guestSendRightUrefs.erase(name);
+            (void)mach_port_deallocate(mach_task_self(), hostPort);
+            throw;
+        }
+        return name;
+    };
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
     struct GuestCallbackFrame {
@@ -6636,7 +6671,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto sendRight = guestSendRightUrefs.find(name);
                     if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
                         --sendRight->second;
-                        if (sendRight->second == 0) guestSendRightUrefs.erase(sendRight);
+                        if (sendRight->second == 0) {
+                            const auto hostRight =
+                                hostServiceState.guestBootstrapSendRights.find(name);
+                            if (hostRight != hostServiceState.guestBootstrapSendRights.end()) {
+                                (void)mach_port_deallocate(mach_task_self(), hostRight->second);
+                                hostServiceState.guestBootstrapSendRights.erase(hostRight);
+                            }
+                            guestSendRightUrefs.erase(sendRight);
+                        }
                     } else if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
                         result = kernInvalidRight;
                     } else {
