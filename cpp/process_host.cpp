@@ -1845,7 +1845,7 @@ HostServiceResult dispatch_guest_host_service(
         case 121:  // dyld_is_memory_immutable
             registers[0] = memory.is_readonly(registers[0], registers[1]) ? 1U : 0U;
             break;
-        case 122:  // sys_icache_invalidate, code is refreshed when mappings become executable
+        case 179:  // sys_icache_invalidate, code is refreshed when mappings become executable
             break;
         case 112:  // mach_vm_allocate / vm_allocate
         case 114: {  // mach_vm_map (anonymous guest mapping only)

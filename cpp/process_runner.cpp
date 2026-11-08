@@ -93,7 +93,7 @@ const std::unordered_map<std::string, int>& host_service_ids() {
         {"_mach_vm_allocate", 112}, {"_vm_allocate", 112}, {"_mach_vm_deallocate", 113},
         {"_vm_deallocate", 113}, {"_mach_vm_map", 114}, {"__dyld_get_image_slide", 115},
         {"_mprotect", 116}, {"_NSVersionOfLinkTimeLibrary", 117}, {"_gettimeofday", 118},
-        {"_sys_icache_invalidate", 122},
+        {"_sys_icache_invalidate", 179},
         {"___commpage_gettimeofday", 119}, {"_getentropy", 120},
         {"__dyld_is_memory_immutable", 121}, {"__dyld_get_lib_msg_send_offsets", 122},
         {"__dyld_register_func_for_add_image", 123}, {"__dyld_lookup_section_info", 124},
