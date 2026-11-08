@@ -1982,6 +1982,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
         {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
+    std::set<std::uint32_t> guestDeadPortNames;
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::set<std::uint32_t> guestSemaphoreNames;
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
@@ -6628,6 +6629,58 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-76))) {
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernMemoryError = 10;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint32_t machPortNull = 0;
+                constexpr std::uint32_t machPortDead =
+                    std::numeric_limits<std::uint32_t>::max();
+                constexpr mach_port_type_t machPortTypeSend =
+                    MACH_PORT_TYPE_SEND;
+                constexpr mach_port_type_t machPortTypeReceive =
+                    MACH_PORT_TYPE_RECEIVE;
+                constexpr mach_port_type_t machPortTypeDeadName =
+                    MACH_PORT_TYPE_DEAD_NAME;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                std::uint64_t result = 0;
+                mach_port_type_t type = MACH_PORT_TYPE_NONE;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else if (name == machPortDead) {
+                    type = machPortTypeDeadName;
+                } else if (name == machPortNull) {
+                    result = kernInvalidName;
+                } else if (guestDeadPortNames.count(name) != 0) {
+                    type = machPortTypeDeadName;
+                } else {
+                    const auto receiveRight = guestReceiveRights.find(name);
+                    const auto sendRight = guestSendRightUrefs.find(name);
+                    const bool hasReceive = receiveRight != guestReceiveRights.end();
+                    const bool hasSend = sendRight != guestSendRightUrefs.end() &&
+                                         sendRight->second != 0;
+                    if (!hasReceive && !hasSend) {
+                        result = kernInvalidName;
+                    } else {
+                        if (hasSend) type |= machPortTypeSend;
+                        if (hasReceive) type |= machPortTypeReceive;
+                    }
+                }
+                if (result == 0) {
+                    try {
+                        auto* output = guestMemory.buffer(registers[2], sizeof(type), true);
+                        std::memcpy(output, &type, sizeof(type));
+                    } catch (const std::exception&) {
+                        result = kernMemoryError;
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-46))) {
                 constexpr std::uint64_t kernInvalidTask = 5;
                 if (static_cast<std::uint32_t>(registers[0]) != guestMachTaskPort) {
@@ -6708,6 +6761,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 hostServiceState.guestBootstrapSendRights.erase(hostRight);
                             }
                             guestSendRightUrefs.erase(sendRight);
+                            guestDeadPortNames.erase(name);
                         }
                     } else if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
                         result = kernInvalidRight;
@@ -6760,6 +6814,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 }
                             }
                             guestMachReceiveWaiters.erase(waiting);
+                        }
+                        const auto sendRight = guestSendRightUrefs.find(name);
+                        if (sendRight != guestSendRightUrefs.end() &&
+                            sendRight->second != 0) {
+                            guestDeadPortNames.insert(name);
                         }
                         guestReceiveRights.erase(right);
                         guestMachMessageQueues.erase(name);

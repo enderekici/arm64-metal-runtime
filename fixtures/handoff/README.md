@@ -424,3 +424,37 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 
 Expected normalized output is
 `receiver_entered=1 receiver_timed_out=1 sender_runnable_past_deadline=1 late_sends=1 late_receive=1 fifo=1 cleanup=1`; status is 0.
+
+## Mach port type query (`-76`)
+
+`mach-port-type.c` calls the SDK-declared raw `_kernelrpc_mach_port_type_trap`
+(task name, queried name, output pointer) and checks live task/host/thread
+send rights, receive and combined send/receive rights, the dead-name transition
+when a send right survives receive destruction, and the dead sentinel. It also
+checks synthetic clock/bootstrap service names, invalid and deallocated names,
+invalid task destinations, output preservation on errors, and a bad output
+pointer. The ordinary rights tested have no DNREQUEST, SPREQUEST, or delayed
+SPREQUEST flags.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-type.c -o /tmp/mach-port-type
+/tmp/mach-port-type
+```
+
+Native normalized output:
+
+```text
+special_ports task=0x00010000/1 host=0x00010000/1 thread=0x00010000/1
+local_rights receive=0x00020000/1 send_receive=0x00030000/1 after_send_release=0x00020000/1 destroyed_name=1
+dead_names right=0x00100000/1 sentinel=0x00100000/1 released=1
+errors null=15/1 unknown=15/1 invalid_task=0x10000003/1 host_as_task=0x10000003/1 invalid_output=10
+services clock=0x00010000/1 bootstrap=0x00010000/1 bootstrap_released_invalid=1 kernel_flags_absent=1
+```
+
+Status is 0. Error outputs use a sentinel and remain unchanged for invalid
+names and task destinations; a null output pointer returns `KERN_MEMORY_ERROR`
+(10). The guest maps these queries only through its synthetic right namespace;
+clock and bootstrap host send rights are kept in host-owned maps and are never
+returned as guest names. Fixture `host-clock-service.c` is the existing end to
+end clock-right query/release control.
