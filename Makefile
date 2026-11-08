@@ -111,6 +111,18 @@ bundle: verify
 	@cp "$(RUNTIME)" "$(GUEST)" "$(CONSOLE)" "$(STREAMS)" "$(INDIRECT)" "$(REBASED)" "$(LINKED)" "$(WRAPPER)" "$(SUPPORT)" "$(SIGNAL)" "$(THREADS)" example.json README.md LEDGER.md "$(BUILD)/arm64-metal-macos/"
 	@cd "$(BUILD)" && tar -czf arm64-metal-macos.tar.gz arm64-metal-macos
 
+# Package a previously verified C++ launcher without changing the Swift bundle.
+CPP_RUNTIME ?= $(BUILD)/cpp/arm64-metal
+CPP_PACKAGE := $(BUILD)/arm64-metal-cpp-macos
+
+.PHONY: bundle-cpp
+bundle-cpp:
+	@test -x "$(CPP_RUNTIME)" || { echo 'Set CPP_RUNTIME to the verified C++ launcher' >&2; exit 1; }
+	@mkdir -p "$(CPP_PACKAGE)"
+	@cp "$(CPP_RUNTIME)" "$(CPP_PACKAGE)/arm64-metal"
+	@cp README.md LEDGER.md HANDOFF.md "$(CPP_PACKAGE)/"
+	@cd "$(BUILD)" && tar -czf arm64-metal-cpp-macos.tar.gz arm64-metal-cpp-macos
+
 $(BUILD):
 	mkdir -p "$@"
 
