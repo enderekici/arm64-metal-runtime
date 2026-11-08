@@ -25,9 +25,9 @@ int main(int argc, char** argv) {
                   << ", lsl #" << std::dec << shift << "\n";
     }
     std::cout << (scalarLoad ? "    ldr x0, [x0]\n" : "    ldp x0, x1, [x0]\n")
-                 "    ret\n"
-                 ".section __DATA,__data\n"
-                 ".p2align 3\n"
-                 ".quad _zlibVersion\n";
+              << "    ret\n"
+              << ".section __DATA,__data\n"
+              << ".p2align 3\n"
+              << ".quad _zlibVersion\n";
     return std::cout ? 0 : 4;
 }
