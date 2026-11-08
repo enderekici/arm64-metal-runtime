@@ -124,6 +124,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 packet.successorCount != (blockEnd ? 1U : 0U)) {
                 throw std::invalid_argument("Interpreter move-wide packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::AddImmediate ||
+                   opcode == translate_core::Opcode::SubImmediate) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] >= 31 || operation[2] >= 31 ||
+                operation[3] > 0xfff ||
+                (operation[4] != 0 && operation[4] != 12) ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                packet.successorCount != (blockEnd ? 1U : 0U)) {
+                throw std::invalid_argument("Interpreter add/sub immediate packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                    opcode == translate_core::Opcode::StoreUnsignedImmediate) {
             hasMemoryAccess = true;

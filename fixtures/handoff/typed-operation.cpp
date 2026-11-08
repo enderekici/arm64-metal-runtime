@@ -184,6 +184,38 @@ int main() {
   assert(backwardCbz.has_value());
   assert(static_cast<std::int32_t>(backwardCbz->shift) == -4);
 
+  const auto addWide = decode_operation(0x91448c00);
+  assert(addWide.has_value());
+  assert(addWide->opcode == Opcode::AddImmediate);
+  assert(addWide->destination == 0 && addWide->source == 0);
+  assert(addWide->immediate == 0x123 && addWide->shift == 12);
+  assert(addWide->width == 64);
+  assert((serialize_operation(*addWide) ==
+          arm64metal::translate_core::OperationPacket{9, 0, 0, 0x123, 12, 64}));
+  const auto addWideLowered = make_operation_instruction(
+      *addWide, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(addWideLowered.code == std::vector<std::string>{
+      "x[0] = add_sub_immediate_apply(0u, x[0], 291u, 12u, 64u);"});
+
+  const auto subWide = decode_operation(0xd1448c00);
+  assert(subWide.has_value() && subWide->opcode == Opcode::SubImmediate);
+  assert(subWide->immediate == 0x123 && subWide->shift == 12 &&
+         subWide->width == 64);
+  const auto subWord = decode_operation(0x51448c00);
+  assert(subWord.has_value() && subWord->opcode == Opcode::SubImmediate);
+  assert(subWord->width == 32 && subWord->immediate == 0x123 &&
+         subWord->shift == 12);
+  const auto addWord = decode_operation(0x11000400);
+  assert(addWord.has_value() && addWord->opcode == Opcode::AddImmediate);
+  assert(addWord->width == 32 && addWord->immediate == 1 &&
+         addWord->shift == 0);
+  assert(!decode_operation(0x910003ff).has_value());
+  assert(!decode_operation(0x910003e0).has_value());
+  assert(!decode_operation(0x9100001f).has_value());
+  assert(!decode_operation(0xb1000400).has_value());
+  assert(!decode_operation(0xf100003f).has_value());
+
   bool invalidShiftRejected = false;
   try {
     (void)decode_operation(0x52c24680);

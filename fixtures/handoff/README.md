@@ -109,9 +109,32 @@ xcrun clang -arch arm64 fixtures/handoff/typed-move-wide-main.c \
 
 The host-side typed-operation check verifies MOVN/MOVK packet fields and that
 the translator emits calls to the shared move-wide MSL helper. The helper's
-value expression lives in `cpp/move_wide_shared.h`; the same header supplies
+value expressions live in `cpp/integer_ops_shared.h`; that header supplies
 the runtime-generated translator/function shader source and the AOT
 interpreter implementation.
+
+## Typed ADD/SUB immediate slice
+
+The native control covers W/X results, LSL-by-12 immediates, and preservation
+of NZCV across non-flag-setting ADD and SUB:
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  fixtures/handoff/typed-add-sub-immediate.s \
+  fixtures/handoff/typed-add-sub-immediate-main.c \
+  -o .build/handoff-probes/typed-add-sub-immediate
+.build/handoff-probes/typed-add-sub-immediate
+```
+
+Expected output is
+`add=123005,10000 sub=2332d000,1221d000 nzcv=20000000`.
+The typed interpreter slice accepts non-flag-setting forms with X/W registers
+0–30 and immediate shifts 0 or 12. SP/ZR encodings and ADDS/SUBS remain outside
+this typed packet slice.
+
+`fixtures/interpreter/add-sub-immediate-main.s` is the repeatable process-entry
+probe: MOVZ W0, ADD W0, SUB W0, RET must exit 42 with a four-operation
+interpreter dispatch.
 
 ## Multi-allocation Mach VM deallocation
 

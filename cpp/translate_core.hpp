@@ -21,12 +21,15 @@ enum class Opcode : std::uint32_t {
   LoadUnsignedImmediate = 6,
   StoreUnsignedImmediate = 7,
   BranchZero = 8,
+  AddImmediate = 9,
+  SubImmediate = 10,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
 // Fields unused by an opcode are zero. BranchZero uses source for Rt,
 // immediate for CBNZ sense, and shift for its signed byte displacement; its
 // full-width target and fallthrough PCs are carried in Instruction::next.
+// Add/Sub immediate uses destination/source/immediate/shift/width fields.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

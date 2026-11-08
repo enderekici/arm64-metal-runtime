@@ -1,5 +1,5 @@
 #include <metal_stdlib>
-#include "move_wide_shared.h"
+#include "integer_ops_shared.h"
 using namespace metal;
 
 struct InstructionPacket {
@@ -61,6 +61,39 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 return;
             }
             const uint opcode = instruction.operation[0];
+            if (opcode == 9u || opcode == 10u) {
+                const uint rd = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint immediate = instruction.operation[3];
+                const uint shift = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                if (rd >= 31u || rn >= 31u || immediate > 0xfffu ||
+                    (shift != 0u && shift != 12u) ||
+                    (width != 32u && width != 64u)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                state[rd] = add_sub_immediate_apply(
+                    uint(opcode == 10u), state[rn], immediate, shift, width);
+                if ((instruction.flags & 2u) != 0u) {
+                    if (instruction.successorCount != 1u) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 1u || opcode == 3u || opcode == 4u) {
                 const uint rd = instruction.operation[1];
                 const uint immediate = instruction.operation[3];

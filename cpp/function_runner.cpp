@@ -3,7 +3,7 @@
 #include "macho.hpp"
 #include "metal_backend.hpp"
 #include "translate_core.hpp"
-#include "move_wide_shared.h"
+#include "integer_ops_shared.h"
 
 #include <algorithm>
 #include <array>
@@ -318,7 +318,7 @@ std::string make_kernel(const MachO& image, const std::string& symbol) {
   std::ostringstream source;
   source << "#include <metal_stdlib>\n"
             "using namespace metal;\n"
-         << move_wide_msl_source
+         << typed_integer_msl_source
          << "\n"
          <<
             "kernel void run_guest(device uint *memory [[buffer(0)]],\n"

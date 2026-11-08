@@ -341,6 +341,9 @@ ProcessKernelPlan plan_process_kernel(
             const bool memoryOpcode =
                 opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                 opcode == translate_core::Opcode::StoreUnsignedImmediate;
+            const bool addSubImmediateOpcode =
+                opcode == translate_core::Opcode::AddImmediate ||
+                opcode == translate_core::Opcode::SubImmediate;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !memoryOpcode ||
@@ -348,7 +351,14 @@ ProcessKernelPlan plan_process_kernel(
                  operation.immediate <= 0xfff &&
                  (operation.width == 32 || operation.width == 64) &&
                  operation.shift == (operation.width == 32 ? 2U : 3U));
-            if ((!moveWideOpcode && !memoryOpcode) || !validMemoryOperation ||
+            const bool validAddSubImmediate =
+                !addSubImmediateOpcode ||
+                (operation.destination < 31 && operation.source < 31 &&
+                 operation.immediate <= 0xfff &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 (operation.shift == 0 || operation.shift == 12));
+            if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode) ||
+                !validMemoryOperation || !validAddSubImmediate ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

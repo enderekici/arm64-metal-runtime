@@ -174,6 +174,15 @@ int run_command(const std::vector<std::string>& args,
          packet(0xd65f03c0u, 0x9008, blockEnd)},
         {packet(0xd28acf00u, 0xa000, blockStart), packet(0x72b579bfu, 0xa004),
          packet(0xd65f03c0u, 0xa008, blockEnd)}};
+    const std::vector<std::vector<InstructionPacket>> addSubImmediatePrograms{
+        {packet(0xd28000a0u, 0xb000, blockStart), packet(0x91448c00u, 0xb004),
+         packet(0xd65f03c0u, 0xb008, blockEnd)},
+        {packet(0xd2a468a0u, 0xc000, blockStart), packet(0xd1448c00u, 0xc004),
+         packet(0xd65f03c0u, 0xc008, blockEnd)},
+        {packet(0x529fffe0u, 0xd000, blockStart), packet(0x11000400u, 0xd004),
+         packet(0xd65f03c0u, 0xd008, blockEnd)},
+        {packet(0x52a24680u, 0xe000, blockStart), packet(0x51448c00u, 0xe004),
+         packet(0xd65f03c0u, 0xe008, blockEnd)}};
     const std::vector<InstructionPacket> branchProgram{
         packet(0xd28000e0u, 0x5000, blockStart),
         packet(0x14000002u, 0x5004, blockEnd, 1, 0x500c),
@@ -222,11 +231,13 @@ int run_command(const std::vector<std::string>& args,
       throw std::runtime_error("AOT interpreter load counters mismatch");
     }
 
-    const auto execute = [&backend, &interpreter](const auto& packets) {
+    const auto execute = [&backend, &interpreter](const auto& packets,
+                                                  std::uint64_t flags = 0) {
       ProcessState initial{};
       initial[arm64metal::gpu_interpreter::returnRegisterIndex] =
           arm64metal::gpu_interpreter::noReturnAddress;
       initial[33] = packets.front().pc;
+      initial[32] = flags;
       initial[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
       return interpreter.run(backend, packets, initial);
     };
@@ -236,6 +247,11 @@ int run_command(const std::vector<std::string>& args,
     moveWideResults.reserve(moveWidePrograms.size());
     for (const auto& program : moveWidePrograms) {
       moveWideResults.push_back(execute(program));
+    }
+    std::vector<arm64metal::gpu_interpreter::Result> addSubImmediateResults;
+    addSubImmediateResults.reserve(addSubImmediatePrograms.size());
+    for (const auto& program : addSubImmediatePrograms) {
+      addSubImmediateResults.push_back(execute(program, 8));
     }
     ProcessState continuationState{};
     continuationState[arm64metal::gpu_interpreter::returnRegisterIndex] = 0x3004;
@@ -284,7 +300,7 @@ int run_command(const std::vector<std::string>& args,
           backend, conditionalProgram(test.bits), initial));
     }
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 25 ||
+    if (compiled != 1 || dispatches != 29 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
         moveWideResults[0].state[34] != 0 ||
@@ -299,6 +315,18 @@ int run_command(const std::vector<std::string>& args,
         moveWideResults[4].state[0] != 0x5678u ||
         moveWideResults[5].state[34] != 0 ||
         moveWideResults[5].state[0] != 0x5678u ||
+        addSubImmediateResults[0].state[34] != 0 ||
+        addSubImmediateResults[0].state[0] != 0x123005u ||
+        addSubImmediateResults[1].state[34] != 0 ||
+        addSubImmediateResults[1].state[0] != 0x2332d000u ||
+        addSubImmediateResults[2].state[34] != 0 ||
+        addSubImmediateResults[2].state[0] != 0x10000u ||
+        addSubImmediateResults[3].state[34] != 0 ||
+        addSubImmediateResults[3].state[0] != 0x1221d000u ||
+        addSubImmediateResults[0].state[32] != 8 ||
+        addSubImmediateResults[1].state[32] != 8 ||
+        addSubImmediateResults[2].state[32] != 8 ||
+        addSubImmediateResults[3].state[32] != 8 ||
         continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
         zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99 ||
         branch.state[34] != 0 || branch.state[0] != 7 || branch.state[36] != 0 ||
@@ -323,6 +351,15 @@ int run_command(const std::vector<std::string>& args,
               << moveWideResults[2].state[0] << ',' << moveWideResults[3].state[0]
               << " discard=" << moveWideResults[4].state[0] << ','
               << moveWideResults[5].state[0] << '\n';
+    const auto architecturalNzcv = [](std::uint64_t flags) {
+      return ((flags & 2u) << 30) | ((flags & 1u) << 30) |
+             ((flags & 8u) << 26) | ((flags & 4u) << 26);
+    };
+    std::cout << "add=" << std::hex << addSubImmediateResults[0].state[0] << ','
+              << addSubImmediateResults[2].state[0] << " sub="
+              << addSubImmediateResults[1].state[0] << ','
+              << addSubImmediateResults[3].state[0] << " nzcv="
+              << architecturalNzcv(addSubImmediateResults[0].state[32]) << '\n';
     return 0;
   }
 

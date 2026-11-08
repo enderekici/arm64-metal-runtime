@@ -79,6 +79,21 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                        field(bits, 10, 12), width == 64 ? 3U : 2U, width};
     }
   }
+  if ((bits & 0x1f000000) == 0x11000000) {
+    const auto destination = field(bits, 0, 5);
+    const auto source = field(bits, 5, 5);
+    const auto setFlags = field(bits, 29, 1) != 0;
+    const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
+    const auto shiftField = field(bits, 22, 1);
+    if (setFlags || field(bits, 23, 1) != 0 || destination == 31 ||
+        source == 31) {
+      return std::nullopt;
+    }
+    return Operation{field(bits, 30, 1) == 0 ? Opcode::AddImmediate
+                                            : Opcode::SubImmediate,
+                     destination, source, field(bits, 10, 12),
+                     shiftField * 12u, width};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -117,6 +132,15 @@ Instruction make_operation_instruction(Operation operation,
                      std::to_string(operation.shift) + "u, " +
                      std::to_string(operation.width) + "u);");
     }
+  } else if (operation.opcode == Opcode::AddImmediate ||
+             operation.opcode == Opcode::SubImmediate) {
+    const auto subtract = operation.opcode == Opcode::SubImmediate ? "1u" : "0u";
+    const auto lhs = "x[" + std::to_string(operation.source) + "]";
+    code.push_back("x[" + std::to_string(operation.destination) +
+                   "] = add_sub_immediate_apply(" + subtract + ", " + lhs +
+                   ", " + std::to_string(operation.immediate) + "u, " +
+                   std::to_string(operation.shift) + "u, " +
+                   std::to_string(operation.width) + "u);");
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {
       code = {"returns[id] = uint(x[0]); status[id] = 0; return;"};
