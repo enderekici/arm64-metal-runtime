@@ -186,6 +186,7 @@ struct HostServiceState {
         std::uint64_t capacity = 0;
     };
     std::set<std::int32_t> openDescriptors;
+    std::set<std::int32_t> socketDescriptors;
     std::set<std::int32_t> writableDescriptors;
     std::map<std::int32_t, std::int32_t> standardDescriptorFlags;
     std::map<std::int32_t, std::int32_t> standardStatusFlags;

@@ -2365,6 +2365,7 @@ HostServiceResult dispatch_guest_host_service(
                 if (state.closedStreams.insert(stream).second) registers[0] = 0;
                 else { set_errno(EBADF); registers[0] = failure; }
             } else if (state.openDescriptors.erase(descriptor) != 0) {
+                state.socketDescriptors.erase(descriptor);
                 state.writableDescriptors.erase(descriptor);
                 state.standardDescriptorFlags.erase(descriptor);
                 state.standardStatusFlags.erase(descriptor);
@@ -2379,6 +2380,11 @@ HostServiceResult dispatch_guest_host_service(
         }
         case 23: {  // read
             const auto descriptor = static_cast<std::int32_t>(registers[0]);
+            if (state.socketDescriptors.count(descriptor) != 0) {
+                set_errno(ENOTSUP);
+                registers[0] = failure;
+                break;
+            }
             const bool readable_standard = descriptor == STDIN_FILENO &&
                                            standard_descriptor_open(descriptor);
             if (!readable_standard && !owns_descriptor(descriptor)) {

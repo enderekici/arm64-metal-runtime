@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <new>
 #include <pthread.h>
 #include <runetype.h>
 #include <libproc.h>
@@ -36,6 +37,8 @@
 #include <stdexcept>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <mach/mach.h>
 #include <mach/kern_return.h>
@@ -3946,6 +3949,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return true;
     };
     std::uint64_t dispatchSequence = 0;
+    bool socketSuccessDiagnosticEmitted = false;
+    bool socketUnsupportedDiagnosticEmitted = false;
     while (true) {
         syncTproThreadAccess();
         if (!applyJitWriteProtection ||
@@ -6309,6 +6314,67 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     } catch (const std::exception&) {
                         registers[0] = EFAULT;
                     }
+                }
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == SYS_socket) {
+                constexpr std::uint64_t carryMask = 8U;
+                const auto domain = static_cast<int>(static_cast<std::int32_t>(registers[0]));
+                const auto type = static_cast<int>(static_cast<std::int32_t>(registers[1]));
+                const auto protocol = static_cast<int>(static_cast<std::int32_t>(registers[2]));
+                int result = -1;
+                int error = 0;
+                if (domain != AF_UNIX) {
+                    error = EAFNOSUPPORT;
+                } else if ((type != SOCK_STREAM && type != SOCK_DGRAM) || protocol != 0) {
+                    error = EPROTONOSUPPORT;
+                } else {
+                    result = ::socket(AF_UNIX, type, 0);
+                    if (result < 0) error = errno;
+                    else {
+                        try {
+                            hostServiceState.openDescriptors.insert(result);
+                            hostServiceState.socketDescriptors.insert(result);
+                        } catch (const std::bad_alloc&) {
+                            hostServiceState.openDescriptors.erase(result);
+                            hostServiceState.socketDescriptors.erase(result);
+                            (void)::close(result);
+                            result = -1;
+                            error = ENOMEM;
+                        } catch (...) {
+                            hostServiceState.openDescriptors.erase(result);
+                            hostServiceState.socketDescriptors.erase(result);
+                            (void)::close(result);
+                            throw;
+                        }
+                    }
+                }
+                if (result >= 0 && progressTrace.enabled() &&
+                    !socketSuccessDiagnosticEmitted) {
+                    std::cerr << "arm64-metal trace socket-created pc=0x"
+                              << hexadecimal(registers[33]) << " lr=0x"
+                              << hexadecimal(registers[30]) << " x0=0x"
+                              << hexadecimal(registers[0]) << " x1=0x"
+                              << hexadecimal(registers[1]) << " x2=0x"
+                              << hexadecimal(registers[2]) << " fd=" << result << '\n';
+                    socketSuccessDiagnosticEmitted = true;
+                }
+                if (error != 0 && progressTrace.enabled() &&
+                    !socketUnsupportedDiagnosticEmitted) {
+                    std::cerr << "arm64-metal trace socket-rejected pc=0x"
+                              << hexadecimal(registers[33]) << " lr=0x"
+                              << hexadecimal(registers[30]) << " x1=0x"
+                              << hexadecimal(registers[1]) << " x2=0x"
+                              << hexadecimal(registers[2]) << '\n';
+                    socketUnsupportedDiagnosticEmitted = true;
+                }
+                if (result < 0) {
+                    registers[0] = static_cast<std::uint32_t>(error);
+                    registers[32] |= carryMask;
+                } else {
+                    registers[0] = static_cast<std::uint64_t>(result);
+                    registers[32] &= ~carryMask;
                 }
                 registers[34] = 0;
                 continue;
