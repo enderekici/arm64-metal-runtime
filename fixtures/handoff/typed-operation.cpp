@@ -626,7 +626,57 @@ int main() {
   assert(returned.ends_block_at(0x1000));
   assert(returned.code.size() == 5);
 
-  assert(!decode_operation(0x10000000).has_value());
+  const auto adrEncoding = [](std::uint32_t base, std::uint32_t imm21,
+                              std::uint32_t rd) {
+    return base | ((imm21 & 3U) << 29U) | ((imm21 >> 2U) << 5U) | rd;
+  };
+  const auto adrForward = decode_operation(adrEncoding(0x10000000U, 8U, 4U));
+  assert(adrForward && adrForward->opcode == Opcode::Adr);
+  assert(adrForward->destination == 4 && adrForward->source == 0);
+  assert(adrForward->immediate == 8 && adrForward->width == 64);
+  const auto adrLowered = make_operation_instruction(
+      *adrForward, {0x2003}, LoweringMode::Process, std::uint64_t{1} << 48,
+      0x1fffU);
+  assert(adrLowered.code == std::vector<std::string>{
+      "x[4] = adr_apply(0u, 8191ul, 8u);"});
+  assert(arm64metal::adr_apply(0, 0x1fffU, 8U) == 0x2007U);
+  const auto adrTranslated = arm64metal::translate_core::decode(
+      adrEncoding(0x10000000U, 8U, 4U), 0x1fff, "ul");
+  assert(adrTranslated.operation && adrTranslated.operation->opcode == Opcode::Adr);
+  assert(adrTranslated.code == adrLowered.code);
+  assert(arm64metal::adr_apply(1, 0x2000U, 0x1fffffU) == 0x1000U);
+  const auto adrpForward = decode_operation(adrEncoding(0x90000000U, 1U, 5U));
+  assert(adrpForward && adrpForward->opcode == Opcode::Adr);
+  assert(adrpForward->source == 1 && adrpForward->immediate == 1);
+  assert(arm64metal::adr_apply(1, 0x1fffU, 1U) == 0x2000U);
+  const auto adrDiscard = decode_operation(
+      adrEncoding(0x10000000U, 0x1fffffU, 31U));
+  assert(adrDiscard && adrDiscard->destination == 31);
+  assert(make_operation_instruction(*adrDiscard, {0x2004},
+                                    LoweringMode::Process).code.empty());
+  auto invalidAdr = *adrForward;
+  invalidAdr.source = 2;
+  bool invalidAdrRejected = false;
+  try {
+    (void)make_operation_instruction(invalidAdr, {0x2004},
+                                     LoweringMode::Process);
+  } catch (const std::invalid_argument&) {
+    invalidAdrRejected = true;
+  }
+  assert(invalidAdrRejected);
+  invalidAdr = *adrForward;
+  invalidAdr.width = 32;
+  invalidAdrRejected = false;
+  try {
+    (void)make_operation_instruction(invalidAdr, {0x2004},
+                                     LoweringMode::Process);
+  } catch (const std::invalid_argument&) {
+    invalidAdrRejected = true;
+  }
+  assert(invalidAdrRejected);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "inline ulong adr_apply") != std::string_view::npos);
+
   const auto forwardBranch = decode_operation(0x14000002);
   assert(forwardBranch.has_value());
   assert(forwardBranch->opcode == Opcode::Branch);

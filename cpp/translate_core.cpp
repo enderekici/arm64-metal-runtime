@@ -104,6 +104,13 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      0, 64};
   }
 
+  const auto addressEncoding = bits & 0x9f000000U;
+  if (addressEncoding == 0x10000000U || addressEncoding == 0x90000000U) {
+    const auto immediate = (field(bits, 5, 19) << 2U) | field(bits, 29, 2);
+    const auto mode = addressEncoding == 0x90000000U ? 1U : 0U;
+    return Operation{Opcode::Adr, field(bits, 0, 5), mode, immediate, 0, 64};
+  }
+
   if ((bits & 0x1f800000U) == 0x12000000U) {
     const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
     const auto n = field(bits, 22, 1);
@@ -326,9 +333,22 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
 Instruction make_operation_instruction(Operation operation,
                                        std::vector<std::int64_t> next,
                                        LoweringMode mode,
-                                       std::uint64_t guest_code_limit) {
+                                       std::uint64_t guest_code_limit,
+                                       std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::MoveWideZero ||
+  if (operation.opcode == Opcode::Adr) {
+    if (operation.destination > 31 || operation.source > 1 ||
+        operation.immediate > 0x1fffffU || operation.shift != 0 ||
+        operation.width != 64) {
+      throw std::invalid_argument("Typed ADR/ADRP operands are invalid");
+    }
+    if (operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = adr_apply(" + std::to_string(operation.source) +
+                     "u, " + std::to_string(guest_pc) +
+                     "ul, " + std::to_string(operation.immediate) + "u);");
+    }
+  } else if (operation.opcode == Opcode::MoveWideZero ||
       operation.opcode == Opcode::MoveWideNot ||
       operation.opcode == Opcode::MoveWideKeep) {
     if (operation.destination != 31) {
@@ -626,7 +646,8 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       successors.push_back(following);
     }
     return make_operation_instruction(*operation, std::move(successors),
-                                      LoweringMode::Function);
+                                      LoweringMode::Function, 0,
+                                      static_cast<std::uint64_t>(pc));
   }
   const auto branch = [&](const std::string& condition, std::int64_t target) {
     return Instruction{{"pc = " + condition + " ? " + pc_literal(target, address_suffix) +

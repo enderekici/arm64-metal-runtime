@@ -216,6 +216,15 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter logical-immediate packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::Adr) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] > 1 ||
+                operation[3] > 0x1fffffU || operation[4] != 0 ||
+                operation[5] != 64 ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument("Interpreter ADR/ADRP packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                    opcode == translate_core::Opcode::StoreUnsignedImmediate) {
             hasMemoryAccess = true;

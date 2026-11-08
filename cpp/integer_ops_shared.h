@@ -58,6 +58,13 @@
 #define ARM64METAL_STRINGIFY(value) ARM64METAL_STRINGIFY_INNER(value)
 
 #ifdef __METAL_VERSION__
+inline ulong adr_apply(uint mode, ulong pc, uint immediate) {
+    const long displacement = (immediate & 0x100000u) != 0u
+        ? long(immediate) - 0x200000l : long(immediate);
+    const ulong base = mode == 0u ? pc : (pc & ~0xffful);
+    const long scale = mode == 0u ? 1l : 4096l;
+    return base + ulong(displacement * scale);
+}
 inline ulong move_wide_apply(uint opcode, ulong previous, uint immediate,
                              uint shift, uint width) {
     const ulong value = ARM64METAL_MOVE_WIDE_VALUE(
@@ -199,6 +206,15 @@ inline ulong conditional_select_apply(uint variant, ulong lhs, ulong rhs,
 }
 #else
 namespace arm64metal {
+inline constexpr std::uint64_t adr_apply(std::uint32_t mode, std::uint64_t pc,
+                                         std::uint32_t immediate) {
+  const auto displacement = (immediate & 0x100000U) != 0U
+      ? static_cast<std::int64_t>(immediate) - 0x200000LL
+      : static_cast<std::int64_t>(immediate);
+  const auto base = mode == 0U ? pc : (pc & ~std::uint64_t{0xfffU});
+  const auto scale = mode == 0U ? 1LL : 4096LL;
+  return base + static_cast<std::uint64_t>(displacement * scale);
+}
 struct LogicalShiftedResult {
   std::uint64_t value;
   std::uint32_t flags;
@@ -270,6 +286,12 @@ inline constexpr std::uint64_t conditional_select_apply(
   return width == 32U ? static_cast<std::uint32_t>(selected) : selected;
 }
 inline constexpr char typed_integer_msl_source[] =
+    "inline ulong adr_apply(uint mode, ulong pc, uint immediate) { "
+    "long displacement = (immediate & 0x100000u) != 0u "
+    "? long(immediate) - 0x200000l : long(immediate); "
+    "ulong base = mode == 0u ? pc : (pc & ~0xffful); "
+    "long scale = mode == 0u ? 1l : 4096l; "
+    "return base + ulong(displacement * scale); }\n"
     "inline ulong move_wide_apply(uint opcode, ulong previous, uint immediate, "
     "uint shift, uint width) { ulong value = "
     ARM64METAL_STRINGIFY(ARM64METAL_MOVE_WIDE_VALUE(

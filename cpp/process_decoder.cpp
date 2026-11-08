@@ -194,26 +194,26 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     if (!imports.count(target) && !guestStubs.count(target)) {
       return translate_core::make_operation_instruction(
           *decodedOperation, {target}, translate_core::LoweringMode::Process,
-          guestCodeLimit);
+          guestCodeLimit, static_cast<std::uint64_t>(pc));
     }
   }
   if (typedBranchZero) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->shift);
     return translate_core::make_operation_instruction(
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
-        guestCodeLimit);
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
   if (typedBranchCondition) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
     return translate_core::make_operation_instruction(
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
-        guestCodeLimit);
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
   if (typedTestBitBranch) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->shift);
     return translate_core::make_operation_instruction(
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
-        guestCodeLimit);
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
   if (decodedOperation && !typedBranch && !typedBranchZero && !typedBranchCondition &&
       !typedTestBitBranch &&
@@ -230,7 +230,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
             : PCs{next};
     return translate_core::make_operation_instruction(
         *decodedOperation, successors, translate_core::LoweringMode::Process,
-        guestCodeLimit);
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
   auto emit = [&](auto... lines) -> Instruction {
     std::vector<std::string> code{lines...};
@@ -616,16 +616,6 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return emit((std::string(str(reg(rd, true))) + " = " + str(type) + "(" +
                  str(reg(rn, true)) + " " + str(operation) + " " +
                  str(immediate) + "ul);"));
-  }
-  if (((bits & 0x1f000000) == 0x10000000) && (rd != 31)) {
-    auto displacement = sign_extend((field(5, 19) << 2) | field(29, 2), 21);
-    auto address = field(31, 1) == 1 ? (pc & ~4095) + displacement * 4096
-                                     : pc + displacement;
-    if (!(address >= 0)) {
-      throw GuestError(
-          (std::string("ADRP targets below the executable image")));
-    }
-    return emit((std::string(str(reg(rd))) + " = " + str(address) + "ul;"));
   }
   if (((bits & 0x7fa00000) == 0x13800000) && (field(22, 1) == field(31, 1)) &&
       (rd != 31)) {

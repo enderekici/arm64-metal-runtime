@@ -122,6 +122,7 @@ INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 INTERPRETER_TBZ_TBNZ_MAIN := $(BUILD_DIR)/interpreter-tbz-tbnz-main
+INTERPRETER_ADR_ADRP_MAIN := $(BUILD_DIR)/interpreter-adr-adrp-main
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
@@ -276,6 +277,10 @@ $(INTERPRETER_CBZ_CBNZ_MAIN): ../fixtures/interpreter/cbz-cbnz-main.s
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_TBZ_TBNZ_MAIN): ../fixtures/interpreter/tbz-tbnz-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_ADR_ADRP_MAIN): ../fixtures/interpreter/adr-adrp-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -511,7 +516,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -812,6 +817,18 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		set -e; \
 		test "$$logical_invalid_native_rc" -eq 132 && test "$$logical_invalid_translated_rc" -ne 0 && \
 		grep -q 'Reserved logical immediate' "$$run_dir/logical-immediate-invalid.translated.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_ADR_ADRP_MAIN)" >"$$run_dir/adr-adrp.native.out" 2>"$$run_dir/adr-adrp.native.err"; adr_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_ADR_ADRP_MAIN)" >"$$run_dir/adr-adrp.translated.out" 2>"$$run_dir/adr-adrp.translated.err"; adr_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_ADR_ADRP_MAIN)" >"$$run_dir/adr-adrp.interpreter.out" 2>"$$run_dir/adr-adrp.interpreter.err"; adr_interpreter_rc=$$?; \
+		set -e; \
+		test "$$adr_native_rc" -eq 42 && test "$$adr_translated_rc" -eq "$$adr_native_rc" && \
+		test "$$adr_interpreter_rc" -eq "$$adr_native_rc" && \
+		cmp "$$run_dir/adr-adrp.native.out" "$$run_dir/adr-adrp.translated.out" && \
+		cmp "$$run_dir/adr-adrp.native.out" "$$run_dir/adr-adrp.interpreter.out" && \
+		cmp "$$run_dir/adr-adrp.native.err" "$$run_dir/adr-adrp.translated.err" && \
+		grep -q 'interpreter-dispatch.*pc=0x' "$$run_dir/adr-adrp.interpreter.err" && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/adr-adrp.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)

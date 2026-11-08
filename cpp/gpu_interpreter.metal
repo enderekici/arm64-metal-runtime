@@ -646,6 +646,34 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 leftBlock = true;
                 break;
             }
+            if (opcode == 27u) {
+                const uint rd = instruction.operation[1];
+                const uint mode = instruction.operation[2];
+                const uint immediate = instruction.operation[3];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rd > 31u || mode > 1u || immediate > 0x1fffffu ||
+                    instruction.operation[4] != 0u ||
+                    instruction.operation[5] != 64u ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                if (rd < 31u) state[rd] = adr_apply(mode, instruction.pc, immediate);
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 2u) {
                 const uint source = instruction.operation[2];
                 if (source != 30u) {

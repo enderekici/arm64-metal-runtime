@@ -408,6 +408,7 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::LogicalImmediate;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
+            const bool adrOpcode = opcode == translate_core::Opcode::Adr;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !unsignedMemoryOpcode ||
@@ -507,16 +508,22 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 127 &&
                  (operation.width == 32 || operation.width == 64) &&
                  (operation.width != 32 || operation.shift == 0));
+            const bool validAdr =
+                !adrOpcode ||
+                (operation.destination <= 31 && operation.source <= 1 &&
+                 operation.immediate <= 0x1fffffU && operation.shift == 0 &&
+                 operation.width == 64);
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode &&
-                 !logicalShiftedRegisterOpcode && !logicalImmediateOpcode) ||
+                 !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
+                 !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
-                !validLogicalShiftedRegister || !validLogicalImmediate ||
+                !validLogicalShiftedRegister || !validLogicalImmediate || !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

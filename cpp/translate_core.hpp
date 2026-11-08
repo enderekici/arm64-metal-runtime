@@ -37,6 +37,7 @@ enum class Opcode : std::uint32_t {
   LogicalShiftedRegister = 23,
   LogicalImmediate = 24,
   TestBitBranch = 25,
+  Adr = 27,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -76,6 +77,9 @@ enum class Opcode : std::uint32_t {
 // Logical immediate uses destination=Rd, source=(opc << 5) | Rn,
 // immediate=mask low word, shift=mask high word, width=32 or 64. Register 31
 // is ZR. Opc selects AND, ORR, EOR, or ANDS; ANDS updates NZCV.
+// ADR/ADRP uses destination=Rd, source=0 for ADR or 1 for ADRP,
+// immediate=the unsigned encoded immhi:immlo 21-bit value, and width=64.
+// The instruction PC comes from the packet and is passed to adr_apply.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
@@ -121,7 +125,8 @@ std::optional<std::uint64_t> decode_logical_immediate_mask(
 Instruction make_operation_instruction(Operation operation,
                                        std::vector<std::int64_t> next,
                                        LoweringMode mode,
-                                       std::uint64_t guest_code_limit = 0);
+                                       std::uint64_t guest_code_limit = 0,
+                                       std::uint64_t guest_pc = 0);
 
 // Decode one supported integer ARM64 instruction to the runtime's Metal form.
 // Throws std::runtime_error for unsupported encodings. `address_suffix` is
