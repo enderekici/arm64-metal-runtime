@@ -103,6 +103,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 operation[5] != 64) {
                 throw std::invalid_argument("Interpreter B packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::BranchZero) {
+            const auto branchTarget = static_cast<std::int64_t>(packet.pc) +
+                static_cast<std::int32_t>(operation[4]);
+            if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 2 ||
+                operation[1] != 0 || operation[2] > 31 || operation[3] > 1 ||
+                (operation[5] != 32 && operation[5] != 64) || branchTarget < 0 ||
+                packet.successor0 != static_cast<std::uint64_t>(branchTarget) ||
+                packet.successor1 != packet.pc + 4) {
+                throw std::invalid_argument("Interpreter CBZ/CBNZ packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::MoveWideZero ||
                    opcode == translate_core::Opcode::MoveWideNot ||
                    opcode == translate_core::Opcode::MoveWideKeep) {

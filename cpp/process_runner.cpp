@@ -325,6 +325,15 @@ ProcessKernelPlan plan_process_kernel(
                 complete = true;
                 break;
             }
+            if (opcode == translate_core::Opcode::BranchZero) {
+                if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
+                    instruction.next[0] < 0 || instruction.next[1] < 0) {
+                    break;
+                }
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
             const bool moveWideOpcode =
                 opcode == translate_core::Opcode::MoveWideZero ||
                 opcode == translate_core::Opcode::MoveWideNot ||

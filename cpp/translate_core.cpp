@@ -52,6 +52,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
   }
 
+  if ((bits & 0x7e000000) == 0x34000000) {
+    const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
+    const auto displacement = signed_field(field(bits, 5, 19), 19) * 4;
+    return Operation{Opcode::BranchZero, 0, field(bits, 0, 5), field(bits, 24, 1),
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     width};
+  }
+
   if ((bits & 0xfc000000) == 0x14000000) {
     const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
     return Operation{Opcode::Branch, 0, 0,
@@ -129,6 +137,16 @@ Instruction make_operation_instruction(Operation operation,
       throw std::invalid_argument("Typed B needs one resolved guest target");
     }
     code.push_back("pc = " + std::to_string(next.front()) + "ul; break;");
+  } else if (operation.opcode == Opcode::BranchZero) {
+    if (operation.source > 31 || operation.immediate > 1 ||
+        (operation.width != 32 && operation.width != 64) || next.size() != 2) {
+      throw std::invalid_argument("Typed CBZ/CBNZ needs two resolved guest edges");
+    }
+    const auto condition = reg(operation.source, operation.width == 64) +
+                           (operation.immediate == 0 ? " == 0" : " != 0");
+    code.push_back("pc = (" + condition + ") ? " +
+                   pc_literal(next[0], "ul") + " : " +
+                   pc_literal(next[1], "ul") + "; break;");
   } else {
     throw std::invalid_argument("Unknown typed ARM64 operation");
   }
@@ -158,6 +176,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
+    } else if (operation->opcode == Opcode::BranchZero) {
+      successors.push_back(pc + static_cast<std::int32_t>(operation->shift));
+      successors.push_back(following);
     } else if (operation->opcode != Opcode::Return) {
       successors.push_back(following);
     }
@@ -170,11 +191,6 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
                        {target, following}};
   };
 
-  if ((bits & 0x7e000000) == 0x34000000) {
-    const auto op = field(bits, 24, 1) == 0 ? "==" : "!=";
-    return branch(reg(rd, wide) + " " + op + " 0",
-                  pc + signed_field(field(bits, 5, 19), 19) * 4);
-  }
   if ((bits & 0xff00001e) == 0x54000000) {
     return branch(field(bits, 0, 1) == 0 ? "z" : "!z",
                   pc + signed_field(field(bits, 5, 19), 19) * 4);

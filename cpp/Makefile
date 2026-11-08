@@ -77,6 +77,8 @@ INTERPRETER_TYPED_MEMORY_RO_MAIN := $(BUILD_DIR)/interpreter-typed-memory-ro-mai
 INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-typed-memory-unmapped-main
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
+		set +e; \
+INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
@@ -128,6 +130,8 @@ $(INTERPRETER_TYPED_MEMORY_RO_MAIN): ../fixtures/interpreter/typed-memory-ro-sto
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN): ../fixtures/interpreter/typed-memory-unmapped-load.s
+		set +e; \
+$(INTERPRETER_CBZ_CBNZ_MAIN): ../fixtures/interpreter/cbz-cbnz-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -149,7 +153,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) move_wide_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -157,7 +161,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" "$(APP)" interpreter-probe "$(abspath $(INTERPRETER_METALLIB))" >"$$run_dir/interpreter.gpu.out" 2>"$$run_dir/interpreter.gpu.err"; \
 		"$(INTERPRETER_MOVE_WIDE_NATIVE)" >"$$run_dir/interpreter.native.out"; \
 		cmp "$$run_dir/interpreter.native.out" "$$run_dir/interpreter.gpu.out"; \
-		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=13' "$$run_dir/interpreter.gpu.err"; \
+		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=25' "$$run_dir/interpreter.gpu.err"; \
 		set +e; \
 		"$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.native.out" 2>"$$run_dir/interpreter-process.native.err"; native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.translated.out" 2>"$$run_dir/interpreter-process.translated.err"; translated_rc=$$?; \
@@ -248,4 +252,20 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-block-ready.*detail=3' "$$run_dir/typed-memory-unmapped.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/typed-memory-unmapped.interpreter.err" && \
 		grep -q 'Guest process memory access fault at 0x0' "$$run_dir/typed-memory-unmapped.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_CBZ_CBNZ_MAIN)" >"$$run_dir/cbz-cbnz.native.out" 2>"$$run_dir/cbz-cbnz.native.err"; cbz_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_CBZ_CBNZ_MAIN)" >"$$run_dir/cbz-cbnz.translated.out" 2>"$$run_dir/cbz-cbnz.translated.err"; cbz_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_CBZ_CBNZ_MAIN)" >"$$run_dir/cbz-cbnz.interpreter.out" 2>"$$run_dir/cbz-cbnz.interpreter.err"; cbz_interpreter_rc=$$?; \
+		printf '%s\n' "$$cbz_native_rc" >"$$run_dir/cbz-cbnz.native.rc"; \
+		printf '%s\n' "$$cbz_translated_rc" >"$$run_dir/cbz-cbnz.translated.rc"; \
+		printf '%s\n' "$$cbz_interpreter_rc" >"$$run_dir/cbz-cbnz.interpreter.rc"; \
+		set -e; \
+		test "$$cbz_native_rc" -eq 42 && test "$$cbz_translated_rc" -eq "$$cbz_native_rc" && \
+		test "$$cbz_interpreter_rc" -eq "$$cbz_native_rc" && \
+		cmp "$$run_dir/cbz-cbnz.native.out" "$$run_dir/cbz-cbnz.translated.out" && \
+		cmp "$$run_dir/cbz-cbnz.native.out" "$$run_dir/cbz-cbnz.interpreter.out" && \
+		cmp "$$run_dir/cbz-cbnz.native.err" "$$run_dir/cbz-cbnz.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/cbz-cbnz.interpreter.err" && \
+		grep -q 'interpreter-block-ready.*detail=25' "$$run_dir/cbz-cbnz.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=25' "$$run_dir/cbz-cbnz.interpreter.err"; \
 		echo "verify-interpreter receipts: $$run_dir"

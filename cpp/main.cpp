@@ -142,7 +142,8 @@ int run_command(const std::vector<std::string>& args,
     const auto packet = [](std::uint32_t bits, std::uint64_t pc,
                            std::uint32_t flags = 0,
                            std::uint32_t successorCount = 0,
-                           std::uint64_t successor0 = 0) {
+                           std::uint64_t successor0 = 0,
+                           std::uint64_t successor1 = 0) {
       const auto operation = decode_operation(bits);
       if (!operation) throw std::runtime_error("Probe instruction has no typed operation");
       InstructionPacket result;
@@ -151,6 +152,7 @@ int run_command(const std::vector<std::string>& args,
       result.flags = flags;
       result.successorCount = successorCount;
       result.successor0 = successor0;
+      result.successor1 = successor1;
       return result;
     };
     constexpr auto blockStart = arm64metal::gpu_interpreter::packetBlockStart;
@@ -176,6 +178,36 @@ int run_command(const std::vector<std::string>& args,
         packet(0xd28000e0u, 0x5000, blockStart),
         packet(0x14000002u, 0x5004, blockEnd, 1, 0x500c),
         packet(0xd65f03c0u, 0x500c, blockStart | blockEnd)};
+    constexpr std::uint64_t conditionalPc = 0x100004000;
+    const auto conditionalProgram = [&packet](std::uint32_t bits) {
+      constexpr std::uint64_t pc = 0x100004000;
+      constexpr std::uint64_t fallthrough = pc + 4;
+      constexpr std::uint64_t target = pc + 16;
+      return std::vector<InstructionPacket>{
+          packet(bits, pc, blockStart | blockEnd, 2, target, fallthrough),
+          packet(0xd28002e0u, fallthrough, blockStart),
+          packet(0xd65f03c0u, fallthrough + 4, blockEnd),
+          packet(0xd2800220u, target, blockStart),
+          packet(0xd65f03c0u, target + 4, blockEnd)};
+    };
+    struct ConditionalCase {
+      std::uint32_t bits;
+      std::uint64_t input;
+      std::uint64_t expected;
+    };
+    const std::vector<ConditionalCase> conditionalCases{
+        {0x34000080u, 0, 17},
+        {0x34000080u, 1, 23},
+        {0x34000080u, 0x100000000ull, 17},
+        {0x35000080u, 0, 23},
+        {0x35000080u, 1, 17},
+        {0x35000080u, 0x100000000ull, 23},
+        {0xb4000080u, 0, 17},
+        {0xb4000080u, 0x100000000ull, 23},
+        {0xb5000080u, 0, 23},
+        {0xb5000080u, 0x100000000ull, 17},
+        {0xb400009fu, 0xabc, 17},
+        {0x3500009fu, 0, 23}};
     const std::vector<InstructionPacket> missingTargetProgram{
         packet(0x14000002u, 0x6000, blockStart | blockEnd, 1, 0x6008)};
 
@@ -237,8 +269,22 @@ int run_command(const std::vector<std::string>& args,
     missingTargetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 2;
     const auto missingTarget = interpreter.run(
         backend, missingTargetProgram, missingTargetState);
+    std::vector<arm64metal::gpu_interpreter::Result> conditionalResults;
+    conditionalResults.reserve(conditionalCases.size());
+    for (const auto& test : conditionalCases) {
+      ProcessState initial{};
+      initial[0] = test.input;
+      initial[31] = 0xffff;
+      initial[32] = 0xa;
+      initial[arm64metal::gpu_interpreter::returnRegisterIndex] =
+          arm64metal::gpu_interpreter::noReturnAddress;
+      initial[33] = conditionalPc;
+      initial[arm64metal::gpu_interpreter::blockBudgetIndex] = 2;
+      conditionalResults.push_back(interpreter.run(
+          backend, conditionalProgram(test.bits), initial));
+    }
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 13 ||
+    if (compiled != 1 || dispatches != 25 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
         moveWideResults[0].state[34] != 0 ||
@@ -261,6 +307,13 @@ int run_command(const std::vector<std::string>& args,
         missingTarget.state[34] != 7 || missingTarget.state[33] != 0x6008 ||
         missingTarget.state[0] != 99 || missingTarget.state[36] != 1) {
       throw std::runtime_error("Fixed GPU interpreter move-wide/block-flow probe mismatch");
+    }
+    for (std::size_t index = 0; index < conditionalCases.size(); ++index) {
+      const auto& result = conditionalResults[index].state;
+      if (result[34] != 0 || result[0] != conditionalCases[index].expected ||
+          result[32] != 0xa || result[36] != 0) {
+        throw std::runtime_error("Fixed GPU interpreter CBZ/CBNZ probe mismatch");
+      }
     }
     std::cerr << "pipeline_compiles=" << compiled
               << " runtime_source_compiles=" << sourceCompiles

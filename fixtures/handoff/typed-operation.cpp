@@ -150,6 +150,39 @@ int main() {
   assert(stackLoad->opcode == Opcode::LoadUnsignedImmediate);
   assert(stackLoad->source == 31);
   assert(stackLoad->destination == 1);
+  const auto cbzX = decode_operation(0xb4000080);
+  assert(cbzX.has_value());
+  assert(cbzX->opcode == Opcode::BranchZero);
+  assert(cbzX->source == 0);
+  assert(cbzX->immediate == 0);
+  assert(static_cast<std::int32_t>(cbzX->shift) == 16);
+  assert(cbzX->width == 64);
+  assert((serialize_operation(*cbzX) ==
+          arm64metal::translate_core::OperationPacket{8, 0, 0, 0, 16, 64}));
+  const auto cbzLowered = make_operation_instruction(
+      *cbzX, {0x5014, 0x5008}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(cbzLowered.code == std::vector<std::string>{
+      "pc = (x[0] == 0) ? 20500ul : 20488ul; break;"});
+  const auto decodedCbz = arm64metal::translate_core::decode(
+      0xb4000080, 0x100004000, "ul");
+  assert(decodedCbz.next ==
+         (std::vector<std::int64_t>{0x100004010, 0x100004004}));
+
+  const auto cbnzW = decode_operation(0x35000080);
+  assert(cbnzW.has_value());
+  assert(cbnzW->opcode == Opcode::BranchZero);
+  assert(cbnzW->source == 0);
+  assert(cbnzW->immediate == 1);
+  assert(cbnzW->width == 32);
+  const auto cbnzLowered = make_operation_instruction(
+      *cbnzW, {0x5014, 0x5008}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(cbnzLowered.code == std::vector<std::string>{
+      "pc = (uint(x[0]) != 0) ? 20500ul : 20488ul; break;"});
+  const auto backwardCbz = decode_operation(0xb4ffffe0);
+  assert(backwardCbz.has_value());
+  assert(static_cast<std::int32_t>(backwardCbz->shift) == -4);
 
   bool invalidShiftRejected = false;
   try {

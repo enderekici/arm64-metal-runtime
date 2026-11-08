@@ -152,6 +152,25 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 8u) {
+                const uint source = instruction.operation[2];
+                const uint nonzero = instruction.operation[3];
+                const uint width = instruction.operation[5];
+                if ((instruction.flags & 2u) == 0u ||
+                    instruction.successorCount != 2u || source > 31u ||
+                    nonzero > 1u || (width != 32u && width != 64u)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                ulong value = source == 31u ? 0ul : state[source];
+                if (width == 32u) value = uint(value);
+                const bool isZero = value == 0ul;
+                const bool takeTarget = nonzero == 0u ? isZero : !isZero;
+                pc = takeTarget ? instruction.successor0 : instruction.successor1;
+                leftBlock = true;
+                break;
+            }
             if (opcode == 2u) {
                 const uint source = instruction.operation[2];
                 if (source != 30u) {
