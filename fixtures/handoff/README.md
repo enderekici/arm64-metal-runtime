@@ -135,3 +135,26 @@ cmp "$out.native.status" "$out.runtime.status"
 ```
 
 Expected stdout is `page=16384 deltas=49152,81920 removed=0 span=0 data=49,115 protection=0,12,12,12,12,12,0` followed by `release=0,0`; stderr is empty and status is 0.
+
+## Raw `mach_vm_protect` trap and per-range maximums
+
+`mach-vm-protect-raw.c` issues the installed ARM64 Mach trap directly: x0 task,
+x1 address, x2 size, x3 `set_maximum`, x4 protection, x16 = -14, then `svc #0x80`.
+It compares the public wrapper with the raw trap, splits current protections
+across pages, lowers maximum protection on only the middle page, then checks
+that raising that maximum or requesting WRITE above it returns
+`KERN_PROTECTION_FAILURE`.
+
+Run the native oracle and inspect the installed kernel stub:
+
+```sh
+src=fixtures/handoff/mach-vm-protect-raw.c
+out=.build/handoff-probes/mach-vm-protect-raw
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o "$out"
+"$out"
+otool -tvV /usr/lib/system/libsystem_kernel.dylib | awk '/^_mach_vm_protect:/{p=1} p{print; if (++n==25)exit}'
+otool -tvV /usr/lib/system/libsystem_kernel.dylib | awk '/^__kernelrpc_mach_vm_protect_trap:/{p=1} p{print; if (++n==3)exit}'
+```
+
+Native stdout is `page=16384 wrapper=0 split=0 q=0:1/7,0:1/7,0:3/7 lower=0 raise=2 over=2 final=0:1/1` followed by `release=0`. The exported wrapper forwards x0 through x4 unchanged; the trap stub loads x16 with -14 and executes `svc #0x80`.

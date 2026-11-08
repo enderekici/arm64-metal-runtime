@@ -202,7 +202,7 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
-                                std::uint32_t protection)> machVmProtect;
+                                bool setMaximum, std::uint32_t protection)> machVmProtect;
     std::uint64_t nextFile = 0x7000000000000000ULL;
     std::size_t optionIndex = 1;
     std::size_t optionOffset = 1;

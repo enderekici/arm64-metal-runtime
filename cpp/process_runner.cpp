@@ -1647,12 +1647,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bool readable;
         bool writable;
         bool executable;
+        std::uint32_t maximumProtection = 0;
     };
     struct VmAllocation {
         std::uint64_t begin;
         std::uint64_t end;
         std::size_t backing;
-        std::uint32_t maximumProtection;
         std::vector<VmRegion> regions;
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
@@ -2731,8 +2731,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         VmRegion region{address, address + size, backing,
                         (currentProtection & 1U) != 0,
                         (currentProtection & 2U) != 0,
-                        (currentProtection & 4U) != 0};
-        VmAllocation allocation{address, address + size, backing, maximumProtection, {region}};
+                        (currentProtection & 4U) != 0,
+                        maximumProtection};
+        VmAllocation allocation{address, address + size, backing, {region}};
         try {
             auto stagedAllocations = vmAllocations;
             const auto [position, inserted] = stagedAllocations.emplace(
@@ -2796,12 +2797,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     if (region.begin < mappedBegin) {
                         replacement.push_back({region.begin, mappedBegin, region.backing,
-                            region.readable, region.writable, region.executable});
+                            region.readable, region.writable, region.executable,
+                            region.maximumProtection});
                     }
                     if (region.end > mappedEnd) {
                         replacement.push_back({mappedEnd, region.end,
                             region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
-                            region.readable, region.writable, region.executable});
+                            region.readable, region.writable, region.executable,
+                            region.maximumProtection});
                     }
                 }
 
@@ -2842,45 +2845,67 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return kernSuccess;
     };
     hostServiceState.machVmProtect = [&](std::uint64_t address, std::uint64_t size,
-                                          std::uint32_t protection) {
-        if (size == 0 || address > std::numeric_limits<std::uint64_t>::max() - size) {
+                                          bool setMaximum, std::uint32_t protection) {
+        if (size == 0) return kernSuccess;
+        const auto pageSize = bootstrap.pageSize;
+        if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
+            address > std::numeric_limits<std::uint64_t>::max() - size) {
             return kernInvalidArgument;
         }
+        const auto requestedEnd = address + size;
+        if (requestedEnd > std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+            return kernInvalidArgument;
+        }
+        const auto begin = address & ~(pageSize - 1);
+        const auto end = (requestedEnd + pageSize - 1) & ~(pageSize - 1);
+        if ((protection & ~7U) != 0) return kernInvalidArgument;
         auto allocation = std::find_if(vmAllocations.begin(), vmAllocations.end(),
-            [address, size](const auto& item) {
-                return address >= item.second.begin && address + size <= item.second.end;
+            [begin, end](const auto& item) {
+                return begin >= item.second.begin && end <= item.second.end;
             });
         if (allocation == vmAllocations.end()) return kernInvalidAddress;
         auto& current = allocation->second;
-        if ((protection & ~current.maximumProtection) != 0) return kernProtectionFailure;
-        const auto end = address + size;
-        std::vector<VmRegion> replacement;
-        std::uint64_t covered = 0;
+        std::uint64_t cursor = begin;
         for (const auto& region : current.regions) {
-            if (region.end <= address || region.begin >= end) {
+            if (region.end <= cursor || region.begin >= end) continue;
+            if (region.begin > cursor) return kernInvalidAddress;
+            if ((protection & ~region.maximumProtection) != 0) return kernProtectionFailure;
+            cursor = std::min(end, region.end);
+            if (cursor == end) break;
+        }
+        if (cursor != end) return kernInvalidAddress;
+        std::vector<VmRegion> replacement;
+        for (const auto& region : current.regions) {
+            if (region.end <= begin || region.begin >= end) {
                 replacement.push_back(region);
                 continue;
             }
-            const auto middleBegin = std::max(region.begin, address);
+            const auto middleBegin = std::max(region.begin, begin);
             const auto middleEnd = std::min(region.end, end);
             if (region.begin < middleBegin) {
                 replacement.push_back({region.begin, middleBegin, region.backing,
-                                       region.readable, region.writable, region.executable});
+                                       region.readable, region.writable, region.executable,
+                                       region.maximumProtection});
             }
+            const auto maximumProtection = setMaximum ? protection : region.maximumProtection;
+            const auto currentProtection = setMaximum
+                ? ((region.readable ? 1U : 0U) | (region.writable ? 2U : 0U) |
+                   (region.executable ? 4U : 0U)) & protection
+                : protection;
             replacement.push_back({middleBegin, middleEnd,
                 region.backing + static_cast<std::size_t>(middleBegin - region.begin),
-                (protection & 1U) != 0, (protection & 2U) != 0,
-                (protection & 4U) != 0});
+                (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
+                (currentProtection & 4U) != 0, maximumProtection});
             if (middleEnd < region.end) {
                 replacement.push_back({middleEnd, region.end,
                     region.backing + static_cast<std::size_t>(middleEnd - region.begin),
-                    region.readable, region.writable, region.executable});
+                    region.readable, region.writable, region.executable,
+                    region.maximumProtection});
             }
-            covered += middleEnd - middleBegin;
         }
-        if (covered != size || resident[0] < current.regions.size() ||
+        if (resident[0] < current.regions.size() ||
             resident[0] - current.regions.size() + replacement.size() > residentCapacity) {
-            return kernInvalidAddress;
+            return kernNoSpace;
         }
         const auto oldRegions = current.regions;
         try {
@@ -4628,6 +4653,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (status == 13) {
             const auto syscall = registers[16];
             progressTrace.event("raw-syscall", registers[33], syscall);
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-14))) {
+                if (registers[0] != bootstrap.guestTaskPort) {
+                    registers[0] = kernInvalidArgument;
+                } else if (!hostServiceState.machVmProtect) {
+                    registers[0] = kernInvalidArgument;
+                } else {
+                    registers[0] = hostServiceState.machVmProtect(
+                        registers[1], registers[2], registers[3] != 0,
+                        static_cast<std::uint32_t>(registers[4]));
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 177) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto outputAddress = registers[0];

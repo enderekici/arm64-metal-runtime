@@ -1984,7 +1984,7 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = std::numeric_limits<std::uint32_t>::max();
                 break;
             }
-            const auto result = state.machVmProtect(address, length, protection);
+            const auto result = state.machVmProtect(address, length, false, protection);
             if (result == kernSuccess) {
                 registers[0] = 0;
             } else {
