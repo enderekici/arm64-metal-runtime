@@ -39,7 +39,7 @@ $(INTERPRETER_ASSETS_TEST): ../fixtures/handoff/interpreter-assets-selection.cpp
 verify-interpreter-assets: $(INTERPRETER_ASSETS_TEST)
 	"$(INTERPRETER_ASSETS_TEST)"
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-vector-memory-native verify-interpreter-vector-memory verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-stack-guard-retry verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-vector-memory-native verify-interpreter-vector-memory verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -185,6 +185,7 @@ INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 INTERPRETER_TBZ_TBNZ_MAIN := $(BUILD_DIR)/interpreter-tbz-tbnz-main
 INTERPRETER_ADR_ADRP_MAIN := $(BUILD_DIR)/interpreter-adr-adrp-main
+INTERPRETER_STACK_GUARD_NATIVE := $(BUILD_DIR)/interpreter-pthread-stack-guard-retry-native
 INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
 INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 INTERPRETER_SCALAR_FP_COMPARE_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-compare-main
@@ -378,6 +379,33 @@ clean:
 $(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interpreter/native-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
+
+$(INTERPRETER_STACK_GUARD_NATIVE): ../fixtures/interpreter/pthread-stack-guard-retry.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
+
+verify-interpreter-stack-guard-retry: $(APP) $(INTERPRETER_STACK_GUARD_NATIVE) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-stack-guard.XXXXXX"); \
+		set +e; \
+		"$(INTERPRETER_STACK_GUARD_NATIVE)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(abspath $(INTERPRETER_STACK_GUARD_NATIVE))" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(abspath $(INTERPRETER_STACK_GUARD_NATIVE))" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		printf '%s\n' "$$native_rc" >"$$run_dir/native.rc"; \
+		printf '%s\n' "$$translated_rc" >"$$run_dir/translated.rc"; \
+		printf '%s\n' "$$interpreter_rc" >"$$run_dir/interpreter.rc"; \
+		test "$$native_rc" -eq 42; \
+		test "$$translated_rc" -eq "$$native_rc"; \
+		test "$$interpreter_rc" -eq "$$native_rc"; \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out"; \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out"; \
+		cmp "$$run_dir/native.err" "$$translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/interpreter.err" >"$$run_dir/interpreter.no-trace.err"; \
+		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err"; \
+		grep -q 'pthread-stack-guard-retry-ok' "$$run_dir/interpreter.out"; \
+		grep -q 'event=interpreter-dispatch' "$$run_dir/interpreter.err"; \
+		echo "verify-interpreter-stack-guard-retry receipts: $$run_dir"
 
 $(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp process_decoder.cpp process_decoder.hpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp translate_core.hpp integer_ops_shared.h
 	@mkdir -p "$(BUILD_DIR)"
