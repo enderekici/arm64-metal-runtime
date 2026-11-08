@@ -27,6 +27,8 @@ static void* write_mode_worker(void* unused) {
     while (atomic_load_explicit(&main_inside_jit, memory_order_acquire) == 0U) {
         (void)sched_yield();
     }
+    puts("JIT_WORKER_YIELD_IN_WRITE_MODE");
+    fflush(stdout);
     (void)sched_yield();
     puts("JIT_WORKER_RESUMED");
     fflush(stdout);
