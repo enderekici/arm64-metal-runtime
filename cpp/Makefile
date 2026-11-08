@@ -158,7 +158,7 @@ $(GUEST_FORMAT_TEST): ../fixtures/handoff/guest-format-test.cpp guest_format.cpp
 
 verify-guest-format: $(GUEST_FORMAT_NATIVE) $(GUEST_FORMAT_TEST)
 	"$(GUEST_FORMAT_NATIVE)" >"$(BUILD_DIR)/guest-printf-formats.native.out"
-	printf '%s\n' '1 2 3 4 5 6|0a|0x123456789abcdef|4294967301' >"$(BUILD_DIR)/guest-printf-formats.expected.out"
+	printf '%s\n' '1 2 3 4 5 6|0a|0x123456789abcdef|4294967301|0|-0042' >"$(BUILD_DIR)/guest-printf-formats.expected.out"
 	cmp "$(BUILD_DIR)/guest-printf-formats.expected.out" "$(BUILD_DIR)/guest-printf-formats.native.out"
 	"$(GUEST_FORMAT_TEST)"
 

@@ -111,7 +111,7 @@ xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -Icpp \
 .build/handoff-probes/guest-format-test
 ```
 
-Expected native output is `1 2 3 4 5 6|0a|0x123456789abcdef|4294967301`.
+Expected native output is `1 2 3 4 5 6|0a|0x123456789abcdef|4294967301|0|-0042`.
 
 ## Typed MOVN and MOVK slice
 
