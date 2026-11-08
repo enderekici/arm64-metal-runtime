@@ -66,6 +66,9 @@ constexpr std::uint64_t kNoFault = std::numeric_limits<std::uint64_t>::max();
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
+// The pointer encoding stores a 1-based token index in the low 32 bits, shifted by 3.
+constexpr std::size_t kGuestTokenCodecCapacity =
+    static_cast<std::size_t>((std::uint64_t{0xffffffff} >> 3U));
 
 std::optional<GuestBuildVersion> guest_image_build_version(
     std::uint64_t header, const ExecutableImage& image, const GuestMemory& memory) {
@@ -1744,6 +1747,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
     input.initialAuthenticationEntries = std::max<std::size_t>(
         guestInitialTokenCapacity, image.authentication.size() + dyldApiTokenHeadroom);
+    if (input.initialAuthenticationEntries > kGuestTokenCodecCapacity) {
+        throw std::length_error("Initial guest authentication table exceeds pointer codec limit");
+    }
     const bool usesDefaultRuneLocale = std::any_of(
         image.bindings.begin(), image.bindings.end(),
         [](const auto& binding) { return binding.second == "__DefaultRuneLocale"; });
@@ -1871,6 +1877,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             backend.compiledPipelineCount() - pipelinesBefore);
     }
     auto memoryBuffer = backend.makeSharedBuffer(bootstrap.memory.size());
+    const auto initialStateWords = backend.maxBufferLength() / sizeof(std::uint64_t);
+    if (processRegisters.size() > initialStateWords) {
+        throw std::runtime_error(
+            "Initial guest authentication table capacity " +
+            std::to_string(processRegisters[guestTokenCapacity]) +
+            " exceeds Metal device buffer limit of " +
+            std::to_string(initialStateWords));
+    }
     auto stateBuffer = backend.makeSharedBuffer(processRegisters.size() * sizeof(std::uint64_t));
     if (image.cache_reader && !image.cache_reader->tproMappings().empty()) {
         std::vector<CacheRegion> splitRegions;
@@ -3193,20 +3207,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::unordered_map<std::uint64_t, std::size_t> activeImageExitCallbacks;
     std::set<std::uint64_t> pendingDynamicUnloads;
     std::set<std::pair<std::int64_t, std::int64_t>> cachedReadWindows;
-    auto ensureTokenCapacity = [&](std::size_t additional) {
+    auto ensureTokenCapacity = [&](std::size_t additional, const char* origin) {
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto count = static_cast<std::size_t>(live[guestTokenCount]);
         auto capacity = static_cast<std::size_t>(live[guestTokenCapacity]);
         if (additional <= capacity - std::min(capacity, count)) return;
         if (count > std::numeric_limits<std::size_t>::max() - additional) {
-            throw std::runtime_error("Guest authentication table size overflow");
+            throw std::runtime_error(std::string("Guest authentication table overflow at ") + origin);
         }
         const auto required = count + additional;
-        constexpr std::size_t maximumCapacity = 131072;
-        if (required > maximumCapacity) {
-            throw std::runtime_error("Guest authentication table exceeds runner capacity");
+        // Token indices are part of signed pointers; recycling them could validate stale values.
+        const auto maximumWords = std::min(backend.maxBufferLength() / sizeof(std::uint64_t),
+                                           processRegisters.max_size());
+        if (maximumWords <= guestTokenStart) {
+            throw std::runtime_error("Metal device buffer limit cannot hold guest authentication state");
         }
-        capacity = std::min(maximumCapacity, std::max(required, std::max<std::size_t>(capacity * 2, 1)));
+        const auto maximumCapacity = std::min(
+            (maximumWords - guestTokenStart) / 3, kGuestTokenCodecCapacity);
+        if (required > maximumCapacity) {
+            throw std::runtime_error(
+                std::string("Guest authentication table growth at ") + origin +
+                " requires " + std::to_string(count) + " + " +
+                std::to_string(additional) + " entries, exceeding limit " +
+                std::to_string(maximumCapacity) + " (Metal buffer / token codec)");
+        }
+        const auto doubledCapacity = capacity > maximumCapacity / 2
+            ? maximumCapacity : capacity * 2;
+        capacity = std::max(required, std::max<std::size_t>(doubledCapacity, 1));
         auto expanded = backend.makeSharedBuffer((guestTokenStart + 3 * capacity) * sizeof(std::uint64_t));
         if (expanded.data() == nullptr) throw std::runtime_error("Guest authentication table allocation failed");
         std::memcpy(expanded.data(), stateBuffer.data(), stateBuffer.size());
@@ -3347,7 +3374,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 residentCapacity, static_cast<std::size_t>(resident[0]))) {
             throw std::runtime_error("Named guest image exceeds resident mapping capacity");
         }
-        ensureTokenCapacity(authenticatedCount);
+        ensureTokenCapacity(authenticatedCount, "named-image publication");
         const auto allocateImageBacking = [&](std::size_t bytes)
             -> std::optional<std::int64_t> {
             auto allocation = mappingHeap.allocate(bytes, 16);
@@ -3978,7 +4005,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         auto* memory = static_cast<std::uint8_t*>(memoryBuffer.data());
         std::copy(plan->bytes.begin(), plan->bytes.end(), memory + plan->backing);
-        ensureTokenCapacity(plan->authentication_count);
+        ensureTokenCapacity(plan->authentication_count, "cache residency");
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         for (const auto& patch : plan->rebases) {
             std::uint64_t pointer = patch.guest_pointer;
@@ -8068,7 +8095,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto block = allocateGuest(48);
                 if (!batch || !block) throw std::runtime_error("Guest Objective-C image batch allocation failed");
                 std::memset(guestMemory.buffer(*block, 48, true), 0, 48);
-                ensureTokenCapacity(1);
+                ensureTokenCapacity(1, "Objective-C image callback");
                 live = static_cast<std::uint64_t*>(stateBuffer.data());
                 const auto newTokenIndex = static_cast<std::size_t>(live[guestTokenCount]);
                 const auto tokenSlot = guestTokenStart + 3 * newTokenIndex;

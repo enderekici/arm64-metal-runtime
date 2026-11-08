@@ -301,6 +301,10 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         result.modeledGlobalAddresses.emplace("__DefaultRuneLocale", result.runeLocaleSlot);
     }
 
+    if (input.initialAuthenticationEntries >
+        (std::numeric_limits<std::size_t>::max() - guestTokenStart) / 3) {
+        throw std::length_error("Guest authentication table exceeds host address space");
+    }
     const auto register_count = guestTokenStart + 3 * input.initialAuthenticationEntries;
     if (register_count > std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t)) {
         throw std::length_error("Guest register table exceeds host address space");
