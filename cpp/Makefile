@@ -232,7 +232,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/interpreter-process.native.err" "$$run_dir/interpreter-process.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter-process.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=2' "$$run_dir/interpreter-process.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=2' "$$run_dir/interpreter-process.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=2' "$$run_dir/interpreter-process.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_MOVN_MOVK_MAIN)" >"$$run_dir/movn-movk.native.out" 2>"$$run_dir/movn-movk.native.err"; move_wide_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_MOVN_MOVK_MAIN)" >"$$run_dir/movn-movk.translated.out" 2>"$$run_dir/movn-movk.translated.err"; move_wide_translated_rc=$$?; \
@@ -247,7 +247,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/movn-movk.native.err" "$$run_dir/movn-movk.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/movn-movk.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=3' "$$run_dir/movn-movk.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/movn-movk.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/movn-movk.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_BRANCH_MAIN)" >"$$run_dir/branch.native.out" 2>"$$run_dir/branch.native.err"; branch_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_BRANCH_MAIN)" >"$$run_dir/branch.translated.out" 2>"$$run_dir/branch.translated.err"; branch_translated_rc=$$?; \
@@ -263,7 +263,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/branch.native.err" "$$run_dir/branch.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=3' "$$run_dir/branch.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/branch.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/branch.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_BRANCH_FALLBACK_MAIN)" >"$$run_dir/branch-fallback.native.out" 2>"$$run_dir/branch-fallback.native.err"; fallback_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_BRANCH_FALLBACK_MAIN)" >"$$run_dir/branch-fallback.translated.out" 2>"$$run_dir/branch-fallback.translated.err"; fallback_translated_rc=$$?; \
@@ -280,7 +280,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch-fallback.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=2' "$$run_dir/branch-fallback.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=2' "$$run_dir/branch-fallback.interpreter.err" && \
-		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/branch-fallback.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/branch-fallback.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.native.out" 2>"$$run_dir/typed-memory.native.err"; memory_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.translated.out" 2>"$$run_dir/typed-memory.translated.err"; memory_translated_rc=$$?; \
@@ -296,7 +296,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/typed-memory.native.err" "$$run_dir/typed-memory.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/typed-memory.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=6' "$$run_dir/typed-memory.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=6' "$$run_dir/typed-memory.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=6' "$$run_dir/typed-memory.interpreter.err" || exit 1; \
 		set +e; \
 		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_RO_MAIN)" >"$$run_dir/typed-memory-ro.interpreter.out" 2>"$$run_dir/typed-memory-ro.interpreter.err"; memory_ro_rc=$$?; \
 		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/typed-memory-unmapped.interpreter.out" 2>"$$run_dir/typed-memory-unmapped.interpreter.err"; memory_unmapped_rc=$$?; \
@@ -307,7 +307,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'Guest process memory access fault at 0x42d8' "$$run_dir/typed-memory-ro.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=3' "$$run_dir/typed-memory-unmapped.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=3' "$$run_dir/typed-memory-unmapped.interpreter.err" && \
-		grep -q 'Guest process memory access fault at 0x0' "$$run_dir/typed-memory-unmapped.interpreter.err"; \
+		grep -q 'Guest process memory access fault at 0x0' "$$run_dir/typed-memory-unmapped.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_CBZ_CBNZ_MAIN)" >"$$run_dir/cbz-cbnz.native.out" 2>"$$run_dir/cbz-cbnz.native.err"; cbz_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_CBZ_CBNZ_MAIN)" >"$$run_dir/cbz-cbnz.translated.out" 2>"$$run_dir/cbz-cbnz.translated.err"; cbz_translated_rc=$$?; \
@@ -323,7 +323,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/cbz-cbnz.native.err" "$$run_dir/cbz-cbnz.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/cbz-cbnz.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=25' "$$run_dir/cbz-cbnz.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=25' "$$run_dir/cbz-cbnz.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=25' "$$run_dir/cbz-cbnz.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_ADD_SUB_MAIN)" >"$$run_dir/add-sub.native.out" 2>"$$run_dir/add-sub.native.err"; add_sub_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_ADD_SUB_MAIN)" >"$$run_dir/add-sub.translated.out" 2>"$$run_dir/add-sub.translated.err"; add_sub_translated_rc=$$?; \
@@ -339,7 +339,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/add-sub.native.err" "$$run_dir/add-sub.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/add-sub.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub.interpreter.err"; \
+		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_ADD_SUB_SP_MAIN)" >"$$run_dir/add-sub-sp.native.out" 2>"$$run_dir/add-sub-sp.native.err"; add_sub_sp_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_ADD_SUB_SP_MAIN)" >"$$run_dir/add-sub-sp.translated.out" 2>"$$run_dir/add-sub-sp.translated.err"; add_sub_sp_translated_rc=$$?; \
@@ -356,7 +356,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
-		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/add-sub-sp.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_METALLIB)
@@ -364,12 +364,21 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache.XXXXXX"); \
 		set +e; \
 		"$(INTERPRETER_DEMAND_CACHE_NATIVE)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
-		"$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
 		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
 		set -e; \
-		test "$$translated_rc" -eq "$$native_rc" && test "$$interpreter_rc" -eq "$$native_rc" && \
-		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
-		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/interpreter.err" && \
+		printf '%s\n' "$$native_rc" >"$$run_dir/native.rc"; \
+		printf '%s\n' "$$translated_rc" >"$$run_dir/translated.rc"; \
+		printf '%s\n' "$$interpreter_rc" >"$$run_dir/interpreter.rc"; \
+		test "$$native_rc" -eq 32; \
+		test "$$translated_rc" -eq "$$native_rc"; \
+		test "$$interpreter_rc" -eq "$$native_rc"; \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out"; \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out"; \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/interpreter.err" >"$$run_dir/interpreter.no-trace.err"; \
+		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
 		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
