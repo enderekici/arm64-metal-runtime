@@ -1478,6 +1478,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     for (const auto& [header, path] : image.image_paths) imageHeaders.emplace(path, header);
     GuestImageHandles imageHandles(std::move(imageHeaders), executable);
     GuestImageRegistry imageRegistry(image.loaded_image_order);
+    struct GuestImageNotification {
+        std::uint64_t callback = 0;
+        std::array<std::uint64_t, 4> arguments{};
+    };
+    std::vector<std::uint64_t> addImageCallbacks;
+    const auto collectImageNotifications = [&](std::size_t firstImage,
+                                               std::size_t endImage,
+                                               std::size_t firstCallback) {
+        std::vector<GuestImageNotification> notifications;
+        for (auto index = firstImage; index < endImage; ++index) {
+            const auto header = imageRegistry.header_at(index);
+            if (!header) throw std::logic_error("Guest image registry index disappeared");
+            const auto slide = guest_image_vmaddr_slide(
+                imageRegistry, index, image.image_slides);
+            for (auto callback = firstCallback;
+                 callback < addImageCallbacks.size(); ++callback) {
+                notifications.push_back({addImageCallbacks[callback],
+                                         {*header, slide, 0, 0}});
+            }
+        }
+        return notifications;
+    };
     std::set<std::uint64_t> activatedLazyHeaders;
     std::set<std::uint64_t> loadedImageHeaders(
         image.startup_eager_headers.begin(), image.startup_eager_headers.end());
@@ -2168,6 +2190,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t nextArgument = 0;
         std::vector<std::uint64_t> initializerTargets;
         std::size_t nextInitializer = 0;
+        std::vector<GuestImageNotification> imageNotifications;
+        std::size_t nextImageNotification = 0;
         std::optional<std::uint64_t> stopAddress;
         std::optional<std::uint64_t> exitDso;
         std::optional<std::int32_t> exitStatus;
@@ -3716,6 +3740,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     if (frame.exitStatus) return *frame.exitStatus;
                 }
+                if (frame.nextImageNotification < frame.imageNotifications.size()) {
+                    const auto notification =
+                        frame.imageNotifications[frame.nextImageNotification++];
+                    callbackFrames.push_back(std::move(frame));
+                    auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                    const auto& pending = callbackFrames.back();
+                    std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
+                              callbackRegisters);
+                    std::copy(pending.savedVectorAndAuth.begin(),
+                              pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                    callbackRegisters[37] = pending.authenticationDepth;
+                    std::copy(notification.arguments.begin(), notification.arguments.end(),
+                              callbackRegisters);
+                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[33] = notification.callback;
+                    selectKernel(static_cast<std::int64_t>(notification.callback));
+                    continue;
+                }
                 if (frame.nextInitializer < frame.initializerTargets.size()) {
                     const auto target = frame.initializerTargets[frame.nextInitializer++];
                     callbackFrames.push_back(std::move(frame));
@@ -4775,12 +4817,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 cacheInitializers.insert(cacheInitializers.end(),
                                     initializers.begin(), initializers.end());
                                 initializers = std::move(cacheInitializers);
+                                const auto firstNewImage = imageRegistry.size();
                                 auto imageTransaction = imageRegistry.begin_transaction();
                                 for (auto& stagedImage : stagedImageEnumerationOrder(plan)) {
                                     imageTransaction.add(stagedImage.header,
                                         std::move(stagedImage.name), stagedImage.cache_backed);
                                 }
                                 imageTransaction.commit();
+                                auto imageNotifications = collectImageNotifications(
+                                    firstNewImage, imageRegistry.size(), 0);
                                 for (const auto& staged : plan.images) {
                                     namedImagePlacementCursor = std::max(
                                         namedImagePlacementCursor, staged.guest_end);
@@ -4824,7 +4869,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 hostRegisters[0] = imageHandles.retain(
                                     plan.requested_header, mode);
                                 clearGuestDlerror();
-                                if (!initializers.empty()) {
+                                if (!initializers.empty() || !imageNotifications.empty()) {
                                     GuestCallbackFrame frame;
                                     frame.savedRegisters.assign(hostRegisters.begin(),
                                                                 hostRegisters.begin() + 36);
@@ -4835,8 +4880,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                                     currentState + guestTokenCount);
                                     frame.authenticationDepth = hostRegisters[37];
                                     frame.initializerTargets = std::move(initializers);
-                                    frame.nextInitializer = 1;
-                                    const auto first = frame.initializerTargets.front();
+                                    frame.imageNotifications = std::move(imageNotifications);
+                                    const bool hasImageNotifications =
+                                        !frame.imageNotifications.empty();
+                                    if (hasImageNotifications) {
+                                        frame.nextImageNotification = 1;
+                                    } else {
+                                        frame.nextInitializer = 1;
+                                    }
                                     callbackFrames.push_back(std::move(frame));
                                     auto* callbackRegisters =
                                         static_cast<std::uint64_t*>(stateBuffer.data());
@@ -4847,11 +4898,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                               pending.savedVectorAndAuth.end(),
                                               callbackRegisters + 806);
                                     callbackRegisters[37] = pending.authenticationDepth;
-                                    std::copy_n(bootstrap.registers.begin(), 5,
-                                                callbackRegisters);
+                                    if (hasImageNotifications) {
+                                        const auto& notification =
+                                            pending.imageNotifications.front();
+                                        std::copy(notification.arguments.begin(),
+                                                  notification.arguments.end(),
+                                                  callbackRegisters);
+                                        callbackRegisters[33] = notification.callback;
+                                    } else {
+                                        const auto first =
+                                            pending.initializerTargets.front();
+                                        std::copy_n(bootstrap.registers.begin(), 5,
+                                                    callbackRegisters);
+                                        callbackRegisters[33] = first;
+                                    }
                                     callbackRegisters[30] = kNoFault;
-                                    callbackRegisters[33] = first;
-                                    selectKernel(static_cast<std::int64_t>(first));
+                                    selectKernel(static_cast<std::int64_t>(
+                                        callbackRegisters[33]));
                                     continue;
                                 }
                                 }
@@ -5309,6 +5372,41 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 hostRegisters[0] = slide == image.image_slides.end() ? 0 : slide->second;
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service == 123) {
+                const auto callbackIndex = addImageCallbacks.size();
+                addImageCallbacks.push_back(hostRegisters[0]);
+                auto notifications = collectImageNotifications(
+                    0, imageRegistry.size(), callbackIndex);
+                if (notifications.empty()) {
+                    std::copy_n(hostRegisters.begin(), 36,
+                                static_cast<std::uint64_t*>(stateBuffer.data()));
+                    continue;
+                }
+                GuestCallbackFrame frame;
+                frame.savedRegisters.assign(hostRegisters.begin(), hostRegisters.begin() + 36);
+                frame.savedRegisters[34] = 0;
+                const auto* currentState =
+                    static_cast<const std::uint64_t*>(stateBuffer.data());
+                frame.savedVectorAndAuth.assign(currentState + 806,
+                                                currentState + guestTokenCount);
+                frame.authenticationDepth = hostRegisters[37];
+                frame.imageNotifications = std::move(notifications);
+                frame.nextImageNotification = 1;
+                callbackFrames.push_back(std::move(frame));
+                auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                const auto& pending = callbackFrames.back();
+                std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
+                          callbackRegisters);
+                std::copy(pending.savedVectorAndAuth.begin(),
+                          pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                callbackRegisters[37] = pending.authenticationDepth;
+                const auto& first = pending.imageNotifications.front();
+                std::copy(first.arguments.begin(), first.arguments.end(), callbackRegisters);
+                callbackRegisters[30] = kNoFault;
+                callbackRegisters[33] = first.callback;
+                selectKernel(static_cast<std::int64_t>(first.callback));
                 continue;
             }
             if (service == 186) {

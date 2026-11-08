@@ -80,6 +80,39 @@ $(DYLD_IMAGE_ORACLE): fixtures/handoff/dyld-image-enumeration-oracle.c | $(BUILD
 verify-dyld-image-enumeration-native: $(DYLD_IMAGE_ORACLE) $(DYLD_IMAGE_ROOT)
 	"$(DYLD_IMAGE_ORACLE)" "$(BUILD)/missing-image.dylib" "$(DYLD_IMAGE_ROOT)" "$(DYLD_IMAGE_DEPENDENCY)"
 
+DYLD_IMAGE_SLIDE_ORACLE := $(BUILD)/dyld-image-slide-oracle
+.PHONY: verify-dyld-image-slide-native
+$(DYLD_IMAGE_SLIDE_ORACLE): fixtures/handoff/dyld-image-slide-oracle.c | $(BUILD)
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+verify-dyld-image-slide-native: $(DYLD_IMAGE_SLIDE_ORACLE)
+	"$(DYLD_IMAGE_SLIDE_ORACLE)"
+
+DYLD_ADD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-add-image-dep.dylib
+DYLD_ADD_IMAGE_ROOT := $(BUILD)/libdyld-add-image-new.dylib
+DYLD_ADD_IMAGE_NESTED := $(BUILD)/libdyld-add-image-nested.dylib
+DYLD_ADD_IMAGE_ORACLE := $(BUILD)/dyld-add-image-probe
+DYLD_ADD_IMAGE_REENTRANT := $(BUILD)/dyld-add-image-reentrant
+.PHONY: verify-dyld-add-image-native
+$(DYLD_ADD_IMAGE_DEPENDENCY): fixtures/handoff/dep.c | $(BUILD)
+	xcrun clang -arch arm64 -dynamiclib -Wl,-install_name,@rpath/libdyld-add-image-dep.dylib "$<" -o "$@"
+
+$(DYLD_ADD_IMAGE_ROOT): fixtures/handoff/new_image.c $(DYLD_ADD_IMAGE_DEPENDENCY) | $(BUILD)
+	xcrun clang -arch arm64 -dynamiclib -L"$(BUILD)" -Wl,-rpath,@loader_path -Wl,-install_name,@rpath/libdyld-add-image-new.dylib "$<" -ldyld-add-image-dep -o "$@"
+
+$(DYLD_ADD_IMAGE_NESTED): fixtures/handoff/dyld-add-image-nested.c | $(BUILD)
+	xcrun clang -arch arm64 -dynamiclib -Wl,-install_name,@rpath/libdyld-add-image-nested.dylib "$<" -o "$@"
+
+$(DYLD_ADD_IMAGE_ORACLE): fixtures/handoff/probe.c | $(BUILD)
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -ldl -o "$@"
+
+$(DYLD_ADD_IMAGE_REENTRANT): fixtures/handoff/dyld-add-image-reentrant.c | $(BUILD)
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -ldl -o "$@"
+
+verify-dyld-add-image-native: $(DYLD_ADD_IMAGE_ORACLE) $(DYLD_ADD_IMAGE_REENTRANT) $(DYLD_ADD_IMAGE_ROOT) $(DYLD_ADD_IMAGE_NESTED)
+	"$(DYLD_ADD_IMAGE_ORACLE)" "$(DYLD_ADD_IMAGE_ROOT)" "$(BUILD)/missing-dyld-add-image.dylib"
+	"$(DYLD_ADD_IMAGE_REENTRANT)" "$(DYLD_ADD_IMAGE_ROOT)" "$(BUILD)/missing-dyld-add-image.dylib" "$(DYLD_ADD_IMAGE_NESTED)"
+
 verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
 		$(RUNTIME) inspect-cache-rebases "/usr/lib/$$library" >"$(BUILD)/$$library.rebases"; \
