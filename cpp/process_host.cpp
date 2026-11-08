@@ -714,7 +714,8 @@ HostServiceResult dispatch_guest_host_service(
                signal == SIGINFO;
     };
     const auto synchronous_signal_supported = [](std::int32_t signal) {
-        return signal == SIGSEGV || signal == SIGBUS || signal == SIGILL;
+        return signal == SIGSEGV || signal == SIGBUS || signal == SIGILL ||
+               signal == SIGTRAP;
     };
     const auto guest_format = [&](std::uint64_t address) {
         const auto text = string_at(address);
