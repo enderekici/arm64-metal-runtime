@@ -2209,12 +2209,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         writableTable.push_back(static_cast<std::uint64_t>(protectedGuestPages.size()));
         for (const auto& page : protectedGuestPages) {
             const auto guard = std::find_if(threadStackGuards.begin(), threadStackGuards.end(),
-                [&page](const auto& item) { return item.second.begin == page.first; });
-            if (guard == threadStackGuards.end()) {
+                [&page](const auto& item) {
+                    return page.first >= item.second.begin && page.first < item.second.end;
+                });
+            if (guard == threadStackGuards.end() ||
+                bootstrap.pageSize > guard->second.end - page.first) {
                 throw std::logic_error("Protected guest page has no owning stack guard");
             }
-            writableTable.push_back(guard->second.begin);
-            writableTable.push_back(guard->second.end);
+            writableTable.push_back(page.first);
+            writableTable.push_back(page.first + bootstrap.pageSize);
             writableTable.push_back(page.second);
         }
         const auto byteLength = writableTable.size() * sizeof(std::uint64_t);
@@ -2235,8 +2238,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto found = threadStackGuards.find(threadId);
         if (found == threadStackGuards.end()) return;
         const auto begin = found->second.begin;
-        protectedGuestPages.erase(begin);
-        guestMemory.remove_mapping(begin);
+        const auto end = found->second.end;
+        auto page = protectedGuestPages.lower_bound(begin);
+        while (page != protectedGuestPages.end() && page->first < end) {
+            guestMemory.remove_mapping(page->first);
+            page = protectedGuestPages.erase(page);
+        }
         threadStackGuards.erase(found);
         syncWritableTable(bootstrap.errnoSlot);
     };
@@ -2343,6 +2350,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         static_cast<std::int64_t>(bootstrap.heap.begin),
         static_cast<std::int64_t>(bootstrap.heap.end)});
     std::map<std::uint64_t, std::int32_t> mutexAttributes;
+    struct GuestThreadAttributes {
+        std::uint64_t stackSize = 512U * 1024U;
+        std::optional<std::uint64_t> stackAddress;
+        std::uint64_t guardSize = 16U * 1024U;
+        std::int32_t detachState = PTHREAD_CREATE_JOINABLE;
+    };
+    std::map<std::uint64_t, GuestThreadAttributes> threadAttributes;
     if (image.cache_reader) {
         constexpr auto provider = "/usr/lib/system/libsystem_c.dylib";
         const auto base = image.cache_reader->images().find(provider);
@@ -6024,23 +6038,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if ((protection & ~7U) != 0) return kernInvalidArgument;
         const auto stackGuard = std::find_if(threadStackGuards.begin(),
             threadStackGuards.end(), [begin, end](const auto& item) {
-                return item.second.begin == begin && item.second.end == end;
+                return begin >= item.second.begin && end <= item.second.end;
             });
         if (stackGuard != threadStackGuards.end()) {
             if (setMaximum || (protection & ~3U) != 0) return kernProtectionFailure;
-            if (protection == 3U) {
-                protectedGuestPages.erase(begin);
-                guestMemory.remove_mapping(begin);
-            } else {
-                const bool wasProtected = protectedGuestPages.find(begin) !=
-                    protectedGuestPages.end();
-                protectedGuestPages[begin] = protection;
-                if (wasProtected) {
-                    guestMemory.set_mapping_permissions(begin,
-                        (protection & 1U) != 0, (protection & 2U) != 0);
+            for (auto page = begin; page < end; page += pageSize) {
+                if (protection == 3U) {
+                    protectedGuestPages.erase(page);
+                    guestMemory.remove_mapping(page);
                 } else {
-                    guestMemory.add_mapping({begin, end, begin,
-                        (protection & 2U) != 0, (protection & 1U) != 0});
+                    const bool wasProtected = protectedGuestPages.find(page) !=
+                        protectedGuestPages.end();
+                    protectedGuestPages[page] = protection;
+                    if (wasProtected) {
+                        guestMemory.set_mapping_permissions(page,
+                            (protection & 1U) != 0, (protection & 2U) != 0);
+                    } else {
+                        guestMemory.add_mapping({page, page + pageSize, page,
+                            (protection & 2U) != 0, (protection & 1U) != 0});
+                    }
                 }
             }
             syncWritableTable(bootstrap.errnoSlot);
@@ -8061,12 +8077,117 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service >= 203 && service <= 212) {
+                const auto address = hostRegisters[0];
+                constexpr std::uint64_t minimumStackSize = 16U * 1024U;
+                std::int32_t result = 0;
+                if (service == 203) {
+                    auto* bytes = guestMemory.buffer(address, sizeof(pthread_attr_t), true);
+                    std::memset(bytes, 0, sizeof(pthread_attr_t));
+                    threadAttributes.insert_or_assign(address, GuestThreadAttributes{});
+                } else {
+                    const auto attribute = threadAttributes.find(address);
+                    if (attribute == threadAttributes.end()) {
+                        result = EINVAL;
+                    } else if (service == 204) {
+                        threadAttributes.erase(attribute);
+                    } else if (service == 205) {
+                        if (hostRegisters[1] < minimumStackSize) {
+                            result = EINVAL;
+                        } else if (attribute->second.stackAddress) {
+                            const auto top = *attribute->second.stackAddress +
+                                             attribute->second.stackSize;
+                            if (hostRegisters[1] > attribute->second.stackSize) {
+                                result = EINVAL;
+                            } else {
+                                attribute->second.stackAddress = top - hostRegisters[1];
+                                attribute->second.stackSize = hostRegisters[1];
+                            }
+                        } else {
+                            attribute->second.stackSize = hostRegisters[1];
+                        }
+                    } else if (service == 206) {
+                        attribute->second.guardSize = hostRegisters[1];
+                    } else if (service == 207) {
+                        const auto detachState = static_cast<std::int32_t>(hostRegisters[1]);
+                        if (detachState != PTHREAD_CREATE_JOINABLE &&
+                            detachState != PTHREAD_CREATE_DETACHED) {
+                            result = EINVAL;
+                        } else {
+                            attribute->second.detachState = detachState;
+                        }
+                    } else if (service == 208 || service == 209) {
+                        auto* output = guestMemory.buffer(
+                            hostRegisters[1], sizeof(std::uint64_t), true);
+                        const auto value = service == 208
+                            ? attribute->second.stackSize : attribute->second.guardSize;
+                        std::memcpy(output, &value, sizeof(value));
+                    } else if (service == 210) {
+                        auto* output = guestMemory.buffer(
+                            hostRegisters[1], sizeof(std::int32_t), true);
+                        std::memcpy(output, &attribute->second.detachState,
+                                    sizeof(attribute->second.detachState));
+                    } else if (service == 211) {
+                        const auto stackAddress = hostRegisters[1];
+                        const auto stackSize = hostRegisters[2];
+                        const auto pageSize = bootstrap.pageSize;
+                        if (stackAddress == 0 || stackSize < minimumStackSize ||
+                            pageSize == 0 || stackAddress % pageSize != 0 ||
+                            stackSize > std::numeric_limits<std::uint64_t>::max() - stackAddress) {
+                            result = EINVAL;
+                        } else {
+                            attribute->second.stackAddress = stackAddress;
+                            attribute->second.stackSize = stackSize;
+                        }
+                    } else {
+                        auto* addressOutput = guestMemory.buffer(
+                            hostRegisters[1], sizeof(std::uint64_t), true);
+                        auto* sizeOutput = guestMemory.buffer(
+                            hostRegisters[2], sizeof(std::uint64_t), true);
+                        const auto stackAddress = attribute->second.stackAddress.value_or(0);
+                        std::memcpy(addressOutput, &stackAddress, sizeof(stackAddress));
+                        std::memcpy(sizeOutput, &attribute->second.stackSize,
+                                    sizeof(attribute->second.stackSize));
+                    }
+                }
+                hostRegisters[0] = static_cast<std::uint32_t>(result);
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 70) {
                 const auto threadIdOutput = hostRegisters[0];
                 auto* threadIdDestination = guestMemory.buffer(
                     threadIdOutput, sizeof(std::uint64_t), true);
+                GuestThreadAttributes attributes;
                 if (hostRegisters[1] != 0) {
-                    throw std::runtime_error("Guest pthread creation attributes unsupported");
+                    const auto found = threadAttributes.find(hostRegisters[1]);
+                    if (found == threadAttributes.end()) {
+                        hostRegisters[0] = EINVAL;
+                        std::copy_n(hostRegisters.begin(), 36,
+                                    static_cast<std::uint64_t*>(stateBuffer.data()));
+                        continue;
+                    }
+                    attributes = found->second;
+                }
+                if (attributes.stackAddress) {
+                    const auto begin = *attributes.stackAddress;
+                    const auto limit = static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max());
+                    if (begin > limit || attributes.stackSize > limit - begin) {
+                        hostRegisters[0] = EINVAL;
+                        std::copy_n(hostRegisters.begin(), 36,
+                                    static_cast<std::uint64_t*>(stateBuffer.data()));
+                        continue;
+                    }
+                    try {
+                        (void)guestMemory.buffer(begin, attributes.stackSize, true);
+                    } catch (const std::out_of_range&) {
+                        hostRegisters[0] = EINVAL;
+                        std::copy_n(hostRegisters.begin(), 36,
+                                    static_cast<std::uint64_t*>(stateBuffer.data()));
+                        continue;
+                    }
                 }
                 auto entry = hostRegisters[2];
                 if ((entry & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
@@ -8091,7 +8212,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     !image.is_code(static_cast<std::int64_t>(entry))) {
                     throw std::runtime_error("Guest pthread entry is not executable");
                 }
-                constexpr std::uint64_t stackSize = 512U * 1024U;
                 const auto pageSize = bootstrap.pageSize;
                 const auto threadDataSize = 16U + guestThreadLocalPrefixBytes + guestTSDSize;
                 if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
@@ -8100,11 +8220,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error("Guest pthread stack guard page size is invalid");
                 }
                 const auto guardOffset = (threadDataSize + pageSize - 1) & ~(pageSize - 1);
-                if (guardOffset > std::numeric_limits<std::uint64_t>::max() - pageSize -
-                                      stackSize) {
+                const auto guardSize = attributes.stackAddress ? 0U
+                    : attributes.guardSize > std::numeric_limits<std::uint64_t>::max() -
+                          (pageSize - 1)
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : (attributes.guardSize + pageSize - 1) & ~(pageSize - 1);
+                const auto stackStorageSize = attributes.stackAddress ? 0U
+                    : attributes.stackSize > std::numeric_limits<std::uint64_t>::max() - 15U
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : (attributes.stackSize + 15U) & ~std::uint64_t{15U};
+                if (guardSize == std::numeric_limits<std::uint64_t>::max() ||
+                    stackStorageSize == std::numeric_limits<std::uint64_t>::max() ||
+                    guardOffset > std::numeric_limits<std::uint64_t>::max() - guardSize ||
+                    guardOffset + guardSize > std::numeric_limits<std::uint64_t>::max() -
+                                                   stackStorageSize) {
                     throw std::length_error("Guest pthread stack allocation overflows");
                 }
-                const auto allocationSize = guardOffset + pageSize + stackSize;
+                const auto allocationSize = guardOffset + guardSize + stackStorageSize;
                 const auto allocation = allocateGuestHeap(allocationSize, pageSize);
                 if (!allocation) {
                     hostRegisters[0] = EAGAIN;
@@ -8117,9 +8249,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto tsdAddress = allocationAddress + 16U +
                                             guestThreadLocalPrefixBytes;
                     const auto guardBegin = allocationAddress + guardOffset;
-                    const auto guardEnd = guardBegin + pageSize;
-                    const auto stackStart = guardEnd;
-                    const auto stackEnd = stackStart + stackSize;
+                    const auto guardEnd = guardBegin + guardSize;
+                    const auto storageStackStart = guardEnd;
+                    const auto guestStackStart = attributes.stackAddress.value_or(
+                        storageStackStart);
+                    const auto guestStackSize = attributes.stackAddress
+                        ? attributes.stackSize : stackStorageSize;
+                    const auto guestStackEnd = guestStackStart + guestStackSize;
                     const auto storeThreadWord = [&](std::uint64_t offset, std::uint64_t value) {
                         std::memcpy(threadStorage + offset, &value, sizeof(value));
                     };
@@ -8128,36 +8264,48 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     storeThreadWord(tsdOffset + 8U, allocationAddress);
                     storeThreadWord(tsdOffset + guestMachThreadSlotOffset,
                                     guestMachThreadName(threadId));
-                    if (threadStackGuards.find(threadId) != threadStackGuards.end() ||
-                        protectedGuestPages.find(guardBegin) != protectedGuestPages.end()) {
-                        throw std::logic_error("Duplicate guest pthread stack guard");
-                    }
-                    threadStackGuards.emplace(threadId,
-                        GuestMemoryRange{guardBegin, guardEnd});
-                    protectedGuestPages.emplace(guardBegin, 0U);
-                    try {
-                        guestMemory.add_mapping({guardBegin, guardEnd, guardBegin, false, false});
-                        syncWritableTable(bootstrap.errnoSlot);
-                    } catch (...) {
-                        protectedGuestPages.erase(guardBegin);
-                        threadStackGuards.erase(threadId);
-                        guestMemory.remove_mapping(guardBegin);
-                        hostServiceState.heap->release(*allocation);
-                        throw;
+                    if (guardSize != 0) {
+                        if (threadStackGuards.find(threadId) != threadStackGuards.end()) {
+                            throw std::logic_error("Duplicate guest pthread stack guard");
+                        }
+                        threadStackGuards.emplace(threadId,
+                            GuestMemoryRange{guardBegin, guardEnd});
+                        try {
+                            for (auto page = guardBegin; page < guardEnd; page += pageSize) {
+                                if (protectedGuestPages.find(page) != protectedGuestPages.end()) {
+                                    throw std::logic_error("Overlapping guest pthread guard page");
+                                }
+                                protectedGuestPages.emplace(page, 0U);
+                                guestMemory.add_mapping({page, page + pageSize, page, false, false});
+                            }
+                            syncWritableTable(bootstrap.errnoSlot);
+                        } catch (...) {
+                            auto protectedPage = protectedGuestPages.lower_bound(guardBegin);
+                            while (protectedPage != protectedGuestPages.end() &&
+                                   protectedPage->first < guardEnd) {
+                                guestMemory.remove_mapping(protectedPage->first);
+                                protectedPage = protectedGuestPages.erase(protectedPage);
+                            }
+                            threadStackGuards.erase(threadId);
+                            hostServiceState.heap->release(*allocation);
+                            throw;
+                        }
                     }
                     auto thread = GuestScheduler::make_thread_frame(
-                        {static_cast<std::int64_t>(stackStart),
-                         static_cast<std::int64_t>(stackEnd)},
+                        {static_cast<std::int64_t>(guestStackStart),
+                         static_cast<std::int64_t>(guestStackEnd)},
                         *allocation, *allocation, static_cast<std::int64_t>(tsdAddress),
                         entry, hostRegisters[3], hostRegisters[guestSchedulerFPCR],
                         hostRegisters[guestSchedulerFPSR], hostServiceState.threadSignalMask);
                     thread.id = threadId;
+                    thread.detached = attributes.detachState == PTHREAD_CREATE_DETACHED;
+                    if (attributes.stackAddress) thread.registers[31] &= ~std::uint64_t{15U};
                     const auto addedId = guestScheduler.add_thread(std::move(thread));
                     if (addedId != threadId) {
                         throw std::logic_error("Guest scheduler assigned an unexpected thread id");
                     }
                     liveThreadStacks.emplace(threadId,
-                        GuestMemoryRange{stackStart, stackEnd});
+                        GuestMemoryRange{guestStackStart, guestStackEnd});
                     syncWritableTable(bootstrap.errnoSlot);
                     std::memcpy(threadIdDestination, &threadId, sizeof(threadId));
                     hostRegisters[0] = 0;
