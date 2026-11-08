@@ -175,6 +175,35 @@ right/name cases. It uses `MACH64_SEND_ANY` on raw sends, matching the generic
 send classification selected by libSystem. Native normalized output is
 `task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
+`mach-local-move-send.c` uses raw traps `-16`, `-21`, `-18`, `-19`, `-76`, and
+`-47` to send one local complex message with a `MACH_MSG_PORT_DESCRIPTOR`
+carrying `MOVE_SEND`. It checks the source has only a receive right while the
+message is queued, verifies the descriptor restores a live send right on
+receive, then releases the send and receive rights. This first slice is limited
+to one send right on a live receive name in the same guest namespace. It does
+not implement multi-descriptor, move-receive, send-once, or cross-namespace
+name allocation. The binary imports only `_mach_task_self_` and `printf`; it has
+no bootstrap or host-service contact.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-local-move-send.c -o /tmp/mach-local-move-send
+/tmp/mach-local-move-send
+```
+
+Native expected output:
+
+```text
+allocate=0/0 insert=0/0 send=0 type_in_transit=0/1 receive=0 descriptor=1 name_match=1 cleanup=0/0/0/0
+```
+
+Status is 0. The same binary is suitable for the guest launcher:
+
+```sh
+env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  .build/cpp/arm64-metal launch /tmp/mach-local-move-send
+```
+
 `mach-self-pid.c` also exercises raw `thread_self_trap` (`-27`) from the main
 thread and a pthread worker. It checks stable names within each thread,
 distinct names across threads, and releases both acquired references for each

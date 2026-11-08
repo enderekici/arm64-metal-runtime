@@ -28,6 +28,7 @@
 #include <limits>
 #include <map>
 #include <new>
+#include <optional>
 #include <pthread.h>
 #include <runetype.h>
 #include <libproc.h>
@@ -2500,10 +2501,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
     struct GuestLocalMessage {
         std::uint32_t size;
+        std::uint32_t bits;
         std::uint32_t remotePort;
         std::uint32_t voucherPort;
         std::int32_t messageId;
         std::vector<std::uint8_t> body;
+        std::optional<std::uint32_t> movedSendName;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
@@ -2519,7 +2522,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         try {
             auto* output = guestMemory.buffer(outputAddress, outputSize, true);
             mach_msg_header_t header{};
-            header.msgh_bits = MACH_MSG_TYPE_MOVE_SEND << 8;
+            header.msgh_bits = (message.bits & MACH_MSGH_BITS_COMPLEX) |
+                               (MACH_MSG_TYPE_MOVE_SEND << 8);
             header.msgh_size = message.size;
             header.msgh_remote_port = message.remotePort;
             header.msgh_local_port = receiveName;
@@ -2606,6 +2610,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         guestUnixReceiveWaiters.erase(waiters);
     };
+    const auto restoreGuestMovedSendRight = [&](const GuestLocalMessage& message) {
+        if (!message.movedSendName) return true;
+        const auto receive = guestReceiveRights.find(*message.movedSendName);
+        const auto send = guestSendRightUrefs.find(*message.movedSendName);
+        if (receive == guestReceiveRights.end() || send == guestSendRightUrefs.end() ||
+            send->second >= std::numeric_limits<std::uint32_t>::max()) return false;
+        ++send->second;
+        return true;
+    };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
         expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
         auto waiting = guestMachReceiveWaiters.find(port);
@@ -2626,8 +2639,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 blocked->second.buffer, blocked->second.capacity);
             progressTrace.event("mach-message-wake", threadId, port);
             guestMachBlockedReceives.erase(blocked);
-            if (result == 0) queue->second.pop_front();
-            guestScheduler.wake(threadId, static_cast<std::int32_t>(result));
+            auto delivered = result;
+            if (delivered == 0 && !restoreGuestMovedSendRight(queue->second.front())) {
+                delivered = machReceiveInvalidData;
+            }
+            if (delivered == 0) queue->second.pop_front();
+            guestScheduler.wake(threadId, static_cast<std::int32_t>(delivered));
         }
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
     };
@@ -7541,6 +7558,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto options = registers[1];
                 const auto remote = static_cast<std::uint32_t>(registers[3]);
                 const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
+                    const auto descriptorCount =
+                        static_cast<std::uint32_t>(registers[5]);
                 const bool sendRequested = (options & machSendMessage) != 0;
                 const bool receiveRequested = (options & machReceiveMessage) != 0;
                 const bool specialRemote = remote == guestMachTaskPort ||
@@ -7558,12 +7577,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machReceiveTimedOut = 0x10004003;
                     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
                     constexpr std::uint32_t machMsgTypeCopySend = 19;
+                    constexpr std::uint32_t machMsgComplex = 0x80000000;
+                    constexpr std::uint32_t machPortDescriptorType = 0;
+                    constexpr std::uint32_t machMsgTypeMoveSend = 0x11;
                     constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
                     constexpr std::uint64_t allowedOptions = machSendMessage |
                         machReceiveMessage | machReceiveTimeout | mach64SendAny;
                     std::uint64_t result = 0;
                     if ((options & ~allowedOptions) != 0 ||
-                        (registers[5] & 0xffffffffULL) != 0 || registers[6] >> 32 != 0) {
+                        descriptorCount > 1 || (!sendRequested && descriptorCount != 0) ||
+                        registers[6] >> 32 != 0) {
                         result = kernInvalidArgument;
                     } else if (sendRequested) {
                         const auto sendRight = guestSendRightUrefs.find(remote);
@@ -7574,24 +7597,77 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                        machMsgTypeCopySend ||
                                    ((static_cast<std::uint32_t>(registers[2]) >> 8) & 0x1f) != 0 ||
                                    static_cast<std::uint32_t>(registers[4]) != 0 ||
-                                   static_cast<std::uint32_t>(registers[3] >> 32) != 0 ||
-                                   (registers[2] & 0x80000000ULL) != 0) {
+                                   static_cast<std::uint32_t>(registers[3] >> 32) != 0) {
                             result = machSendInvalidRight;
                         } else {
                             const auto sendSize = registers[2] >> 32;
+                            const auto bits = static_cast<std::uint32_t>(registers[2]);
+                            const bool complex = (bits & machMsgComplex) != 0;
                             if (sendSize < sizeof(mach_msg_header_t) || (sendSize & 3) != 0) {
                                 result = machSendMessageTooSmall;
+                            } else if (complex != (descriptorCount == 1)) {
+                                result = machSendInvalidData;
+                            } else if (complex && sendSize < sizeof(mach_msg_header_t) +
+                                        sizeof(mach_msg_body_t) +
+                                        sizeof(mach_msg_port_descriptor_t)) {
+                                result = machSendInvalidData;
                             } else {
                                 try {
                                     const auto* bytes = guestMemory.buffer(registers[0], sendSize);
+                                    mach_msg_header_t header{};
+                                    std::memcpy(&header, bytes, sizeof(header));
+                                    std::optional<std::uint32_t> movedSendName;
+                                    if (header.msgh_bits != bits || header.msgh_size != sendSize ||
+                                        header.msgh_remote_port != remote ||
+                                        header.msgh_local_port != 0 ||
+                                        header.msgh_voucher_port != 0 ||
+                                        header.msgh_id != static_cast<mach_msg_id_t>(messageId)) {
+                                        result = machSendInvalidData;
+                                    } else if (complex) {
+                                        mach_msg_body_t body{};
+                                        mach_msg_port_descriptor_t descriptor{};
+                                        std::memcpy(&body, bytes + sizeof(header), sizeof(body));
+                                        std::memcpy(&descriptor,
+                                            bytes + sizeof(header) + sizeof(body),
+                                            sizeof(descriptor));
+                                        const auto descriptorRight =
+                                            guestSendRightUrefs.find(descriptor.name);
+                                        if (body.msgh_descriptor_count != 1 ||
+                                            descriptor.pad1 != 0 || descriptor.pad2 != 0 ||
+                                            descriptor.disposition != machMsgTypeMoveSend ||
+                                            descriptor.type != machPortDescriptorType ||
+                                            descriptor.name == 0 ||
+                                            descriptor.name ==
+                                                std::numeric_limits<std::uint32_t>::max()) {
+                                            result = machSendInvalidData;
+                                        } else if (descriptorRight == guestSendRightUrefs.end() ||
+                                            descriptorRight->second == 0 ||
+                                            guestReceiveRights.find(descriptor.name) ==
+                                                guestReceiveRights.end()) {
+                                            result = machSendInvalidRight;
+                                        } else {
+                                            // This local namespace can preserve a transferred
+                                            // name only while its receive right remains live.
+                                            movedSendName = descriptor.name;
+                                        }
+                                    }
+                                    if (result != 0) {
+                                        registers[0] = result;
+                                        registers[34] = 0;
+                                        continue;
+                                    }
                                     GuestLocalMessage message{
                                         static_cast<std::uint32_t>(sendSize),
+                                        bits,
                                         static_cast<std::uint32_t>(registers[3] >> 32),
                                         static_cast<std::uint32_t>(registers[4]),
-                                        static_cast<std::int32_t>(messageId), {}};
+                                        static_cast<std::int32_t>(messageId), {}, movedSendName};
                                     message.body.assign(bytes + sizeof(mach_msg_header_t),
                                                         bytes + sendSize);
                                     guestMachMessageQueues[remote].push_back(std::move(message));
+                                    if (movedSendName) {
+                                        --guestSendRightUrefs.at(*movedSendName);
+                                    }
                                     progressTrace.event("mach-message-send",
                                         guestScheduler.current_id(),
                                         static_cast<std::uint32_t>(messageId));
@@ -7675,6 +7751,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 } else {
                                     result = copyGuestMachMessage(queue.front(), receiveName,
                                         registers[0], receiveSize);
+                                    if (result == 0 && !restoreGuestMovedSendRight(queue.front())) {
+                                        result = machReceiveInvalidData;
+                                    }
                                     if (result == 0) queue.pop_front();
                                 }
                             }
