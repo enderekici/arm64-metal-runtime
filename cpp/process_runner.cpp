@@ -61,59 +61,70 @@ constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
 
 std::optional<GuestBuildVersion> guest_image_build_version(
     std::uint64_t header, const ExecutableImage& image, const GuestMemory& memory) {
-    if (image.image_paths.find(header) == image.image_paths.end()) return std::nullopt;
-    const auto segment = std::find_if(
-        image.mapped_image_segments.begin(), image.mapped_image_segments.end(),
-        [header](const MappedImageSegment& candidate) {
-            return candidate.guest_header == header && candidate.start >= 0 &&
-                   candidate.end > candidate.start &&
-                   static_cast<std::uint64_t>(candidate.start) <= header &&
-                   header < static_cast<std::uint64_t>(candidate.end);
-        });
-    if (segment == image.mapped_image_segments.end()) return std::nullopt;
-    const auto segmentEnd = static_cast<std::uint64_t>(segment->end);
-    if (header > std::numeric_limits<std::uint64_t>::max() - 32 || header + 32 > segmentEnd)
-        return std::nullopt;
-    struct Header64 {
-        std::uint32_t magic;
-        std::uint32_t cpuType;
-        std::uint32_t cpuSubtype;
-        std::uint32_t fileType;
-        std::uint32_t commandCount;
-        std::uint32_t commandBytes;
-        std::uint32_t flags;
-        std::uint32_t reserved;
-    } machHeader{};
-    std::memcpy(&machHeader, memory.buffer(header, sizeof(machHeader)), sizeof(machHeader));
-    if (machHeader.magic != 0xfeedfacfU || machHeader.commandBytes > 1024 * 1024 ||
-        machHeader.commandCount > machHeader.commandBytes / 8 ||
-        machHeader.commandBytes > segmentEnd - header - sizeof(machHeader))
-        return std::nullopt;
-    auto cursor = header + sizeof(machHeader);
-    const auto commandsEnd = cursor + machHeader.commandBytes;
-    std::optional<GuestBuildVersion> result;
-    bool hasBuildVersion = false;
-    for (std::uint32_t index = 0; index < machHeader.commandCount; ++index) {
-        if (cursor > commandsEnd || commandsEnd - cursor < 8) return std::nullopt;
-        std::uint32_t command[2]{};
-        std::memcpy(command, memory.buffer(cursor, sizeof(command)), sizeof(command));
-        const auto size = static_cast<std::uint64_t>(command[1]);
-        if (size < 8 || (size & 3U) != 0 || size > commandsEnd - cursor) return std::nullopt;
-        if (command[0] == 0x32U && size >= 24 && !hasBuildVersion) {
-            std::uint32_t fields[3]{};
-            std::memcpy(fields, memory.buffer(cursor + 8, sizeof(fields)), sizeof(fields));
-            result = GuestBuildVersion{fields[0], fields[1], fields[2] == 0 ? fields[1] : fields[2]};
-            hasBuildVersion = true;
+    try {
+        const auto segment = std::find_if(
+            image.mapped_image_segments.begin(), image.mapped_image_segments.end(),
+            [header](const MappedImageSegment& candidate) {
+                return candidate.guest_header == header && candidate.start >= 0 &&
+                       candidate.end > candidate.start &&
+                       static_cast<std::uint64_t>(candidate.start) <= header &&
+                       header < static_cast<std::uint64_t>(candidate.end);
+            });
+        std::uint64_t segmentEnd = 0;
+        if (image.image_paths.find(header) != image.image_paths.end()) {
+            if (segment == image.mapped_image_segments.end()) return std::nullopt;
+            segmentEnd = static_cast<std::uint64_t>(segment->end);
+        } else {
+            const auto readable = memory.contiguous_readable_size(header);
+            if (readable > std::numeric_limits<std::uint64_t>::max() - header)
+                return std::nullopt;
+            segmentEnd = header + readable;
         }
-        if (command[0] == 0x24U && size >= 16 && !result) {
-            std::uint32_t fields[2]{};
-            std::memcpy(fields, memory.buffer(cursor + 8, sizeof(fields)), sizeof(fields));
-            result = GuestBuildVersion{1, fields[0], fields[1] == 0 ? fields[0] : fields[1]};
+        if (header > std::numeric_limits<std::uint64_t>::max() - 32 || header + 32 > segmentEnd)
+            return std::nullopt;
+        struct Header64 {
+            std::uint32_t magic;
+            std::uint32_t cpuType;
+            std::uint32_t cpuSubtype;
+            std::uint32_t fileType;
+            std::uint32_t commandCount;
+            std::uint32_t commandBytes;
+            std::uint32_t flags;
+            std::uint32_t reserved;
+        } machHeader{};
+        std::memcpy(&machHeader, memory.buffer(header, sizeof(machHeader)), sizeof(machHeader));
+        if (machHeader.magic != 0xfeedfacfU || machHeader.commandBytes > 1024 * 1024 ||
+            machHeader.commandCount > machHeader.commandBytes / 8 ||
+            machHeader.commandBytes > segmentEnd - header - sizeof(machHeader))
+            return std::nullopt;
+        auto cursor = header + sizeof(machHeader);
+        const auto commandsEnd = cursor + machHeader.commandBytes;
+        std::optional<GuestBuildVersion> result;
+        bool hasBuildVersion = false;
+        for (std::uint32_t index = 0; index < machHeader.commandCount; ++index) {
+            if (cursor > commandsEnd || commandsEnd - cursor < 8) return std::nullopt;
+            std::uint32_t command[2]{};
+            std::memcpy(command, memory.buffer(cursor, sizeof(command)), sizeof(command));
+            const auto size = static_cast<std::uint64_t>(command[1]);
+            if (size < 8 || (size & 3U) != 0 || size > commandsEnd - cursor) return std::nullopt;
+            if (command[0] == 0x32U && size >= 24 && !hasBuildVersion) {
+                std::uint32_t fields[3]{};
+                std::memcpy(fields, memory.buffer(cursor + 8, sizeof(fields)), sizeof(fields));
+                result = GuestBuildVersion{fields[0], fields[1], fields[2] == 0 ? fields[1] : fields[2]};
+                hasBuildVersion = true;
+            }
+            if (command[0] == 0x24U && size >= 16 && !result) {
+                std::uint32_t fields[2]{};
+                std::memcpy(fields, memory.buffer(cursor + 8, sizeof(fields)), sizeof(fields));
+                result = GuestBuildVersion{1, fields[0], fields[1] == 0 ? fields[0] : fields[1]};
+            }
+            cursor += size;
         }
-        cursor += size;
+        if (cursor != commandsEnd) return std::nullopt;
+        return result;
+    } catch (const std::out_of_range&) {
+        return std::nullopt;
     }
-    if (cursor != commandsEnd) return std::nullopt;
-    return result;
 }
 
 const std::unordered_map<std::string, int>& host_service_ids() {
@@ -1655,6 +1666,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         };
         if (name.empty()) return std::nullopt;
         const auto symbol = "_" + name;
+        if (defaultScope && symbol == "_dyld_sdk_at_least") {
+            for (const auto& [address, importedName] : imports) {
+                if (address < 0 || importedName != symbol) continue;
+                return static_cast<std::uint64_t>(address);
+            }
+        }
         if (mainOnly) {
             const auto mainHeader = static_cast<std::uint64_t>(image.main_header);
             const auto& metadata = dlsymImage(mainHeader);
