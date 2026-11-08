@@ -658,26 +658,43 @@ public:
 
     void event(const char* name, std::uint64_t pc, std::uint64_t detail = 0) {
         if (!enabled_) return;
+        const auto now = std::chrono::steady_clock::now();
         if (events_ == maximumEvents) {
             if (!limitReported_) {
                 std::cerr << "arm64-metal trace event-limit=" << maximumEvents << '\n';
                 limitReported_ = true;
+                lastPeriodic_ = now;
+                return;
             }
+            if (periodicEvents_ == maximumPeriodicEvents ||
+                now - lastPeriodic_ < periodicInterval) return;
+            ++periodicEvents_;
+            lastPeriodic_ = now;
+            write("progress", name, pc, detail, now);
             return;
         }
         ++events_;
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started_).count();
-        std::cerr << "arm64-metal trace +" << elapsed << "ms " << name
-                  << " pc=0x" << hexadecimal(pc) << " detail=" << detail << '\n';
+        write("event", name, pc, detail, now);
     }
 
 private:
     static constexpr std::size_t maximumEvents = 128;
+    static constexpr std::size_t maximumPeriodicEvents = 16;
+    static constexpr auto periodicInterval = std::chrono::seconds(10);
+    void write(const char* kind, const char* name, std::uint64_t pc,
+               std::uint64_t detail, std::chrono::steady_clock::time_point now) const {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - started_).count();
+        std::cerr << "arm64-metal trace +" << elapsed << "ms " << kind << '=' << name
+                  << " pc=0x" << hexadecimal(pc) << " detail=" << detail << '\n';
+    }
+
     bool enabled_ = false;
     bool limitReported_ = false;
     std::size_t events_ = 0;
     std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastPeriodic_ = started_;
+    std::size_t periodicEvents_ = 0;
 };
 
 std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
@@ -736,6 +753,7 @@ std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
 std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
+    ProgressTrace progressTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
         throw std::invalid_argument("Process dispatch block budget must be in [1, 8192]");
     }
@@ -745,9 +763,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         sharedCache = cacheEnvironment != nullptr && std::strcmp(cacheEnvironment, "1") == 0;
     }
 
+    progressTrace.event("image-load-start", 0);
     ExecutableImage image(executable, sharedCache, options.demandCache,
                           host_service_ids(), guest_memory_imports(),
                           options.cachedInitializers);
+    progressTrace.event("image-load-done", static_cast<std::uint64_t>(image.entry));
     std::map<std::int64_t, std::string> imports(image.imports.begin(), image.imports.end());
     if (image.cache_reader &&
         image.cache_reader->newFormatTlvs() == std::optional<bool>{true}) {
@@ -952,7 +972,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     std::map<std::int64_t, std::string> decodeErrors;
     std::map<std::int64_t, ComputeKernel> kernels;
-    ProgressTrace progressTrace;
     const auto compileKernel = [&](std::int64_t entry) {
         const auto started = std::chrono::steady_clock::now();
         progressTrace.event("compile-start", static_cast<std::uint64_t>(entry));
@@ -2027,6 +2046,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::size_t startupIndex = 0;
     const auto advanceStartup = [&]() {
         if (startupIndex + 1 >= startup.size()) return false;
+        progressTrace.event("initializer-done", startup[startupIndex], startupIndex);
         const auto* registers = static_cast<const std::uint64_t*>(stateBuffer.data());
         if (registers[37] != 0) {
             throw std::runtime_error("Guest initializer left its authentication stack unbalanced");
@@ -2035,6 +2055,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::copy(registers, registers + processRegisters.size(), processRegisters.begin());
         ++startupIndex;
         enter_startup_frame(processRegisters, bootstrap, startup[startupIndex]);
+        progressTrace.event(startupIndex + 1 == startup.size() ? "main-entry" : "initializer-start",
+                            startup[startupIndex], startupIndex);
         std::memcpy(stateBuffer.data(), processRegisters.data(),
                     processRegisters.size() * sizeof(std::uint64_t));
         return true;
@@ -4274,6 +4296,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (status == 13) {
             const auto syscall = registers[16];
+            progressTrace.event("raw-syscall", registers[33], syscall);
             if (syscall == 177) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto outputAddress = registers[0];
