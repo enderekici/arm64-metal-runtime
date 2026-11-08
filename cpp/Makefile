@@ -354,8 +354,8 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/add-sub-sp.native.out" "$$run_dir/add-sub-sp.interpreter.out" && \
 		cmp "$$run_dir/add-sub-sp.native.err" "$$run_dir/add-sub-sp.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
-		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
-		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/add-sub-sp.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=5' "$$run_dir/add-sub-sp.interpreter.err" && \
 		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit !found }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 

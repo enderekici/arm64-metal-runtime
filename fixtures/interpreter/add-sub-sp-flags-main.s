@@ -6,6 +6,8 @@ _main:
     add sp, sp, #1, lsl #12
     sub sp, sp, #1, lsl #12
     cmp x0, #42
+    b .Lcheck_flags
+.Lcheck_flags:
     b.ne .Lwrong_flags
     ret
 .Lwrong_flags:
