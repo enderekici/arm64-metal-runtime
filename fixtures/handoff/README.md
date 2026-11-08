@@ -185,3 +185,21 @@ cmp "$out.native.status" "$out.runtime.status"
 
 The native control exits 0 with stdout
 `invalid=268435459 overflow=4 unmapped=1 page=16384 current=0 restore=0/read=0 lower=0 raise=2 write=2 mprotect-rw=-1/13 read=0/0 middle=83 edges=0,0:50,116 dealloc=0 hole=-1/12 release=0,0` and empty stderr. The invalid task result is `MACH_SEND_INVALID_DEST`; arithmetic overflow returns `KERN_INVALID_ARGUMENT`, and an unmapped target returns `KERN_INVALID_ADDRESS`.
+## Typed scalar memory decode
+
+The canonical operation decoder records unsigned-immediate W/X loads and
+stores as destination, base, scaled immediate, shift, and bit width. This
+unchanged ARM64 fixture supplies native output for W/X accesses and SP base:
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror fixtures/handoff/typed-memory.s \
+  fixtures/handoff/typed-memory-main.c -o .build/handoff-probes/typed-memory
+.build/handoff-probes/typed-memory
+xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
+  fixtures/handoff/typed-operation.cpp cpp/translate_core.cpp \
+  -o .build/handoff-probes/typed-operation
+.build/handoff-probes/typed-operation
+```
+
+The process decoder keeps its existing guest-memory lowering for these
+instructions so permission checks and demand-cache retry remain active.

@@ -59,6 +59,18 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      0, 64};
   }
 
+  const auto unsignedMemory = bits & 0xffc00000U;
+  const auto memoryWidths = std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{
+      std::pair{0xb9400000U, 32U}, std::pair{0xb9000000U, 32U},
+      std::pair{0xf9400000U, 64U}, std::pair{0xf9000000U, 64U}};
+  for (const auto& [encoding, width] : memoryWidths) {
+    if (unsignedMemory == encoding) {
+      const auto opcode = (encoding & 0x00400000U) != 0
+          ? Opcode::LoadUnsignedImmediate : Opcode::StoreUnsignedImmediate;
+      return Operation{opcode, field(bits, 0, 5), field(bits, 5, 5),
+                       field(bits, 10, 12), width == 64 ? 3U : 2U, width};
+    }
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -140,7 +152,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
     return Instruction{std::move(code), {following}};
   };
 
-  if (const auto operation = decode_operation(bits)) {
+  if (const auto operation = decode_operation(bits);
+      operation && operation->opcode != Opcode::LoadUnsignedImmediate &&
+      operation->opcode != Opcode::StoreUnsignedImmediate) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

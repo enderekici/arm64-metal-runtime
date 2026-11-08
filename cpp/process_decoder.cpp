@@ -359,7 +359,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
           guestCodeLimit);
     }
   }
-  if (decodedOperation && !typedBranch) {
+  if (decodedOperation && !typedBranch &&
+      decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
+      decodedOperation->opcode != translate_core::Opcode::StoreUnsignedImmediate) {
     const auto successors =
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
@@ -372,7 +374,13 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     std::vector<std::string> code{lines...};
     for (auto &line : code)
       replace_all(line, "x[34] = 2;", "x[33] = " + str(pc) + "ul; x[34] = 2;");
-    return Instruction{code, {next}};
+    Instruction instruction{code, {next}};
+    if (decodedOperation &&
+        (decodedOperation->opcode == translate_core::Opcode::LoadUnsignedImmediate ||
+         decodedOperation->opcode == translate_core::Opcode::StoreUnsignedImmediate)) {
+      instruction.operation = *decodedOperation;
+    }
+    return instruction;
   };
   if (bits == 0xd503201f || (bits & 0xffffff3f) == 0xd503241f) {
     return emit();

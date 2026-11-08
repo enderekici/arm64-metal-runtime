@@ -105,6 +105,52 @@ int main() {
   assert(backwardBranch.has_value());
   assert(static_cast<std::int32_t>(backwardBranch->immediate) == -4);
 
+  const auto loadWord = decode_operation(0xb9400403);
+  assert(loadWord.has_value());
+  assert(loadWord->opcode == Opcode::LoadUnsignedImmediate);
+  assert(loadWord->destination == 3);
+  assert(loadWord->source == 0);
+  assert(loadWord->immediate == 1);
+  assert(loadWord->shift == 2);
+  assert(loadWord->width == 32);
+  assert((serialize_operation(*loadWord) ==
+          arm64metal::translate_core::OperationPacket{6, 3, 0, 1, 2, 32}));
+
+  const auto storeWord = decode_operation(0xb9000401);
+  assert(storeWord.has_value());
+  assert(storeWord->opcode == Opcode::StoreUnsignedImmediate);
+  assert(storeWord->destination == 1);
+  assert(storeWord->source == 0);
+  assert(storeWord->immediate == 1);
+  assert(storeWord->shift == 2);
+  assert(storeWord->width == 32);
+
+  const auto loadDouble = decode_operation(0xf9400804);
+  assert(loadDouble.has_value());
+  assert(loadDouble->opcode == Opcode::LoadUnsignedImmediate);
+  assert(loadDouble->destination == 4);
+  assert(loadDouble->source == 0);
+  assert(loadDouble->immediate == 2);
+  assert(loadDouble->shift == 3);
+  assert(loadDouble->width == 64);
+  assert((serialize_operation(*loadDouble) ==
+          arm64metal::translate_core::OperationPacket{6, 4, 0, 2, 3, 64}));
+
+  const auto storeDouble = decode_operation(0xf9000802);
+  assert(storeDouble.has_value());
+  assert(storeDouble->opcode == Opcode::StoreUnsignedImmediate);
+  assert(storeDouble->destination == 2);
+  assert(storeDouble->source == 0);
+  assert(storeDouble->immediate == 2);
+  assert(storeDouble->shift == 3);
+  assert(storeDouble->width == 64);
+
+  const auto stackLoad = decode_operation(0xf94003e1);
+  assert(stackLoad.has_value());
+  assert(stackLoad->opcode == Opcode::LoadUnsignedImmediate);
+  assert(stackLoad->source == 31);
+  assert(stackLoad->destination == 1);
+
   bool invalidShiftRejected = false;
   try {
     (void)decode_operation(0x52c24680);

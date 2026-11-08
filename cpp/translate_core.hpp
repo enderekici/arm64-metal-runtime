@@ -18,6 +18,8 @@ enum class Opcode : std::uint32_t {
   MoveWideNot = 3,
   MoveWideKeep = 4,
   Branch = 5,
+  LoadUnsignedImmediate = 6,
+  StoreUnsignedImmediate = 7,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
