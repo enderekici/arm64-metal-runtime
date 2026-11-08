@@ -28,7 +28,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app clean
+.PHONY: all components app verify-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -50,6 +50,7 @@ APP_SOURCES := \
 	guest_strings.cpp \
 	guest_tlv.cpp \
 	guest_vector_crypto.cpp \
+	gpu_interpreter.cpp \
 	darwin_bridge.cpp \
 	image_loader.cpp \
 	macho.cpp \
@@ -64,6 +65,7 @@ APP_SOURCES := \
 	main.cpp
 APP_HEADERS := $(wildcard *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
+INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 
 app: $(APP)
 
@@ -75,3 +77,12 @@ $(APP): $(APP_SOURCES) $(APP_HEADERS)
 
 clean:
 	rm -rf "$(BUILD_DIR)"
+
+$(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interpreter/native-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
+
+verify-interpreter: $(APP) $(INTERPRETER_NATIVE)
+	"$(APP)" interpreter-probe >"$(BUILD_DIR)/interpreter.gpu.out"
+	"$(INTERPRETER_NATIVE)" >"$(BUILD_DIR)/interpreter.native.out"
+	cmp "$(BUILD_DIR)/interpreter.native.out" "$(BUILD_DIR)/interpreter.gpu.out"

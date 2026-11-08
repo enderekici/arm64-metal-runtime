@@ -5,6 +5,7 @@
 
 #include "metal_backend.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <limits>
 #include <stdexcept>
@@ -54,6 +55,8 @@ struct Backend::Impl {
     MTL::Device* device = nullptr;
     MTL::CommandQueue* queue = nullptr;
     std::string name;
+    std::atomic<std::uint64_t> compiledPipelines{0};
+    std::atomic<std::uint64_t> completedDispatches{0};
 
     ~Impl() {
         if (queue != nullptr) queue->release();
@@ -161,6 +164,7 @@ ComputeKernel Backend::compileCompute(std::string_view source,
     if (pipeline == nullptr) {
         throw std::runtime_error(errorMessage("Metal compute pipeline creation failed", error));
     }
+    impl_->compiledPipelines.fetch_add(1, std::memory_order_relaxed);
     std::unique_ptr<ComputeKernel::Impl> kernel(new ComputeKernel::Impl());
     kernel->pipeline = pipeline;
     return ComputeKernel(std::move(kernel));
@@ -188,6 +192,16 @@ SharedBuffer Backend::makeSharedBuffer(std::size_t byteLength) const {
 std::size_t Backend::maxBufferLength() const noexcept {
     if (impl_ == nullptr || impl_->device == nullptr) return 0;
     return static_cast<std::size_t>(impl_->device->maxBufferLength());
+}
+
+std::uint64_t Backend::compiledPipelineCount() const noexcept {
+    return impl_ == nullptr ? 0 :
+        impl_->compiledPipelines.load(std::memory_order_relaxed);
+}
+
+std::uint64_t Backend::completedDispatchCount() const noexcept {
+    return impl_ == nullptr ? 0 :
+        impl_->completedDispatches.load(std::memory_order_relaxed);
 }
 
 DispatchTiming Backend::dispatch(const ComputeKernel& kernel,
@@ -253,6 +267,7 @@ DispatchTiming Backend::dispatch(const ComputeKernel& kernel,
         std::string message = errorMessage("Metal command execution failed", command->error());
         throw std::runtime_error(message);
     }
+    impl_->completedDispatches.fetch_add(1, std::memory_order_relaxed);
     const double gpuStart = command->GPUStartTime();
     const double gpuEnd = command->GPUEndTime();
     DispatchTiming timing;

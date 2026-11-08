@@ -89,6 +89,8 @@ public:
                                  std::string_view functionName) const;
     SharedBuffer makeSharedBuffer(std::size_t byteLength) const;
     [[nodiscard]] std::size_t maxBufferLength() const noexcept;
+    [[nodiscard]] std::uint64_t compiledPipelineCount() const noexcept;
+    [[nodiscard]] std::uint64_t completedDispatchCount() const noexcept;
 
     // `grid` is the exact thread count. `threadsPerGroup` is the requested
     // threadgroup shape; dispatchThreads handles a partial final group.

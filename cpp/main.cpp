@@ -1,4 +1,5 @@
 #include "function_runner.hpp"
+#include "gpu_interpreter.hpp"
 #include "process_runner.hpp"
 #include "shared_cache.hpp"
 
@@ -45,7 +46,8 @@ void print_help() {
       "  arm64-metal verify TRUSTED_DYLIB SYMBOL\n"
       "  arm64-metal translate BINARY SYMBOL\n"
       "  arm64-metal inspect-cache INSTALL_NAME SYMBOL\n"
-      "  arm64-metal inspect-cache-rebases INSTALL_NAME\n\n"
+      "  arm64-metal inspect-cache-rebases INSTALL_NAME\n"
+      "\n"
       "Input is a JSON array of {\"words\":[1,2,3],\"seed\":7} invocations.\n"
       "Run reads stdin when INPUT is omitted or '-'.\n"
       "Launch executes the guest process on Metal.\n";
@@ -54,6 +56,69 @@ void print_help() {
 int run_command(const std::vector<std::string>& args) {
   if (args.empty() || (args.size() == 1 && args[0] == "--help")) {
     print_help();
+    return 0;
+  }
+
+  if (args[0] == "interpreter-probe" && args.size() == 1) {
+    using arm64metal::gpu_interpreter::InstructionPacket;
+    using arm64metal::gpu_interpreter::Interpreter;
+    using arm64metal::gpu_interpreter::ProcessState;
+    using arm64metal::translate_core::decode_operation;
+    using arm64metal::translate_core::serialize_operation;
+
+    const auto packet = [](std::uint32_t bits, std::uint64_t pc) {
+      const auto operation = decode_operation(bits);
+      if (!operation) throw std::runtime_error("Probe instruction has no typed operation");
+      return InstructionPacket{serialize_operation(*operation), pc};
+    };
+    const std::vector<InstructionPacket> firstProgram{
+        packet(0xd2800540u, 0x1000), packet(0xd65f03c0u, 0x1004)};
+    const std::vector<InstructionPacket> secondProgram{
+        packet(0x52b7dde0u, 0x2000), packet(0xd65f03c0u, 0x2004)};
+
+    auto backend = arm64metal::Backend::createDefault();
+    const auto initialCompiles = backend.compiledPipelineCount();
+    const auto initialDispatches = backend.completedDispatchCount();
+    const Interpreter interpreter(backend);
+    const auto compiled = backend.compiledPipelineCount() - initialCompiles;
+    if (compiled != 1) throw std::runtime_error("Interpreter did not compile exactly one pipeline");
+
+    const auto execute = [&backend, &interpreter](const auto& packets) {
+      ProcessState initial{};
+      initial[arm64metal::gpu_interpreter::returnRegisterIndex] =
+          arm64metal::gpu_interpreter::noReturnAddress;
+      initial[33] = packets.front().pc;
+      initial[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+      return interpreter.run(backend, packets, initial);
+    };
+    const auto first = execute(firstProgram);
+    const auto second = execute(secondProgram);
+    ProcessState continuationState{};
+    continuationState[arm64metal::gpu_interpreter::returnRegisterIndex] = 0x3004;
+    continuationState[33] = 0x3000;
+    continuationState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+    const auto continuation = interpreter.run(
+        backend, {packet(0xd65f03c0u, 0x3000)}, continuationState);
+    ProcessState zeroBudgetState{};
+    zeroBudgetState[arm64metal::gpu_interpreter::resultRegisterIndex] = 99;
+    zeroBudgetState[arm64metal::gpu_interpreter::returnRegisterIndex] =
+        arm64metal::gpu_interpreter::noReturnAddress;
+    zeroBudgetState[33] = 0x4000;
+    zeroBudgetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 0;
+    const auto zeroBudget = interpreter.run(
+        backend, {packet(0xd2800540u, 0x4000), packet(0xd65f03c0u, 0x4004)},
+        zeroBudgetState);
+    const auto dispatches = backend.completedDispatchCount() - initialDispatches;
+    if (compiled != 1 || dispatches != 4 ||
+        first.state[34] != 0 || first.state[0] != 42 ||
+        second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
+        continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
+        zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99) {
+      throw std::runtime_error("Fixed GPU interpreter MOVZ/RET probe mismatch");
+    }
+    std::cerr << "pipeline_compiles=" << compiled
+              << " completed_dispatches=" << dispatches << '\n';
+    std::cout << "wide=" << first.state[0] << " narrow=" << second.state[0] << '\n';
     return 0;
   }
 
