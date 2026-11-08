@@ -80,6 +80,8 @@ struct GuestThread {
     std::vector<std::uint64_t> registers;
     std::uint32_t signalMask = 0;
     std::uint32_t pendingSignals = 0;
+    // Darwin's JIT write-protection mode is per guest thread and starts enabled.
+    bool jitWriteProtect = true;
     std::optional<GuestWait> wait;
     std::int32_t wakeError = 0;
     std::optional<std::uint64_t> result;

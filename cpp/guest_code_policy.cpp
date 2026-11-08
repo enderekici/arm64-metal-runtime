@@ -52,6 +52,44 @@ bool write_file(const std::filesystem::path& path,
   return output.good();
 }
 
+bool copy_code_file(const std::filesystem::path& source,
+                    const std::filesystem::path& destination) {
+  return copyfile(source.c_str(), destination.c_str(), nullptr,
+                  COPYFILE_DATA | COPYFILE_METADATA | COPYFILE_NOFOLLOW_SRC) == 0;
+}
+
+bool copy_bundle_signature_context(const std::filesystem::path& source_root,
+                                   const std::filesystem::path& source_executable,
+                                   const std::filesystem::path& snapshot_root) {
+  std::error_code error;
+  std::filesystem::create_directories(snapshot_root, error);
+  if (error) return false;
+  auto ancestor = source_executable.parent_path();
+  while (true) {
+    for (const auto* name : {"Info.plist", "_CodeSignature"}) {
+      const auto source = ancestor / name;
+      if (!std::filesystem::exists(source, error)) {
+        if (error) return false;
+        continue;
+      }
+      const auto relative = source.lexically_relative(source_root);
+      const auto destination = snapshot_root / relative;
+      std::filesystem::create_directories(destination.parent_path(), error);
+      if (error) return false;
+      if (std::filesystem::is_directory(source, error)) {
+        if (error || copyfile(source.c_str(), destination.c_str(), nullptr,
+                              COPYFILE_DATA | COPYFILE_RECURSIVE |
+                                  COPYFILE_NOFOLLOW_SRC) != 0) return false;
+      } else if (error || !copy_code_file(source, destination)) {
+        return false;
+      }
+    }
+    if (ancestor == source_root) break;
+    ancestor = ancestor.parent_path();
+  }
+  return !error;
+}
+
 bool dictionary_boolean(CFDictionaryRef dictionary, CFStringRef key) {
   if (dictionary == nullptr) return false;
   const auto value = static_cast<CFTypeRef>(CFDictionaryGetValue(dictionary, key));
@@ -122,14 +160,16 @@ GuestCodePolicy guest_code_policy(const std::filesystem::path& executable,
     const auto relative = source_executable.lexically_relative(source_root);
     if (relative.empty() || relative.is_absolute()) return result;
     for (const auto& component : relative) if (component == "..") return result;
-    if (copyfile(source_root.c_str(), snapshot_root.c_str(), nullptr,
-                 COPYFILE_DATA | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW_SRC) != 0) {
+    if (!copy_bundle_signature_context(source_root, source_executable, snapshot_root)) {
       return result;
     }
     snapshot_executable = snapshot_root / relative;
+    std::filesystem::create_directories(snapshot_executable.parent_path(), error);
+    if (error || !copy_code_file(source_executable, snapshot_executable)) return result;
   } else {
     snapshot_root = temp_root / source_root.filename();
     snapshot_executable = snapshot_root;
+    if (!copy_code_file(source_executable, snapshot_executable)) return result;
   }
   if (!std::filesystem::is_regular_file(snapshot_executable, error) || error ||
       !write_file(snapshot_executable, selected_image) ||

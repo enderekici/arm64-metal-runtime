@@ -391,7 +391,9 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/interpreter.err"; \
 		echo "verify-interpreter-demand-cache receipts: $$run_dir"
-$(MAP_JIT_POLICY_TEST): ../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp macho.cpp macho.hpp
+$(MAP_JIT_POLICY_TEST): \
+	../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp \
+	guest_state.hpp macho.cpp macho.hpp
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I. ../fixtures/handoff/map-jit-policy-test.cpp \
 		guest_code_policy.cpp macho.cpp -framework Security -framework CoreFoundation -o "$@"
@@ -405,3 +407,8 @@ verify-map-jit-policy: $(MAP_JIT_POLICY_TEST) $(MAP_JIT_POLICY_FIXTURE)
 	../fixtures/handoff/run-map-jit-policy-test.sh "$(abspath $(MAP_JIT_POLICY_TEST))" \
 		"$(abspath $(MAP_JIT_POLICY_FIXTURE))" "$(abspath ../fixtures/handoff)" \
 		"$(abspath $(BUILD_DIR))"
+
+.PHONY: prepare-map-jit-guest-fixtures
+prepare-map-jit-guest-fixtures:
+	../fixtures/handoff/prepare-map-jit-guest-fixtures.sh \
+		"$(abspath ../fixtures/handoff)" "$(abspath $(BUILD_DIR))"

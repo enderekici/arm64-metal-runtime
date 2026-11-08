@@ -1642,6 +1642,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bool writable;
         bool executable;
         std::uint32_t maximumProtection = 0;
+        bool jit = false;
     };
     struct VmAllocation {
         std::uint64_t begin;
@@ -2700,10 +2701,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
     std::optional<std::size_t> kdebugTypeFilterBacking;
     std::uint64_t kdebugTypeFilterLogicalCursor = guestMappingBase + (std::uint64_t{1} << 32U);
+    hostServiceState.guestMapJitEligible = image.main_code_policy.map_jit_eligible;
     hostServiceState.machVmAllocate = [&](std::uint64_t size, std::uint64_t alignment,
                                            std::uint32_t currentProtection,
                                            std::uint32_t maximumProtection,
-                                           std::uint64_t& guestAddress) {
+                                           std::uint64_t& guestAddress, bool jitMapping) {
         if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 ||
             alignment > 16U * 1024U * 1024U ||
             size > std::numeric_limits<std::uint64_t>::max() - guestMappingBase) {
@@ -2727,7 +2729,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (currentProtection & 1U) != 0,
                         (currentProtection & 2U) != 0,
                         (currentProtection & 4U) != 0,
-                        maximumProtection};
+                        maximumProtection, jitMapping};
         VmAllocation allocation{address, address + size, backing, {region}};
         try {
             auto stagedAllocations = vmAllocations;
@@ -2793,13 +2795,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (region.begin < mappedBegin) {
                         replacement.push_back({region.begin, mappedBegin, region.backing,
                             region.readable, region.writable, region.executable,
-                            region.maximumProtection});
+                            region.maximumProtection, region.jit});
                     }
                     if (region.end > mappedEnd) {
                         replacement.push_back({mappedEnd, region.end,
                             region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
                             region.readable, region.writable, region.executable,
-                            region.maximumProtection});
+                            region.maximumProtection, region.jit});
                     }
                 }
 
@@ -2865,6 +2867,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (region.end <= cursor || region.begin >= end) continue;
             if (region.begin > cursor) return kernInvalidAddress;
             if ((protection & ~region.maximumProtection) != 0) return kernProtectionFailure;
+            const auto effective = (region.readable ? 1U : 0U) |
+                (region.writable ? 2U : 0U) | (region.executable ? 4U : 0U);
+            if (region.jit && (setMaximum || protection != effective)) {
+                return kernProtectionFailure;
+            }
             cursor = std::min(end, region.end);
             if (cursor == end) break;
         }
@@ -2880,7 +2887,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (region.begin < middleBegin) {
                 replacement.push_back({region.begin, middleBegin, region.backing,
                                        region.readable, region.writable, region.executable,
-                                       region.maximumProtection});
+                            region.maximumProtection, region.jit});
             }
             const auto maximumProtection = setMaximum ? protection : region.maximumProtection;
             const auto currentProtection = setMaximum
@@ -2890,12 +2897,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             replacement.push_back({middleBegin, middleEnd,
                 region.backing + static_cast<std::size_t>(middleBegin - region.begin),
                 (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
-                (currentProtection & 4U) != 0, maximumProtection});
+                (currentProtection & 4U) != 0, maximumProtection, region.jit});
             if (middleEnd < region.end) {
                 replacement.push_back({middleEnd, region.end,
                     region.backing + static_cast<std::size_t>(middleEnd - region.begin),
                     region.readable, region.writable, region.executable,
-                    region.maximumProtection});
+                    region.maximumProtection, region.jit});
             }
         }
         if (resident[0] < current.regions.size() ||
@@ -2929,6 +2936,68 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         syncResidentTable();
         return kernSuccess;
+    };
+    bool activeJitWriteProtection = true;
+    const auto applyJitWriteProtection = [&](bool enabled) {
+        auto& thread = guestScheduler.current();
+        if (activeJitWriteProtection == enabled) {
+            thread.jitWriteProtect = enabled;
+            hostServiceState.jitWriteProtected = enabled;
+            return true;
+        }
+        try {
+            auto stagedAllocations = vmAllocations;
+            auto stagedResident = resident;
+            std::vector<std::uint64_t> removedBegins;
+            std::vector<GuestMemoryMapping> addedMappings;
+            std::vector<VmRegion> stagedCodeInputs;
+            bool changed = false;
+            for (auto& [unused, allocation] : stagedAllocations) {
+                (void)unused;
+                for (auto& region : allocation.regions) {
+                    if (!region.jit) continue;
+                    const bool writable = !enabled &&
+                        (region.maximumProtection & 2U) != 0;
+                    const bool executable = enabled &&
+                        (region.maximumProtection & 4U) != 0;
+                    if (region.writable == writable && region.executable == executable) continue;
+                    VmRegion replacement = region;
+                    replacement.writable = writable;
+                    replacement.executable = executable;
+                    removedBegins.push_back(region.begin);
+                    removeVmRegionFromResident(stagedResident, region);
+                    appendVmRegionToResident(stagedResident, replacement);
+                    addedMappings.push_back({replacement.begin, replacement.end,
+                        replacement.backing, replacement.writable, replacement.readable});
+                    region = replacement;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                for (const auto& [unused, allocation] : stagedAllocations) {
+                    (void)unused;
+                    stagedCodeInputs.insert(stagedCodeInputs.end(),
+                                            allocation.regions.begin(), allocation.regions.end());
+                }
+                auto stagedCodeRegions = prepareDynamicCodeRegions(
+                    guestMappingBase, guestMappingBase + image.mapping_backing_end(),
+                    stagedCodeInputs);
+                guestMemory.replace_mappings(removedBegins, addedMappings);
+                vmAllocations.swap(stagedAllocations);
+                resident.swap(stagedResident);
+                commitDynamicCodeRegions(std::move(stagedCodeRegions));
+                syncResidentTable();
+            }
+        } catch (...) {
+            return false;
+        }
+        thread.jitWriteProtect = enabled;
+        hostServiceState.jitWriteProtected = enabled;
+        activeJitWriteProtection = enabled;
+        return true;
+    };
+    hostServiceState.setJitWriteProtection = [&](bool enabled) {
+        return applyJitWriteProtection(enabled);
     };
     guestMemory.set_mapping_resolver([&](std::uint64_t address, std::uint64_t length, bool) {
         return makeCacheResident(address, length);
@@ -2990,6 +3059,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     std::uint64_t dispatchSequence = 0;
     while (true) {
+        if (!applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
+            throw std::runtime_error("Guest thread MAP_JIT mode could not be applied");
+        }
         if (const auto signalExit = deliverPendingSignal()) return *signalExit;
         auto& callbackFrames = callbackFramesByThread[guestScheduler.current_id()];
         auto* registers = static_cast<std::uint64_t*>(stateBuffer.data());

@@ -1,4 +1,5 @@
 #include "guest_code_policy.hpp"
+#include "guest_state.hpp"
 #include "macho.hpp"
 
 #include <iostream>
@@ -12,6 +13,13 @@ void require(bool value, const char* message) {
 
 int main(int argc, char** argv) {
   if (argc != 3) return 2;
+  arm64metal::GuestThread first_thread;
+  arm64metal::GuestThread second_thread;
+  require(first_thread.jitWriteProtect && second_thread.jitWriteProtect,
+          "guest threads do not start in write-protected mode");
+  second_thread.jitWriteProtect = false;
+  require(first_thread.jitWriteProtect,
+          "JIT write-protection state is not isolated per guest thread");
   const arm64metal::MachO without_jit(argv[1], true);
   const arm64metal::MachO with_jit(argv[2], true);
   const auto denied = arm64metal::guest_code_policy(argv[1], without_jit.bytes());

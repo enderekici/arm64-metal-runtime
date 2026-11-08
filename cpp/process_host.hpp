@@ -199,7 +199,7 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t size, std::uint64_t alignment,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
-                                std::uint64_t& guestAddress)> machVmAllocate;
+                                std::uint64_t& guestAddress, bool jitMapping)> machVmAllocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
@@ -211,6 +211,9 @@ struct HostServiceState {
     std::uint32_t queuedProcessSignals = 0;
     std::uint32_t threadPendingSignals = 0;
     std::uint32_t threadSignalMask = 0;
+    bool jitWriteProtected = true;
+    bool guestMapJitEligible = false;
+    std::function<bool(bool)> setJitWriteProtection;
 
     HostServiceState() = default;
     HostServiceState(const HostServiceState&) = delete;

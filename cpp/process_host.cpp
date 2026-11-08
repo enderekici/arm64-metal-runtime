@@ -1889,6 +1889,13 @@ HostServiceResult dispatch_guest_host_service(
             break;
         case 179:  // sys_icache_invalidate, code is refreshed when mappings become executable
             break;
+        case 180:  // pthread_jit_write_protect_np: the runner applies per-thread mapping mode
+            if (state.setJitWriteProtection &&
+                !state.setJitWriteProtection(registers[0] != 0)) {
+                throw std::runtime_error("Guest MAP_JIT write-protection state is unavailable");
+            }
+            state.jitWriteProtected = registers[0] != 0;
+            break;
         case 112:  // mach_vm_allocate / vm_allocate
         case 114: {  // mach_vm_map (anonymous guest mapping only)
             constexpr std::uint32_t kernSuccess = 0;
@@ -1948,7 +1955,7 @@ HostServiceResult dispatch_guest_host_service(
             }
             std::uint64_t address = 0;
             const auto result = state.machVmAllocate(size, alignment, currentProtection,
-                                                     maximumProtection, address);
+                                                     maximumProtection, address, false);
             if (result == kernSuccess) std::memcpy(output, &address, sizeof(address));
             registers[0] = result;
             break;
@@ -2440,18 +2447,31 @@ HostServiceResult dispatch_guest_host_service(
         case 107: {  // anonymous guest mappings and read-only file-backed mappings
             const auto page_size = bootstrap.pageSize;
             const auto flags = static_cast<std::uint32_t>(registers[3]);
-            if (flags == (MAP_PRIVATE | MAP_ANON)) {
+            const auto jit_flag = static_cast<std::uint32_t>(MAP_JIT);
+            const bool jit_mapping = (flags & jit_flag) != 0;
+            const auto anonymous_flags = flags & ~jit_flag;
+            if (jit_mapping && anonymous_flags != (MAP_PRIVATE | MAP_ANON)) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
+            }
+            if (anonymous_flags == (MAP_PRIVATE | MAP_ANON)) {
                 const auto protection = static_cast<std::uint32_t>(registers[2]);
                 if (page_size == 0 || (page_size & (page_size - 1)) != 0 ||
                     registers[0] != 0 || registers[1] == 0 ||
                     registers[1] > std::numeric_limits<std::uint64_t>::max() - (page_size - 1) ||
-                    (protection & ~7U) != 0 ||
+                    (protection & ~7U) != 0 || (jit_mapping && protection != 7U) ||
                     static_cast<std::int32_t>(registers[4]) != -1 || registers[5] != 0) {
                     set_errno(EINVAL);
                     registers[0] = failure;
                     break;
                 }
-                if ((protection & 2U) != 0 && (protection & 4U) != 0) {
+                if (jit_mapping && !state.guestMapJitEligible) {
+                    set_errno(EINVAL);
+                    registers[0] = failure;
+                    break;
+                }
+                if (!jit_mapping && (protection & 2U) != 0 && (protection & 4U) != 0) {
                     set_errno(EACCES);
                     registers[0] = failure;
                     break;
@@ -2463,7 +2483,10 @@ HostServiceResult dispatch_guest_host_service(
                 }
                 const auto length = (registers[1] + page_size - 1) & ~(page_size - 1);
                 std::uint64_t address = 0;
-                const auto result = state.machVmAllocate(length, page_size, protection, 7, address);
+                const std::uint32_t effective_protection = jit_mapping
+                    ? (state.jitWriteProtected ? 5U : 3U) : protection;
+                const auto result = state.machVmAllocate(length, page_size,
+                    effective_protection, 7, address, jit_mapping);
                 if (result != 0) {
                     set_errno(ENOMEM);
                     registers[0] = failure;
