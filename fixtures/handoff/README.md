@@ -14,8 +14,15 @@ to test a first registration and require its own authenticated guest worker
 callback to publish all 10 ABI checks. This is a reduced no-init control; the
 normal build is the initialized-libpthread path.
 
+`thread-self-carry.c` is a raw syscall 372 native positive control. It sets
+carry immediately before the trap and requires a nonzero thread ID with carry
+cleared.
+
 ```sh
 src=fixtures/handoff/workq-worker-request.c
+xcrun clang -arch arm64e -Wall -Wextra -Werror -fno-stack-protector \
+  fixtures/handoff/thread-self-carry.c -o /tmp/thread-self-carry-native
+/tmp/thread-self-carry-native
 xcrun clang -arch arm64e -Wall -Wextra -Werror -fno-stack-protector \
   "$src" -o /tmp/workq-worker-request-native
 /tmp/workq-worker-request-native

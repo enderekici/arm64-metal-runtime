@@ -55,6 +55,14 @@ static struct trap_result darwin_syscall(uint64_t number, uint64_t a0, uint64_t 
     return (struct trap_result){x0, x17};
 }
 
+static struct trap_result thread_self_with_carry_seeded(void) {
+    register uint64_t x0 __asm__("x0") = 0;
+    register uint64_t x16 __asm__("x16") = 372;
+    register uint64_t x17 __asm__("x17");
+    __asm__ volatile("cmp xzr, xzr\n\tsvc #0x80\n\tcset x17, cs"
+        : "+r"(x0), "+r"(x16), "=r"(x17) : : "memory", "cc");
+    return (struct trap_result){x0, x17};
+}
 __attribute__((noinline)) static void raw_worker_start(void *self, uint32_t port,
         void *stack_low, void *kevent_list, uint32_t flags, int nkevents) {
     uint32_t bits = 0;
@@ -70,7 +78,7 @@ __attribute__((noinline)) static void raw_worker_start(void *self, uint32_t port
     __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
     if (tsd_base == (uintptr_t)self + 224U &&
         *(const uint32_t *)(tsd_base + 3U * sizeof(void *)) == port) bits |= 256U;
-    const struct trap_result threadid = darwin_syscall(372, 0, 0, 0, 0, 0, 0);
+    const struct trap_result threadid = thread_self_with_carry_seeded();
     if (!threadid.carry && threadid.value != 0) bits |= 512U;
     atomic_store_explicit(&raw_entry_bits, bits, memory_order_release);
     (void)darwin_syscall(368, 0x4, 0, 0, 0, 0, 0);
@@ -98,8 +106,8 @@ static int run_fixture(void) {
         .mutex_default_policy = 0, .joinable_offset_bits = 392,
         .wq_quantum_expiry_offset = 960,
     };
-    const uintptr_t signed_entry = (uintptr_t)ptrauth_sign_unauthenticated(
-        (void *)raw_worker_start, ptrauth_key_asia, 0);
+    // Use the compiler's single arm64e IA/0 function-pointer signature.
+    const uintptr_t signed_entry = (uintptr_t)raw_worker_start;
 #ifdef WORKQ_GUEST_NO_INIT
     const uint64_t page_size = 16384;
 #else

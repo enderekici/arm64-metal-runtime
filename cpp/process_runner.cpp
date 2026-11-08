@@ -7773,6 +7773,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 372) {
                 registers[0] = guestScheduler.current_id();
+                registers[32] &= ~std::uint64_t{8};
                 registers[34] = 0;
                 continue;
             }
