@@ -119,8 +119,12 @@ Expected native output is `1 2 3 4 5 6|0a|0x123456789abcdef|4294967301|0|-0042`.
 `___memcpy_chk` import. It checks a successful bounded copy, confirms an
 oversized copy terminates through the native checked-failure trap (shell status
 133 on this host), and runs CPU assertions for direct and cached GPU lowering.
-The successful GPU path remains a GPU byte-copy; only an object-size violation
-crosses to the host failure service.
+An `SA_SIGINFO` native control captures SIGTRAP's signal number, `si_code`, fault
+PC, and address before exiting from its handler with status 77. The guest
+overflow service is wired to deliver the same signal and code through
+`GuestSignalRuntime`; its fault PC/address are guest call-site values, not native
+libsystem addresses. The successful GPU path remains a GPU byte-copy; only an
+object-size violation crosses to the host failure service.
 
 ## Typed MOVN and MOVK slice
 

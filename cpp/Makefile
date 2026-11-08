@@ -98,6 +98,7 @@ GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
 MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
+MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
 MEMCPY_CHK_DECODE_TEST := $(BUILD_DIR)/memcpy-chk-decode-test
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
@@ -222,17 +223,22 @@ $(MEMCPY_CHK_NATIVE): ../fixtures/handoff/memcpy-chk.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror "$<" -o "$@"
 
+$(MEMCPY_CHK_SIGINFO_NATIVE): ../fixtures/handoff/memcpy-chk-siginfo.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -O0 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror "$<" -o "$@"
+
 $(MEMCPY_CHK_DECODE_TEST): ../fixtures/handoff/memcpy-chk-decode.cpp process_decoder.cpp process_decoder.hpp host_service_registry.hpp guest_strings.cpp guest_strings.hpp guest_vector_crypto.cpp guest_vector_crypto.hpp translate_core.cpp translate_core.hpp
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/memcpy-chk-decode.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
 
-verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
+verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
 	nm -u "$(MEMCPY_CHK_NATIVE)" | grep -q '___memcpy_chk'
 	"$(MEMCPY_CHK_NATIVE)" >"$(BUILD_DIR)/memcpy-chk.native.out"
 	printf '%s\n' 'copy=fort result=1' >"$(BUILD_DIR)/memcpy-chk.expected.out"
 	cmp "$(BUILD_DIR)/memcpy-chk.expected.out" "$(BUILD_DIR)/memcpy-chk.native.out"
 	@ulimit -c 0; set +e; "$(MEMCPY_CHK_NATIVE)" overflow >"$(BUILD_DIR)/memcpy-chk.overflow.out" 2>"$(BUILD_DIR)/memcpy-chk.overflow.err"; result=$$?; set -e; \
 		 test "$$result" -eq 133 && test ! -s "$(BUILD_DIR)/memcpy-chk.overflow.out"
+	python3 -c 'import struct, subprocess, sys; result = subprocess.run([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE); assert result.returncode == 77, result.returncode; assert result.stderr == b"", result.stderr; assert len(result.stdout) == 24, len(result.stdout); signum, code, pc, address = struct.unpack("<iiQQ", result.stdout); assert (signum, code) == (5, 0), (signum, code); assert pc != 0 and address != 0, (hex(pc), hex(address)); print("native SA_SIGINFO SIGTRAP: signal=5 code=0 controlled_exit=77 pc/address captured")' "$(MEMCPY_CHK_SIGINFO_NATIVE)"
 	"$(MEMCPY_CHK_DECODE_TEST)"
 
 .PHONY: interpreter-metallib
