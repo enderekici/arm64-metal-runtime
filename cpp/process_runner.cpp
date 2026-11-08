@@ -1248,18 +1248,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   static_cast<std::uint64_t>(bootTime.tv_usec);
         publishCommpage(0xfffffc0a0ULL, quiescentBacking + 24, microseconds, 8);
     }
-    const std::array<std::pair<std::uint64_t, std::size_t>, 2> readOnlyPageShiftFields{{
-        {0xfffff4025ULL, quiescentBacking + 56},
-        {0xfffff4037ULL, quiescentBacking + 57},
+    struct ReadOnlyCommpageField {
+        std::uint64_t address;
+        std::size_t backing;
+        std::size_t width;
+    };
+    const std::array<ReadOnlyCommpageField, 3> readOnlyCommpageFields{{
+        {0xfffff4025ULL, quiescentBacking + 56, 1},
+        {0xfffff4037ULL, quiescentBacking + 57, 1},
+        {0xfffff4084ULL, quiescentBacking + 60, sizeof(std::uint32_t)},
     }};
-    for (const auto& [address, backing] : readOnlyPageShiftFields) {
-        std::uint8_t value = 0;
+    for (const auto& field : readOnlyCommpageFields) {
+        std::uint64_t value = 0;
         vm_size_t bytesRead = 0;
         const auto readResult = vm_read_overwrite(
-            mach_task_self(), static_cast<vm_address_t>(address), sizeof(value),
+            mach_task_self(), static_cast<vm_address_t>(field.address), field.width,
             reinterpret_cast<vm_address_t>(&value), &bytesRead);
-        if (readResult == KERN_SUCCESS && bytesRead == sizeof(value)) {
-            publishCommpage(address, backing, value, sizeof(value));
+        if (readResult == KERN_SUCCESS && bytesRead == field.width) {
+            publishCommpage(field.address, field.backing, value, field.width);
         }
     }
     process_msl::Config config;
