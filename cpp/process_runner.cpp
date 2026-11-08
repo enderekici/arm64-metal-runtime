@@ -1818,11 +1818,30 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             else ++waiters;
         }
     };
+    const auto expireAndPruneGuestMachReceiveWaiters = [&](std::uint64_t now) {
+        (void)guestScheduler.expire_waiters(now);
+        pruneGuestMachReceiveWaiters();
+    };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
         std::vector<std::uint64_t> globalTail;
         if (live.size() >= guestTokenCount) {
             globalTail.assign(live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount),
                               live.end());
+        }
+        const auto activeId = guestScheduler.current_id();
+        auto& activeBeforeSchedule = guestScheduler.current();
+        const bool activeWasWaiting = activeBeforeSchedule.wait.has_value();
+        if (requeue || !activeBeforeSchedule.result.has_value()) {
+            activeBeforeSchedule.registers = live;
+            activeBeforeSchedule.pendingSignals = hostServiceState.threadPendingSignals;
+            activeBeforeSchedule.signalMask = hostServiceState.threadSignalMask;
+        }
+        expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
+        if (activeWasWaiting) {
+            const auto* activeAfterExpiry = guestScheduler.find(activeId);
+            if (activeAfterExpiry != nullptr && !activeAfterExpiry->wait.has_value()) {
+                live = activeAfterExpiry->registers;
+            }
         }
         bool switched = guestScheduler.schedule(
             requeue, live, hostServiceState.threadPendingSignals,
@@ -1852,8 +1871,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 guestScheduler.wake(interruption->thread, -1);
             }
-            (void)guestScheduler.expire_waiters(now);
-            pruneGuestMachReceiveWaiters();
+            expireAndPruneGuestMachReceiveWaiters(now);
             if (activeWasWaiting) {
                 const auto* activeAfterWake = guestScheduler.find(activeId);
                 if (activeAfterWake != nullptr && !activeAfterWake->wait.has_value()) {
@@ -2006,6 +2024,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
     };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
+        expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
         auto waiting = guestMachReceiveWaiters.find(port);
         auto queue = guestMachMessageQueues.find(port);
         if (waiting == guestMachReceiveWaiters.end() || queue == guestMachMessageQueues.end() ||

@@ -406,3 +406,20 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o "$out"
 ```
 
 Native output is `send_woke=1 timeout=268451843 destroy_result=0 destroy_wake=268451846`; status is 0.
+
+## Late local Mach message after receive timeout
+
+`mach-local-late-message.c` leaves the main thread runnable while a worker's
+10 ms local receive times out. Only after joining the timed-out receiver, the
+main thread sends two messages and receives them from the same port in FIFO
+order. This catches stale waiter delivery consuming a message after its
+deadline while also checking that the late message remains queued.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-local-late-message.c -o /tmp/mach-local-late-message
+/tmp/mach-local-late-message
+```
+
+Expected normalized output is
+`receiver_entered=1 receiver_timed_out=1 sender_runnable_past_deadline=1 late_sends=1 late_receive=1 fifo=1 cleanup=1`; status is 0.
