@@ -982,6 +982,48 @@ private:
     std::size_t periodicEvents_ = 0;
 };
 
+class JitExecutionTrace {
+public:
+    JitExecutionTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE_JIT");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    [[nodiscard]] bool enabled() const noexcept { return enabled_; }
+
+    void dispatch(std::uint64_t pc, std::uint64_t ownerBegin,
+                  std::uint64_t ownerEnd, std::size_t backing,
+                  std::uint64_t generation, bool mapJit,
+                  bool usesInterpreter) {
+        if (!enabled_) return;
+        const auto key = std::make_tuple(ownerBegin, backing, generation,
+                                          pc, usesInterpreter);
+        if (reported_.find(key) != reported_.end()) return;
+        if (reported_.size() == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal jit-trace event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        reported_.insert(key);
+        std::cerr << "arm64-metal jit-trace event=dispatch pc=0x" << hexadecimal(pc)
+                  << " owner=dynamic-vm-executable range=0x"
+                  << hexadecimal(ownerBegin) << "-0x" << hexadecimal(ownerEnd)
+                  << " backing=0x" << hexadecimal(backing)
+                  << " generation=" << generation << " map-jit="
+                  << (mapJit ? "true" : "false") << " backend="
+                  << (usesInterpreter ? "gpu-interpreter" : "gpu-translated") << '\n';
+    }
+
+private:
+    static constexpr std::size_t maximumEvents = 256;
+    bool enabled_ = false;
+    bool limitReported_ = false;
+    std::set<std::tuple<std::uint64_t, std::size_t, std::uint64_t,
+                        std::uint64_t, bool>> reported_;
+};
+
 std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
                                 std::uint64_t status) {
     const std::string kind = status == 9 ? "data-pointer" : status == 10 ? "branch" : "code-pointer";
@@ -1039,6 +1081,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
     ProgressTrace progressTrace;
+    JitExecutionTrace jitExecutionTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
         throw std::invalid_argument("Process dispatch block budget must be in [1, 8192]");
     }
@@ -2117,6 +2160,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
     std::set<std::uint64_t> dynamicCodeRegionStarts;
+    std::uint64_t jitTraceGeneration = 0;
+    const auto executableJitOwnerFor = [&](std::uint64_t pc)
+        -> std::optional<std::tuple<std::uint64_t, std::uint64_t,
+                                    std::size_t, bool>> {
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            for (const auto& region : allocation.regions) {
+                const bool writableExecutable =
+                    (region.maximumProtection & 6U) == 6U;
+                // Only guest-owned VM allocations can be generated code.
+                // Entitled guests may use ordinary anonymous RW-to-RX mappings.
+                const bool generatedCodeEligible = region.jit ||
+                    (image.main_code_policy.map_jit_eligible && writableExecutable);
+                if (generatedCodeEligible && region.executable &&
+                    region.begin <= pc && pc < region.end) {
+                    return std::make_tuple(region.begin, region.end,
+                                           region.backing, region.jit);
+                }
+            }
+        }
+        return std::nullopt;
+    };
     struct GuestReceiveRight { std::uint32_t flags; std::uint64_t context; };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::set<std::uint32_t> guestDeadPortNames;
@@ -3207,6 +3272,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         for (const auto& range : replacement.addedTextRegions) image.text_regions.push_back(range);
         dynamicCodeRegionStarts.swap(replacement.starts);
         processCodeCacheInvalidated = processCodeCacheInvalidated || replacement.changed;
+        if (replacement.changed &&
+            jitTraceGeneration < std::numeric_limits<std::uint64_t>::max()) {
+            ++jitTraceGeneration;
+        }
     };
     const auto appendVmRegionToResident = [&](std::vector<std::uint64_t>& table,
                                                const VmRegion& region) {
@@ -3849,22 +3918,34 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         // must complete the callback without compiling the sentinel as code.
         if (registers[33] == kNoFault) {
             registers[34] = 0;
-        } else if (progressTrace.enabled()) {
+        } else if (progressTrace.enabled() || jitExecutionTrace.enabled()) {
             ++dispatchSequence;
             const bool reportDispatch = dispatchSequence <= 16 || dispatchSequence % 32 == 0;
+            const auto dispatchedPc = registers[33];
             const auto dispatchStarted = std::chrono::steady_clock::now();
-            if (reportDispatch) {
+            if (progressTrace.enabled() && reportDispatch) {
                 progressTrace.event("dispatch-start", registers[33], dispatchSequence);
             }
             if (activeKernel->usesInterpreter) {
-                progressTrace.event("interpreter-dispatch", registers[33],
-                                    activeKernel->interpretedPackets.size());
+                if (progressTrace.enabled()) {
+                    progressTrace.event("interpreter-dispatch", registers[33],
+                                        activeKernel->interpretedPackets.size());
+                }
                 (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
                                             stateBuffer, &interpreterMemoryAccess);
             } else {
                 (void)backend.dispatch(activeKernel->translated, bindings, one, one);
             }
-            if (reportDispatch) {
+            if (jitExecutionTrace.enabled()) {
+                const auto owner = executableJitOwnerFor(dispatchedPc);
+                if (owner) {
+                    const auto [ownerBegin, ownerEnd, backing, mapJit] = *owner;
+                    jitExecutionTrace.dispatch(dispatchedPc, ownerBegin, ownerEnd,
+                                               backing, jitTraceGeneration, mapJit,
+                                               activeKernel->usesInterpreter);
+                }
+            }
+            if (progressTrace.enabled() && reportDispatch) {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - dispatchStarted).count();
                 progressTrace.event("dispatch-done", registers[33],

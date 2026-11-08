@@ -32,15 +32,18 @@ assert end > start
 
 if trace_required == "1":
     events = re.findall(
-        r"event=(compile-start|dispatch-start) pc=0x([0-9a-f]+)", stderr
-    )
-    compiled = any(
-        event == "compile-start" and start <= int(pc, 16) < end
-        for event, pc in events
+        r"arm64-metal jit-trace event=dispatch pc=0x([0-9a-f]+) "
+        r"owner=dynamic-vm-executable range=0x([0-9a-f]+)-0x([0-9a-f]+) "
+        r"backing=0x([0-9a-f]+) generation=(\d+) map-jit=(true|false) "
+        r"backend=(gpu-translated|gpu-interpreter)",
+        stderr,
     )
     dispatched = any(
-        event == "dispatch-start" and start <= int(pc, 16) < end
-        for event, pc in events
+        start <= int(pc, 16) < end
+        and int(owner_begin, 16) <= int(pc, 16) < int(owner_end, 16)
+        for pc, owner_begin, owner_end, *_ in events
     )
-    assert compiled, f"runtime did not translate {class_name}::{method_name} code"
-    assert dispatched, f"runtime did not dispatch {class_name}::{method_name} code"
+    assert dispatched, (
+        f"runtime did not dispatch {class_name}::{method_name} from its "
+        "owned executable VM mapping"
+    )

@@ -77,6 +77,7 @@ run_target() {
         *.native) run_bounded "$run_label" "$@" ;;
         *)
             run_bounded "$run_label" env ARM64_METAL_TRACE=1 \
+                ARM64_METAL_TRACE_JIT=1 \
                 ARM64_METAL_SHARED_CACHE=1 \
                 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_CACHE_BOOTSTRAP=1 \
                 ARM64_METAL_CACHE_INITIALIZERS=1 "$runtime" launch "$@"
@@ -92,7 +93,7 @@ compare() {
     run_target "$compare_label.guest" "$@" || return 1
     cmp "$run_dir/$compare_label.native.status" "$run_dir/$compare_label.guest.status"
     cmp "$run_dir/$compare_label.native.stdout" "$run_dir/$compare_label.guest.stdout"
-    sed '/^arm64-metal trace /d' "$run_dir/$compare_label.guest.stderr" \
+    sed -e '/^arm64-metal trace /d' -e '/^arm64-metal jit-trace /d' "$run_dir/$compare_label.guest.stderr" \
         > "$run_dir/$compare_label.guest.stderr.normalized"
     cmp "$run_dir/$compare_label.native.stderr" \
         "$run_dir/$compare_label.guest.stderr.normalized"
@@ -130,7 +131,7 @@ for mode in default xint c1 c2; do
         -cp "$probe_dir/classes" ThreadedWorkload || exit 1
     cmp "$run_dir/$thread_label.native.status" "$run_dir/$thread_label.guest.status"
     cmp "$run_dir/$thread_label.native.stdout" "$run_dir/$thread_label.guest.stdout"
-    sed '/^arm64-metal trace /d' "$run_dir/$thread_label.guest.stderr" \
+    sed -e '/^arm64-metal trace /d' -e '/^arm64-metal jit-trace /d' "$run_dir/$thread_label.guest.stderr" \
         > "$run_dir/$thread_label.guest.stderr.normalized"
     cmp "$run_dir/$thread_label.native.stderr" \
         "$run_dir/$thread_label.guest.stderr.normalized"
@@ -146,7 +147,7 @@ run_target "$xint_label.guest" "$jdk_home/bin/java" -Xint \
 cmp "$run_dir/$xint_label.native.status" "$run_dir/$xint_label.guest.status"
 test "$(cat "$run_dir/$xint_label.native.status")" = 0
 test "$(cat "$run_dir/$xint_label.native.stderr")" = "$thread_marker"
-sed '/^arm64-metal trace /d' "$run_dir/$xint_label.guest.stderr" \
+sed -e '/^arm64-metal trace /d' -e '/^arm64-metal jit-trace /d' "$run_dir/$xint_label.guest.stderr" \
     > "$run_dir/$xint_label.guest.stderr.normalized"
 test "$(cat "$run_dir/$xint_label.guest.stderr.normalized")" = "$thread_marker"
 if rg 'ThreadedWorkload::hotLoop' "$run_dir/$xint_label.native.stdout" \
@@ -242,7 +243,7 @@ for tier in c1 c2; do
         "$run_dir/$profile_label.guest.stdout" \
         "$run_dir/$profile_label.guest.stderr" "$compiler" \
         ThreadedWorkload hotLoop "$thread_marker" stderr 1
-    sed '/^arm64-metal trace /d' "$run_dir/$profile_label.guest.stderr" \
+    sed -e '/^arm64-metal trace /d' -e '/^arm64-metal jit-trace /d' "$run_dir/$profile_label.guest.stderr" \
         > "$run_dir/$profile_label.guest.stderr.normalized"
     test "$(cat "$run_dir/$profile_label.native.stderr")" = "$thread_marker"
     test "$(cat "$run_dir/$profile_label.guest.stderr.normalized")" = "$thread_marker"
