@@ -2,19 +2,15 @@
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/mman.h>
 
 typedef uint64_t (*JitFunction)(void);
 
 static int publish_code(volatile uint32_t* page, uint32_t immediate) {
-    const uint32_t instructions[] = {
-        0xd2800000U | (immediate << 5U),  // mov x0, #immediate
-        0xd65f03c0U,                      // ret
-    };
     pthread_jit_write_protect_np(0);
-    memcpy((void*)page, instructions, sizeof(instructions));
-    sys_icache_invalidate((void*)page, sizeof(instructions));
+    page[0] = 0xd2800000U | (immediate << 5U);  // mov x0, #immediate
+    page[1] = 0xd65f03c0U;                      // ret
+    sys_icache_invalidate((void*)page, 2U * sizeof(uint32_t));
     pthread_jit_write_protect_np(1);
     return 0;
 }

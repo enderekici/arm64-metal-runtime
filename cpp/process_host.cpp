@@ -1889,7 +1889,7 @@ HostServiceResult dispatch_guest_host_service(
             break;
         case 179:  // sys_icache_invalidate, code is refreshed when mappings become executable
             break;
-        case 180:  // pthread_jit_write_protect_np: the runner applies per-thread mapping mode
+        case 182:  // pthread_jit_write_protect_np: the runner applies per-thread mapping mode
             if (state.setJitWriteProtection &&
                 !state.setJitWriteProtection(registers[0] != 0)) {
                 throw std::runtime_error("Guest MAP_JIT write-protection state is unavailable");
