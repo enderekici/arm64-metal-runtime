@@ -2092,8 +2092,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return name;
     };
-    std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
-    std::uint32_t nextGuestThreadPortName = 0x40000003U;
+=======
+    struct GuestWorkqueueDispatchConfig {
+        std::uint32_t version;
+        std::uint32_t flags;
+        std::uint64_t queueSerialNumberOffset;
+        std::uint64_t queueLabelOffset;
+    };
+    std::optional<GuestWorkqueueDispatchConfig> guestWorkqueueDispatchConfig;
+    bool guestWorkqueueOpened = false;
+>>>>>>> e900b02 (feat: model guest workqueue setup)
+        struct GuestWorkqueueDispatchConfig {
+        std::uint32_t version;
+        std::uint32_t flags;
+        std::uint64_t queueSerialNumberOffset;
+        std::uint64_t queueLabelOffset;
+    };
+    std::optional<GuestWorkqueueDispatchConfig> guestWorkqueueDispatchConfig;
+    bool guestWorkqueueOpened = false;
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
     struct GuestCallbackFrame {
@@ -6871,6 +6887,59 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         } catch (const std::out_of_range&) {
                             error = EFAULT;
                         }
+                    }
+                }
+                if (error == 0) {
+                    registers[0] = 0;
+                    registers[32] &= ~carryMask;
+                } else {
+                    registers[0] = error;
+                    registers[32] |= carryMask;
+                }
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == 367) {
+                // Native workq_open is argument-free and succeeds even before
+                // an individual workqueue request is made.
+                guestWorkqueueOpened = true;
+                registers[0] = 0;
+                registers[32] &= ~std::uint64_t{8};
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == 368) {
+                constexpr std::uint64_t carryMask = 8U;
+                constexpr std::uint64_t setupDispatch = 0x400;
+                constexpr std::uint64_t dispatchConfigSize = 24;
+                static_assert(sizeof(GuestWorkqueueDispatchConfig) == dispatchConfigSize);
+                if (registers[0] != setupDispatch) {
+                    throw std::runtime_error("Unsupported guest workqueue operation 0x" +
+                        hexadecimal(registers[0]) + (guestWorkqueueOpened
+                            ? " after workq_open" : " before workq_open"));
+                }
+
+                std::uint64_t error = 0;
+                if (registers[2] != dispatchConfigSize || registers[3] != 0) {
+                    error = ENOTSUP;
+                } else if (registers[1] < ExecutableImage::minimum_image_address) {
+                    error = EFAULT;
+                } else {
+                    try {
+                        const auto* bytes = guestMemory.buffer(registers[1],
+                            dispatchConfigSize);
+                        GuestWorkqueueDispatchConfig config{};
+                        std::memcpy(&config, bytes, sizeof(config));
+                        if (config.version != 2 || config.flags != 0) {
+                            error = ENOTSUP;
+                        } else {
+                            // The kernel setup trap is repeat-tolerant. Keep
+                            // only guest-supplied metadata; dispatch's callback
+                            // pointers are published by guest libpthread.
+                            guestWorkqueueDispatchConfig = config;
+                        }
+                    } catch (const std::out_of_range&) {
+                        error = EFAULT;
                     }
                 }
                 if (error == 0) {
