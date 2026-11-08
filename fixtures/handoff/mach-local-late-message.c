@@ -96,19 +96,19 @@ int main(void) {
   volatile uint64_t work = 0;
   while (monotonic_nanoseconds() - runStart < UINT64_C(100000000)) ++work;
   const uint64_t runnableNanoseconds = monotonic_nanoseconds() - runStart;
-  const int joined = created && pthread_join(receiver, NULL) == 0;
-  const int timedOut = joined && context.result == MACH_RCV_TIMED_OUT;
-
-  const uint64_t sendFirst = timedOut ? send_message(port, 0x4d534741, 0x13579bdf)
-                                      : KERN_FAILURE;
+  // Send immediately after the busy interval, before joining or yielding.
+  const uint64_t sendFirst = created && runnableNanoseconds >= UINT64_C(100000000)
+      ? send_message(port, 0x4d534741, 0x13579bdf) : KERN_FAILURE;
   const uint64_t sendSecond = sendFirst == MACH_MSG_SUCCESS
       ? send_message(port, 0x4d534742, 0x2468ace0) : KERN_FAILURE;
+  const int joined = created && pthread_join(receiver, NULL) == 0;
+  const int timedOut = joined && context.result == MACH_RCV_TIMED_OUT;
   struct {
     mach_msg_header_t header;
     uint32_t payload;
     mach_msg_max_trailer_t trailer;
   } first = {0}, second = {0};
-  const uint64_t receiveFirst = sendSecond == MACH_MSG_SUCCESS
+  const uint64_t receiveFirst = joined && sendSecond == MACH_MSG_SUCCESS
       ? receive_message(port, &first.header, sizeof(first)) : KERN_FAILURE;
   const uint64_t receiveSecond = receiveFirst == MACH_MSG_SUCCESS
       ? receive_message(port, &second.header, sizeof(second)) : KERN_FAILURE;
