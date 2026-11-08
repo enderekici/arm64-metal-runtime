@@ -1932,6 +1932,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::set<std::uint32_t> guestSemaphoreNames;
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
+    struct GuestLocalMessage {
+        std::uint32_t size;
+        std::uint32_t remotePort;
+        std::uint32_t voucherPort;
+        std::int32_t messageId;
+        std::vector<std::uint8_t> body;
+    };
+    std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
     struct GuestBsdthreadRegistration {
@@ -5995,6 +6003,122 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                constexpr std::uint64_t machSendMessage = 0x00000001;
+                constexpr std::uint64_t machReceiveMessage = 0x00000002;
+                constexpr std::uint64_t machReceiveTimeout = 0x00000100;
+                constexpr std::uint64_t mach64SendAny = 0x0000000800000000;
+                const auto options = registers[1];
+                const auto remote = static_cast<std::uint32_t>(registers[3]);
+                const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
+                const bool sendRequested = (options & machSendMessage) != 0;
+                const bool receiveRequested = (options & machReceiveMessage) != 0;
+                const bool specialRemote = remote == guestMachTaskPort ||
+                                           remote == guestMachHostPort;
+                const bool localSend = sendRequested && !specialRemote;
+                const bool localReceive = receiveRequested && !sendRequested &&
+                    receiveName != guestMachTaskPort && receiveName != guestMachHostPort;
+                if (localSend || localReceive) {
+                    constexpr std::uint32_t kernInvalidArgument = 4;
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidRight = 0x10000004;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    constexpr std::uint32_t machSendMessageTooSmall = 0x10000008;
+                    constexpr std::uint32_t machReceiveInvalidName = 0x10004002;
+                    constexpr std::uint32_t machReceiveTimedOut = 0x10004003;
+                    constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
+                    constexpr std::uint32_t machMsgTypeCopySend = 19;
+                    constexpr std::uint32_t machMsgTypeMoveSend = 17;
+                    constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
+                    constexpr std::uint64_t allowedOptions = machSendMessage |
+                        machReceiveMessage | machReceiveTimeout | mach64SendAny;
+                    std::uint64_t result = 0;
+                    if ((options & ~allowedOptions) != 0 ||
+                        (registers[5] & 0xffffffffULL) != 0 || registers[6] >> 32 != 0) {
+                        result = kernInvalidArgument;
+                    } else if (sendRequested) {
+                        const auto sendRight = guestSendRightUrefs.find(remote);
+                        if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0 ||
+                            guestReceiveRights.find(remote) == guestReceiveRights.end()) {
+                            result = machSendInvalidDestination;
+                        } else if ((static_cast<std::uint32_t>(registers[2]) & 0x1f) !=
+                                       machMsgTypeCopySend ||
+                                   ((static_cast<std::uint32_t>(registers[2]) >> 8) & 0x1f) != 0 ||
+                                   static_cast<std::uint32_t>(registers[4]) != 0 ||
+                                   static_cast<std::uint32_t>(registers[3] >> 32) != 0 ||
+                                   (registers[2] & 0x80000000ULL) != 0) {
+                            result = machSendInvalidRight;
+                        } else {
+                            const auto sendSize = registers[2] >> 32;
+                            if (sendSize < sizeof(mach_msg_header_t) || (sendSize & 3) != 0) {
+                                result = machSendMessageTooSmall;
+                            } else {
+                                try {
+                                    const auto* bytes = guestMemory.buffer(registers[0], sendSize);
+                                    GuestLocalMessage message{
+                                        static_cast<std::uint32_t>(sendSize),
+                                        static_cast<std::uint32_t>(registers[3] >> 32),
+                                        static_cast<std::uint32_t>(registers[4]),
+                                        static_cast<std::int32_t>(messageId), {}};
+                                    message.body.assign(bytes + sizeof(mach_msg_header_t),
+                                                        bytes + sendSize);
+                                    guestMachMessageQueues[remote].push_back(std::move(message));
+                                } catch (const std::exception&) {
+                                    result = machSendInvalidData;
+                                }
+                            }
+                        }
+                    }
+                    if (result == 0 && receiveRequested) {
+                        if (guestReceiveRights.find(receiveName) == guestReceiveRights.end()) {
+                            result = machReceiveInvalidName;
+                        } else {
+                            auto& queue = guestMachMessageQueues[receiveName];
+                            if (queue.empty()) {
+                                if ((options & machReceiveTimeout) != 0) {
+                                    result = machReceiveTimedOut;
+                                } else {
+                                    throw std::runtime_error(
+                                        "Blocking guest local Mach receive is unsupported");
+                                }
+                            } else {
+                                const auto messageSize = queue.front().size;
+                                const auto outputSize = static_cast<std::uint64_t>(messageSize) +
+                                                        machTrailerSize;
+                                const auto receiveSize = static_cast<std::uint32_t>(registers[6]);
+                                if (receiveSize < outputSize) {
+                                    result = machReceiveTooLarge;
+                                } else {
+                                    try {
+                                        auto* output = guestMemory.buffer(registers[0], outputSize,
+                                                                          true);
+                                        const auto& message = queue.front();
+                                        mach_msg_header_t header{};
+                                        header.msgh_bits = machMsgTypeMoveSend << 8;
+                                        header.msgh_size = message.size;
+                                        header.msgh_remote_port = message.remotePort;
+                                        header.msgh_local_port = receiveName;
+                                        header.msgh_voucher_port = message.voucherPort;
+                                        header.msgh_id = message.messageId;
+                                        std::memcpy(output, &header, sizeof(header));
+                                        if (!message.body.empty()) {
+                                            std::memcpy(output + sizeof(header), message.body.data(),
+                                                        message.body.size());
+                                        }
+                                        const mach_msg_trailer_t trailer{0, machTrailerSize};
+                                        std::memcpy(output + message.size, &trailer,
+                                                    sizeof(trailer));
+                                        queue.pop_front();
+                                    } catch (const std::exception&) {
+                                        result = 0x1000400e; // MACH_RCV_INVALID_DATA
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    registers[0] = result;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 200) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;
@@ -6429,6 +6553,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         result = machSendInvalidRight;
                     } else {
                         guestReceiveRights.erase(right);
+                        guestMachMessageQueues.erase(name);
                     }
                 }
                 registers[0] = result;

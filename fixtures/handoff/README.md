@@ -53,10 +53,15 @@ xcrun clang -Wall -Wextra -Werror "$src/cache-provider-main.c" -o "$out/cache-pr
 xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typefilter"
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
 xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
+<<<<<<< HEAD
 xcrun clang -Wall -Wextra -Werror "$src/mach-host-info.c" -o "$out/mach-host-info"
 xcrun clang -Wall -Wextra -Werror "$src/raw-sysctl.c" -o "$out/raw-sysctl"
 xcrun clang -Wall -Wextra -Werror "$src/sysctl-usrstack.c" -o "$out/sysctl-usrstack"
 xcrun clang -Wall -Wextra -Werror "$src/pthread-stackaddr.c" -o "$out/pthread-stackaddr"
+=======
+xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
+xcrun clang -Wall -Wextra -Werror "$src/mach-local-message.c" -o "$out/mach-local-message"
+>>>>>>> 39a91c1 (feat: model local Mach message queues)
 xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
 xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
@@ -71,9 +76,14 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/kdebug-typefilter"
 "$out/dyld-interposition"
 "$out/mach-reply-port"
+<<<<<<< HEAD
 "$out/mach-host-info"
 "$out/raw-sysctl"
 "$out/sysctl-usrstack"
+=======
+"$out/mach-port-namespace"
+"$out/mach-local-message"
+>>>>>>> 39a91c1 (feat: model local Mach message queues)
 "$out/mach-self-pid"
 "$out/mach-port-namespace"
 "$out/commpage-page-shift"
@@ -92,6 +102,12 @@ For a Metal comparison, prefix each invocation with `env ARM64_METAL_SHARED_CACH
 generation (`-26`), MAKE_SEND insertion (`-21`), send-right deallocation
 (`-18`), and receive destruction (`-25`). Its normalized native output is
 `task=1 allocated=1 names_distinct=1 inserted=1 send_deallocated=1 receive_only_invalid_right=1 destroyed=1 destroy_reply=1 destroy_again_invalid_name=1 invalid_right=18 wrong_task_invalid_dest=1`.
+
+`mach-local-message.c` directly exercises the arm64 `mach_msg2_trap` (`-47`)
+register and packed-argument ABI for local send, receive, timeout, and invalid
+right/name cases. It uses `MACH64_SEND_ANY` on raw sends, matching the generic
+send classification selected by libSystem. Native normalized output is
+`task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
 ## Unchanged application parity gate
 
