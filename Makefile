@@ -22,7 +22,7 @@ MEMORY := $(BUILD)/guest-memory
 CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
 
-.PHONY: all verify verify-cache verify-apps bundle
+.PHONY: all verify verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
 
 verify: all
@@ -112,6 +112,12 @@ $(DYLD_ADD_IMAGE_REENTRANT): fixtures/handoff/dyld-add-image-reentrant.c | $(BUI
 verify-dyld-add-image-native: $(DYLD_ADD_IMAGE_ORACLE) $(DYLD_ADD_IMAGE_REENTRANT) $(DYLD_ADD_IMAGE_ROOT) $(DYLD_ADD_IMAGE_NESTED)
 	"$(DYLD_ADD_IMAGE_ORACLE)" "$(DYLD_ADD_IMAGE_ROOT)" "$(BUILD)/missing-dyld-add-image.dylib"
 	"$(DYLD_ADD_IMAGE_REENTRANT)" "$(DYLD_ADD_IMAGE_ROOT)" "$(BUILD)/missing-dyld-add-image.dylib" "$(DYLD_ADD_IMAGE_NESTED)"
+JAVA_VERIFY_RUNTIME ?= $(BUILD)/cpp/arm64-metal
+JAVA_VERIFY_RESULTS ?= $(BUILD)/java-verification
+
+verify-java:
+	@test -n "$(JDK_HOME)" || { echo "Set JDK_HOME to the Azul JDK being qualified" >&2; exit 2; }
+	./verify-java.sh "$(JDK_HOME)" "$(JAVA_VERIFY_RUNTIME)" "$(JAVA_VERIFY_RESULTS)"
 
 verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
