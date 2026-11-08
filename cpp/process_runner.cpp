@@ -3278,6 +3278,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 const auto resume = hostRegisters[33];
                 const auto faultPC = resume >= 4 ? resume - 4 : resume;
+                hostRegisters[33] = faultPC;
                 const GuestSynchronousFault fault{SIGTRAP, 0, faultPC, faultPC};
                 const auto delivery = signalRuntime.deliver_synchronous(
                     hostServiceState.signals, hostServiceState.threadSignalMask,
