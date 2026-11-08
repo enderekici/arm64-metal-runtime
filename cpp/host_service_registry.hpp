@@ -147,6 +147,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mach_vm_deallocate", 113, true, true},
     {"_vm_deallocate", 113, true, true},
     {"_mach_vm_map", 114, true, true},
+    {"_mach_vm_protect", 196, true, true},
+    {"_mach_vm_read_overwrite", 197, true, true},
     {"__dyld_get_image_slide", 115, true, true},
     {"_mprotect", 116, true, true},
     {"_sys_icache_invalidate", 179, true, true},

@@ -638,3 +638,20 @@ rejected with `KERN_INVALID_ADDRESS`. `make -C cpp verify-mach-vm-overwrite-nati
 checks native full and partial overwrites, a valid hole mapping, address
 preservation and zero fill, the null-target error, and rejection of an
 unsupported flag.
+
+## Named Mach VM read and protect services
+
+`_mach_vm_protect` uses the same allocation and sparse-reservation callback as
+the raw `mach_vm_protect` trap. `_mach_vm_read_overwrite` reads from guest VM
+through `GuestMemory`, snapshots source bytes before writing to handle aliases,
+and writes the output size only after a complete successful copy. An invalid
+source leaves destination and output size unchanged. A destination that reaches
+an inaccessible page can receive the writable prefix before returning
+`KERN_INVALID_ADDRESS`, matching the native task-self probe.
+
+Run the native differential fixture and CPU-only dispatch checks with
+`make -C cpp verify-mach-vm-named-services METAL_CPP=/path/to/metal-cpp`.
+The native fixture covers overlapping source/destination, invalid source and
+destination ranges, preserved output size on failure, invalid task handling,
+and the named protect wrapper. The CPU test calls the registered host services
+directly and checks copyout behavior without dispatching a Metal kernel.

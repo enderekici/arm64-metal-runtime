@@ -2216,6 +2216,101 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
+        case 196: {  // mach_vm_protect wrapper, matching its raw Mach trap
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+            } else if (!state.machVmProtect) {
+                registers[0] = kernInvalidArgument;
+            } else {
+                registers[0] = state.machVmProtect(registers[1], registers[2],
+                    registers[3] != 0, static_cast<std::uint32_t>(registers[4]));
+            }
+            break;
+        }
+        case 197: {  // mach_vm_read_overwrite from authoritative guest memory
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidAddress = 1;
+            constexpr std::uint32_t kernResourceShortage = 3;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+                break;
+            }
+            if (registers[2] > std::numeric_limits<std::size_t>::max()) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            const auto size = static_cast<std::size_t>(registers[2]);
+            std::uint8_t* copiedSize = nullptr;
+            try {
+                copiedSize = memory.buffer(registers[4], sizeof(std::uint64_t), true);
+            } catch (const std::out_of_range&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            if (size == 0) {
+                const std::uint64_t copied = 0;
+                std::memcpy(copiedSize, &copied, sizeof(copied));
+                registers[0] = 0;
+                break;
+            }
+            if (registers[1] > std::numeric_limits<std::uint64_t>::max() - registers[2] ||
+                registers[3] > std::numeric_limits<std::uint64_t>::max() - registers[2]) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            std::vector<std::uint8_t> snapshot;
+            try {
+                snapshot.resize(size);
+            } catch (const std::bad_alloc&) {
+                registers[0] = kernResourceShortage;
+                break;
+            } catch (const std::length_error&) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            std::uint64_t readOffset = 0;
+            try {
+                while (readOffset < registers[2]) {
+                    const auto address = registers[1] + readOffset;
+                    const auto available = memory.contiguous_readable_size(address);
+                    if (available == 0) throw std::out_of_range("Empty guest source range");
+                    const auto chunk = std::min(available, registers[2] - readOffset);
+                    const auto* source = memory.buffer(address, chunk);
+                    std::memcpy(snapshot.data() + static_cast<std::size_t>(readOffset),
+                                source, static_cast<std::size_t>(chunk));
+                    readOffset += chunk;
+                }
+            } catch (const std::out_of_range&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            std::uint64_t written = 0;
+            while (written < registers[2]) {
+                try {
+                    const auto address = registers[3] + written;
+                    const auto available = memory.contiguous_readable_size(address);
+                    if (available == 0) throw std::out_of_range("Empty guest destination range");
+                    const auto chunk = std::min(available, registers[2] - written);
+                    auto* destination = memory.buffer(address, chunk, true);
+                    std::memmove(destination,
+                        snapshot.data() + static_cast<std::size_t>(written),
+                        static_cast<std::size_t>(chunk));
+                    written += chunk;
+                } catch (const std::out_of_range&) {
+                    registers[0] = kernInvalidAddress;
+                    break;
+                }
+            }
+            if (written == registers[2]) {
+                const auto copied = static_cast<std::uint64_t>(size);
+                std::memcpy(copiedSize, &copied, sizeof(copied));
+                registers[0] = 0;
+            }
+            break;
+        }
         case 116: {  // mprotect on anonymous guest VM mappings
             constexpr std::uint32_t kernSuccess = 0;
             constexpr std::uint32_t kernProtectionFailure = 2;
