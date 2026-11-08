@@ -1,5 +1,6 @@
 #pragma once
 
+#include "guest_code_policy.hpp"
 #include "macho.hpp"
 #include "shared_cache.hpp"
 
@@ -179,6 +180,7 @@ struct MachImage {
   std::map<std::string, MachExport> exports;
   std::vector<std::size_t> initializers;
   std::optional<ThreadLocalImageMetadata> thread_locals;
+  GuestCodePolicy code_policy;
 
   MachImage(const std::filesystem::path& path, bool executable, std::size_t placement);
 };
@@ -248,6 +250,7 @@ struct ExecutableImage {
   std::int64_t main_header = 0;
   std::vector<std::uint8_t> main_uuid;
   bool main_restricted = false;
+  GuestCodePolicy main_code_policy;
   std::vector<std::pair<std::int64_t, std::int64_t>> text_regions;
   std::vector<CodeABIRegion> code_abi_regions;
   // Each actual mapped segment remains separate, so gaps between segments do

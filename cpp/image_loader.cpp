@@ -118,6 +118,7 @@ std::uint64_t GuestBuildVersion::token(bool query_sdk) const noexcept {
 
 MachImage::MachImage(const std::filesystem::path& path, bool executable, std::size_t placement) {
   MachO file(path, true);
+  if (executable) code_policy = guest_code_policy(path, file.bytes());
   arm64e_code_abi = arm64e_from_subtype(file.word(8));
   const auto& bytes = file.bytes();
   if (file.word(12) != (executable ? 2U : 6U)) {
@@ -643,6 +644,7 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
   main_header = static_cast<std::int64_t>(loaded.front().base);
   main_uuid = loaded.front().image.uuid;
   main_restricted = loaded.front().image.restricted;
+  main_code_policy = loaded.front().image.code_policy;
   build_version = loaded.front().image.build_version;
   linked_libraries_ = loaded.front().image.dependencies;
   for (const auto& image : loaded) {

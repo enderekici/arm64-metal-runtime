@@ -10,6 +10,7 @@ COMPONENT_SOURCES := \
 	cache_residency.cpp \
 	darwin_bridge.cpp \
 	function_runner.cpp \
+	guest_code_policy.cpp \
 	guest_format.cpp \
 	guest_signal_runtime.cpp \
 	guest_scheduler.cpp \
@@ -45,6 +46,7 @@ APP_SOURCES := \
 	cache_residency.cpp \
 	guest_signal_runtime.cpp \
 	guest_scheduler.cpp \
+	guest_code_policy.cpp \
 	guest_format.cpp \
 	guest_state.cpp \
 	guest_strings.cpp \
@@ -88,6 +90,8 @@ INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
+MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
+MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
@@ -387,3 +391,17 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/interpreter.err"; \
 		echo "verify-interpreter-demand-cache receipts: $$run_dir"
+$(MAP_JIT_POLICY_TEST): ../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp macho.cpp macho.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I. ../fixtures/handoff/map-jit-policy-test.cpp \
+		guest_code_policy.cpp macho.cpp -framework Security -framework CoreFoundation -o "$@"
+
+$(MAP_JIT_POLICY_FIXTURE): ../fixtures/handoff/map-jit-policy-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-map-jit-policy
+verify-map-jit-policy: $(MAP_JIT_POLICY_TEST) $(MAP_JIT_POLICY_FIXTURE)
+	../fixtures/handoff/run-map-jit-policy-test.sh "$(abspath $(MAP_JIT_POLICY_TEST))" \
+		"$(abspath $(MAP_JIT_POLICY_FIXTURE))" "$(abspath ../fixtures/handoff)" \
+		"$(abspath $(BUILD_DIR))"
