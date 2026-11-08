@@ -26,12 +26,12 @@ _main:
     csinv x5, x1, xzr, eq
     b.eq .Lfail
     movn x6, #0
-    cmp x5, x6
+    cmn x5, #1
     b.ne .Lfail
     cmp x1, #8
     csinv w23, w1, w2, eq
     movn w24, #9
-    cmp w23, w24
+    cmn w23, #10
     b.ne .Lfail
 
     cmp x1, #8
@@ -39,14 +39,14 @@ _main:
     b.eq .Lfail
     movz w8, #0xfff9
     movk w8, #0xffff, lsl #16
-    cmp w7, w8
+    cmn w7, #7
     b.ne .Lfail
 
     cmp x1, #8
     csneg x9, x1, x1, eq
     b.eq .Lfail
     movn x10, #6
-    cmp x9, x10
+    cmn x9, #7
     b.ne .Lfail
 
     movz x11, #1, lsl #48
@@ -67,7 +67,7 @@ _main:
     cmp x15, #1
     b.ne .Lfail
     csetm x16, eq
-    cmp x16, x6
+    cmn x16, #1
     b.ne .Lfail
 
     cmp x1, #7
@@ -77,11 +77,11 @@ _main:
     cmp x1, #7
     cinv x18, x1, eq
     movn x20, #7
-    cmp x18, x20
+    cmn x18, #8
     b.ne .Lfail
     cmp x1, #7
     cneg x21, x1, eq
-    cmp x21, x10
+    cmn x21, #7
     b.ne .Lfail
 
     cmp x1, #8
