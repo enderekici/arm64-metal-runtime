@@ -336,6 +336,43 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 31u) {
+                const uint rd = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint rm = instruction.operation[3];
+                const uint packed = instruction.operation[4];
+                const uint accumulatorRegister = packed & 31u;
+                const uint subtract = packed >> 5u;
+                const uint width = instruction.operation[5];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rd > 31u || rn > 31u || rm > 31u || packed > 63u ||
+                    (width != 32u && width != 64u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong lhs = rn == 31u ? 0ul : state[rn];
+                const ulong rhs = rm == 31u ? 0ul : state[rm];
+                const ulong accumulator = accumulatorRegister == 31u
+                    ? 0ul : state[accumulatorRegister];
+                const ulong result = multiply_accumulate_apply(
+                    subtract, lhs, rhs, accumulator, width);
+                if (rd != 31u) state[rd] = result;
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 1u || opcode == 3u || opcode == 4u) {
                 const uint rd = instruction.operation[1];
                 const uint immediate = instruction.operation[3];

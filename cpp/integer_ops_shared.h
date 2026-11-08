@@ -221,6 +221,15 @@ inline LogicalShiftedResult logical_variable_shift_apply(
     return logical_shifted_apply(1u, 0u, 0ul, value, shiftType, amount,
                                  width, 0u, previousFlags);
 }
+inline ulong multiply_accumulate_apply(
+    uint subtract, ulong lhs, ulong rhs, ulong accumulator, uint width) {
+    const ulong mask = width == 32u ? 0xfffffffful : ~0ul;
+    const ulong product = (lhs & mask) * (rhs & mask);
+    const ulong result = subtract != 0u
+        ? (accumulator & mask) - product
+        : (accumulator & mask) + product;
+    return result & mask;
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -346,6 +355,16 @@ inline constexpr LogicalShiftedResult logical_variable_shift_apply(
   const auto amount = static_cast<std::uint32_t>(amountValue) & (width - 1U);
   return logical_shifted_apply(1U, 0U, 0U, value, shiftType, amount,
                                width, 0U, previousFlags);
+}
+inline constexpr std::uint64_t multiply_accumulate_apply(
+    std::uint32_t subtract, std::uint64_t lhs, std::uint64_t rhs,
+    std::uint64_t accumulator, std::uint32_t width) {
+  const auto mask = width == 32U ? std::uint64_t{0xffffffffU}
+                                 : ~std::uint64_t{0};
+  const auto product = (lhs & mask) * (rhs & mask);
+  const auto result = subtract != 0U ? (accumulator & mask) - product
+                                     : (accumulator & mask) + product;
+  return result & mask;
 }
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
@@ -477,6 +496,11 @@ inline constexpr char typed_integer_msl_source[] =
     "uint amount = uint(amountValue) & (width - 1u); "
     "return logical_shifted_apply(1u, 0u, 0ul, value, shiftType, amount, "
     "width, 0u, previousFlags); }\n"
+    "inline ulong multiply_accumulate_apply(uint subtract, ulong lhs, "
+    "ulong rhs, ulong accumulator, uint width) { ulong mask = width == 32u "
+    "? 0xfffffffful : ~0ul; ulong product = (lhs & mask) * (rhs & mask); "
+    "ulong base = accumulator & mask; return (subtract != 0u ? "
+    "base - product : base + product) & mask; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

@@ -446,6 +446,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::LogicalImmediate;
             const bool logicalVariableShiftOpcode =
                 opcode == translate_core::Opcode::LogicalVariableShiftRegister;
+            const bool multiplyAccumulateOpcode =
+                opcode == translate_core::Opcode::IntegerMultiplyAccumulate;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const bool adrOpcode = opcode == translate_core::Opcode::Adr;
@@ -560,6 +562,11 @@ ProcessKernelPlan plan_process_kernel(
                  operation.immediate <= 31 &&
                  (operation.width == 32 || operation.width == 64) &&
                  operation.shift <= 3);
+            const bool validMultiplyAccumulate =
+                !multiplyAccumulateOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 && operation.shift <= 63 &&
+                 (operation.width == 32 || operation.width == 64));
             const bool validAdr =
                 !adrOpcode ||
                 (operation.destination <= 31 && operation.source <= 1 &&
@@ -569,7 +576,8 @@ ProcessKernelPlan plan_process_kernel(
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
-                 !logicalVariableShiftOpcode && !adrOpcode) ||
+                 !logicalVariableShiftOpcode && !multiplyAccumulateOpcode &&
+                 !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -577,7 +585,8 @@ ProcessKernelPlan plan_process_kernel(
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
                 !validAddSubCarryRegister ||
                 !validLogicalShiftedRegister || !validLogicalImmediate ||
-                !validLogicalVariableShift || !validAdr ||
+                !validLogicalVariableShift || !validMultiplyAccumulate ||
+                !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

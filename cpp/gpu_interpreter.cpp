@@ -255,6 +255,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter logical variable-shift packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::IntegerMultiplyAccumulate) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                operation[4] > 63 ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter multiply-accumulate packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::Adr) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             if (operation[1] > 31 || operation[2] > 1 ||

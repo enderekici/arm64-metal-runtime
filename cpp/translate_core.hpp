@@ -42,6 +42,7 @@ enum class Opcode : std::uint32_t {
   BranchLink = 28,
   LogicalVariableShiftRegister = 29,
   BranchRegister = 30,
+  IntegerMultiplyAccumulate = 31,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -94,6 +95,9 @@ enum class Opcode : std::uint32_t {
 // The instruction PC comes from the packet and is passed to adr_apply.
 // ADC/SBC uses destination=Rd, source=Rn, immediate=Rm, shift=(setFlags << 1)
 // | subtract, and width=32 or 64. Register 31 is ZR for all operands.
+// Integer multiply-accumulate uses destination=Rd, source=Rn, immediate=Rm,
+// shift=(subtract << 5) | Ra, and width=32 or 64. Register 31 is ZR for all
+// operands; Ra=31 gives MUL/MNEG aliases.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

@@ -371,6 +371,9 @@ int main() {
          logicalMsl.find("}\nstruct LogicalShiftedResult", carryMsl) !=
              std::string_view::npos);
   assert(logicalMsl.find("width, 0u, previousFlags); }\n"
+                         "inline ulong multiply_accumulate_apply") !=
+         std::string_view::npos);
+  assert(logicalMsl.find("base + product) & mask; }\n"
                          "inline bool arm64_condition_holds") !=
          std::string_view::npos);
   assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==
@@ -465,6 +468,52 @@ int main() {
              .value == 0x8ULL);
   assert(logical_variable_shift_apply(2, 0x1234, 0, 64, 0xf).value == 0x1234);
   assert(logical_variable_shift_apply(1, 0, 0, 32, 0xf).flags == 0xf);
+
+  using arm64metal::multiply_accumulate_apply;
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+      const auto bits = 0x1b000000U | (width == 64 ? 0x80000000U : 0U) |
+                        (subtract << 15U) | (4U << 10U) | (1U << 5U) |
+                        (2U << 16U) | 3U;
+      const auto operation = decode_operation(bits);
+      const auto packed = (subtract << 5U) | 4U;
+      assert(operation.has_value() &&
+             operation->opcode == Opcode::IntegerMultiplyAccumulate &&
+             operation->destination == 3 && operation->source == 1 &&
+             operation->immediate == 2 && operation->shift == packed &&
+             operation->width == width);
+      assert((serialize_operation(*operation) ==
+              arm64metal::translate_core::OperationPacket{
+                  31, 3, 1, 2, packed, width}));
+      const auto lowered = make_operation_instruction(
+          *operation, {0x1004}, LoweringMode::Process,
+          std::uint64_t{1} << 48);
+      assert(lowered.code.size() == 1 &&
+             lowered.code[0].find("multiply_accumulate_apply(") !=
+                 std::string::npos);
+    }
+  }
+  const auto mulAlias = decode_operation(0x9b027c23U);
+  const auto mnegAlias = decode_operation(0x9b02fc23U);
+  assert(mulAlias.has_value() && mulAlias->opcode == Opcode::IntegerMultiplyAccumulate &&
+         (mulAlias->shift & 31U) == 31U && (mulAlias->shift >> 5U) == 0U);
+  assert(mnegAlias.has_value() && mnegAlias->opcode == Opcode::IntegerMultiplyAccumulate &&
+         (mnegAlias->shift & 31U) == 31U && (mnegAlias->shift >> 5U) == 1U);
+  const auto zeroDestination = decode_operation(0x9b020fffU);
+  assert(zeroDestination.has_value() && zeroDestination->destination == 31);
+  assert(make_operation_instruction(*zeroDestination, {0x1004},
+                                    LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code.empty());
+  assert(multiply_accumulate_apply(0, 5, 7, 11, 64) == 46);
+  assert(multiply_accumulate_apply(1, 5, 7, 11, 64) == 0xffffffffffffffe8ULL);
+  assert(multiply_accumulate_apply(0, 0xffffffffffffffffULL, 2, 5, 64) == 3);
+  assert(multiply_accumulate_apply(0, 0xffffffffU, 2, 3, 32) == 1U);
+  assert(multiply_accumulate_apply(1, 0x80000000U, 2, 1, 32) == 1U);
+  assert(multiply_accumulate_apply(0, 0, 0x1234, 0, 64) == 0);
+  assert(multiply_accumulate_apply(1, 0, 0x1234, 0, 64) == 0);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "multiply_accumulate_apply") != std::string_view::npos);
 
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};

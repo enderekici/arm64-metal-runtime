@@ -336,6 +336,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::LogicalVariableShiftRegister, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), shiftType, width};
   }
+  if ((bits & 0x7fe00000U) == 0x1b000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto subtract = field(bits, 15, 1);
+    const auto accumulator = field(bits, 10, 5);
+    return Operation{Opcode::IntegerMultiplyAccumulate, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5),
+                     (subtract << 5U) | accumulator, width};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -605,6 +613,22 @@ Instruction make_operation_instruction(Operation operation,
                      "] = logical_result.value;");
     }
     code.push_back("}");
+  } else if (operation.opcode == Opcode::IntegerMultiplyAccumulate) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || operation.shift > 63 ||
+        (operation.width != 32 && operation.width != 64)) {
+      throw std::invalid_argument("Typed multiply-accumulate operands are invalid");
+    }
+    const auto subtract = (operation.shift >> 5U) & 1U;
+    const auto accumulator = operation.shift & 31U;
+    if (operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) + "] = " +
+                     "multiply_accumulate_apply(" + std::to_string(subtract) +
+                     "u, " + reg(operation.source, operation.width == 64) +
+                     ", " + reg(operation.immediate, operation.width == 64) +
+                     ", " + reg(accumulator, operation.width == 64) + ", " +
+                     std::to_string(operation.width) + "u);");
+    }
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {
       code = {"returns[id] = uint(x[0]); status[id] = 0; return;"};
