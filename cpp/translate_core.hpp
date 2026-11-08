@@ -49,6 +49,7 @@ enum class Opcode : std::uint32_t {
   IntegerDivide = 35,
   LoadLiteral = 38,
   LoadUnsignedMinMax = 37,
+  VectorCompareEqualZero = 39,
   AuthenticatedReturn = 36,
 };
 
@@ -142,6 +143,8 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // details encode integer source width and signedness; kind 4 detail bit 0 marks
 // FCMPE and bit 1 compares against +0. Scalar FP registers use their low 64-bit
 // lane; the upper lane is cleared. Integer source register 31 is ZR.
+// VectorCompareEqualZero uses destination=Vd, source=Vn, immediate=element
+// width in bits, shift=0, and width=64 or 128 vector bits.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

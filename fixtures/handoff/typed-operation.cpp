@@ -99,6 +99,71 @@ static std::uint64_t native_sbfm_wrap(std::uint64_t source) {
   return result;
 }
 
+struct alignas(16) VectorPair {
+  std::uint64_t lane0;
+  std::uint64_t lane1;
+};
+
+#define DEFINE_CMEQ_NATIVE(name, arrangement)                                 \
+  static VectorPair name(VectorPair source) {                                \
+    VectorPair result{};                                                     \
+    asm volatile("ldr q1, [%1]\n\tcmeq v0." #arrangement                    \
+                 ", v1." #arrangement ", #0\n\tstr q0, [%0]"              \
+                 :                                                           \
+                 : "r"(&result), "r"(&source)                               \
+                 : "v0", "v1", "memory");                                   \
+    return result;                                                           \
+  }
+
+DEFINE_CMEQ_NATIVE(native_cmeq_8b, 8b)
+DEFINE_CMEQ_NATIVE(native_cmeq_16b, 16b)
+DEFINE_CMEQ_NATIVE(native_cmeq_4h, 4h)
+DEFINE_CMEQ_NATIVE(native_cmeq_8h, 8h)
+DEFINE_CMEQ_NATIVE(native_cmeq_2s, 2s)
+DEFINE_CMEQ_NATIVE(native_cmeq_4s, 4s)
+DEFINE_CMEQ_NATIVE(native_cmeq_2d, 2d)
+
+static VectorPair native_cmeq_alias_2d(VectorPair source) {
+  asm volatile("ldr q0, [%0]\n\tcmeq v0.2d, v0.2d, #0\n\tstr q0, [%0]"
+               :
+               : "r"(&source)
+               : "v0", "memory");
+  return source;
+}
+
+static std::uint64_t vector_lane(const VectorPair& value, unsigned index,
+                                 unsigned width) {
+  const std::uint64_t mask = width == 64U
+      ? ~std::uint64_t{0}
+      : (std::uint64_t{1} << width) - 1U;
+  const auto bit = index * width;
+  const auto word = bit < 64U ? value.lane0 : value.lane1;
+  return (word >> (bit & 63U)) & mask;
+}
+
+static VectorPair expected_cmeq_zero(const VectorPair& source,
+                                     unsigned elementWidth,
+                                     unsigned vectorWidth) {
+  VectorPair result{};
+  const std::uint64_t mask = elementWidth == 64U
+      ? ~std::uint64_t{0}
+      : (std::uint64_t{1} << elementWidth) - 1U;
+  const auto laneCount = vectorWidth / elementWidth;
+  for (unsigned laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+    if (vector_lane(source, laneIndex, elementWidth) == 0U) {
+      const auto bit = laneIndex * elementWidth;
+      if (bit < 64U) result.lane0 |= mask << bit;
+      else result.lane1 |= mask << (bit - 64U);
+    }
+  }
+  return result;
+}
+
+static void assert_vector_equal(VectorPair actual, VectorPair expected) {
+  assert(actual.lane0 == expected.lane0);
+  assert(actual.lane1 == expected.lane1);
+}
+
 static std::uint64_t native_bfm_wrap(std::uint64_t destination,
                                      std::uint64_t source) {
   asm volatile("bfm %0, %1, #60, #7" : "+r"(destination) : "r"(source));
@@ -1880,5 +1945,50 @@ int main() {
   assert(native_load_unsigned_minmax(&atomicWord, 0xffffffffffffffffULL,
                                      true, 64) == 0x8000000000000000ULL);
   assert(atomicWord == 0xffffffffffffffffULL);
+
+  const VectorPair vectorInput{0x0001000200000004ULL,
+                               0x0000000500060000ULL};
+  const std::array<std::uint32_t, 7> cmeqEncodings{
+      0x0e209820U, 0x4e209820U, 0x0e609820U, 0x4e609820U,
+      0x0ea09820U, 0x4ea09820U, 0x4ee09820U};
+  const std::array<unsigned, 7> cmeqElementWidths{8, 8, 16, 16, 32, 32, 64};
+  const std::array<unsigned, 7> cmeqVectorWidths{64, 128, 64, 128, 64, 128, 128};
+  const std::array<VectorPair (*)(VectorPair), 7> nativeCmeq{
+      native_cmeq_8b, native_cmeq_16b, native_cmeq_4h, native_cmeq_8h,
+      native_cmeq_2s, native_cmeq_4s, native_cmeq_2d};
+  for (std::size_t index = 0; index < cmeqEncodings.size(); ++index) {
+    const auto decoded = decode_operation(cmeqEncodings[index]);
+    assert(decoded && decoded->opcode == Opcode::VectorCompareEqualZero &&
+           decoded->destination == 0U && decoded->source == 1U &&
+           decoded->immediate == cmeqElementWidths[index] && decoded->shift == 0U &&
+           decoded->width == cmeqVectorWidths[index]);
+    assert((serialize_operation(*decoded) ==
+            arm64metal::translate_core::OperationPacket{
+                39U, 0U, 1U, cmeqElementWidths[index], 0U,
+                cmeqVectorWidths[index]}));
+    const auto lowered = make_operation_instruction(
+        *decoded, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48U,
+        0x1000);
+    assert(lowered.code.size() == 1U &&
+           lowered.code[0].find("vector_compare_equal_zero_apply") !=
+               std::string::npos);
+    const auto process = arm64metal::decode_process(
+        cmeqEncodings[index], 0x1000, {}, {}, false);
+    assert(process.operation && process.operation->opcode ==
+           Opcode::VectorCompareEqualZero && process.code.size() == 1U &&
+           process.code[0].find("vector_compare_equal_zero_apply") !=
+               std::string::npos);
+    assert_vector_equal(nativeCmeq[index](vectorInput),
+                        expected_cmeq_zero(vectorInput,
+                                           cmeqElementWidths[index],
+                                           cmeqVectorWidths[index]));
+  }
+  const auto cmeqAlias = decode_operation(0x4ee09bffU);
+  assert(cmeqAlias && cmeqAlias->destination == 31U &&
+         cmeqAlias->source == 31U);
+  const auto nativeAlias = native_cmeq_alias_2d(vectorInput);
+  assert_vector_equal(nativeAlias, expected_cmeq_zero(vectorInput, 64, 128));
+  assert(!decode_operation(0x0ee09820U));  // 64-bit lanes need Q=1.
+  assert(!decode_operation(0x5e209820U));  // Scalar compare is not this vector op.
   return 0;
 }

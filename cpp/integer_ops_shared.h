@@ -71,6 +71,19 @@ inline ulong move_wide_apply(uint opcode, ulong previous, uint immediate,
         opcode, previous, immediate, shift);
     return width == 32u ? ulong(uint(value)) : value;
 }
+inline ulong2 vector_compare_equal_zero_apply(
+    ulong2 source, uint elementWidth, uint vectorWidth) {
+    ulong2 result = ulong2(0ul);
+    const ulong laneMask = ~0ul >> (64u - elementWidth);
+    const uint laneCount = vectorWidth / elementWidth;
+    for (uint lane = 0u; lane < laneCount; ++lane) {
+        const uint bit = lane * elementWidth;
+        const ulong value = (source[bit >> 6u] >> (bit & 63u)) & laneMask;
+        const ulong compared = value == 0ul ? laneMask : 0ul;
+        result[bit >> 6u] |= compared << (bit & 63u);
+    }
+    return result;
+}
 struct AddSubImmediateResult {
     ulong value;
     uint flags;
@@ -829,6 +842,15 @@ inline constexpr char typed_integer_msl_source[] =
     ARM64METAL_STRINGIFY(ARM64METAL_MOVE_WIDE_VALUE(
         opcode, previous, immediate, shift))
     "; return width == 32u ? ulong(uint(value)) : value; }\n"
+    "inline ulong2 vector_compare_equal_zero_apply(ulong2 source, "
+    "uint elementWidth, uint vectorWidth) { ulong2 result = ulong2(0ul); "
+    "ulong laneMask = ~0ul >> (64u - elementWidth); "
+    "uint laneCount = vectorWidth / elementWidth; "
+    "for (uint lane = 0u; lane < laneCount; ++lane) { "
+    "uint bit = lane * elementWidth; "
+    "ulong value = (source[bit >> 6u] >> (bit & 63u)) & laneMask; "
+    "ulong compared = value == 0ul ? laneMask : 0ul; "
+    "result[bit >> 6u] |= compared << (bit & 63u); } return result; }\n"
     "struct AddSubImmediateResult { ulong value; uint flags; };\n"
     "inline AddSubImmediateResult add_sub_immediate_apply(uint subtract, ulong lhs, "
     "uint immediate, uint shift, uint width, uint setFlags, uint previousFlags) { "

@@ -1050,6 +1050,45 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 39u) {
+                const uint vd = instruction.operation[1];
+                const uint vn = instruction.operation[2];
+                const uint elementWidth = instruction.operation[3];
+                const uint vectorWidth = instruction.operation[5];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (vd > 31u || vn > 31u ||
+                    (elementWidth != 8u && elementWidth != 16u &&
+                     elementWidth != 32u && elementWidth != 64u) ||
+                    instruction.operation[4] != 0u ||
+                    (vectorWidth != 64u && vectorWidth != 128u) ||
+                    (elementWidth == 64u && vectorWidth != 128u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const uint sourceSlot = 806u + 2u * vn;
+                const uint destinationSlot = 806u + 2u * vd;
+                const ulong2 source = ulong2(state[sourceSlot], state[sourceSlot + 1u]);
+                const ulong2 result = vector_compare_equal_zero_apply(
+                    source, elementWidth, vectorWidth);
+                state[destinationSlot] = result[0];
+                state[destinationSlot + 1u] = result[1];
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 8u) {
                 const uint source = instruction.operation[2];
                 const uint nonzero = instruction.operation[3];

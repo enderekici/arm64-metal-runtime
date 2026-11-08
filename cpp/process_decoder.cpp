@@ -1446,9 +1446,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         (vectorEqualZero && width == 64 && vectorBits != 128))
       throw GuestError("Invalid CMEQ zero arrangement");
     const auto count = scalarEqualZero ? 64 : vectorBits;
-    return assignVector("vector_compare(" + vector(rn) + ", ulong2(0), " +
-                        str(width) + ", " + str(count) +
-                        ", false, false, true)");
+    return assignVector("vector_compare_equal_zero_apply(" + vector(rn) +
+                        ", " + str(width) + ", " + str(count) + ")");
   }
   auto equalLanes = (bits & 0xbf20fc00) == 0x2e208c00;
   if (equalLanes || (bits & 0x9f20f400) == 0x0e203400) {

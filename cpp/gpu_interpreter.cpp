@@ -446,6 +446,20 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter unsigned min/max packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::VectorCompareEqualZero) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto elementWidth = operation[3];
+            const auto vectorWidth = operation[5];
+            if (operation[1] > 31 || operation[2] > 31 ||
+                (elementWidth != 8 && elementWidth != 16 &&
+                 elementWidth != 32 && elementWidth != 64) ||
+                operation[4] != 0 || (vectorWidth != 64 && vectorWidth != 128) ||
+                (elementWidth == 64 && vectorWidth != 128) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter vector CMEQ packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
