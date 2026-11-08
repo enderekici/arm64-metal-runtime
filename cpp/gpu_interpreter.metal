@@ -258,10 +258,12 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const uint immediate = instruction.operation[3];
                 const uint shift = instruction.operation[4];
                 const uint width = instruction.operation[5];
-                const uint expectedShift = width == 32u ? 2u : 3u;
+                const uint expectedShift = width == 8u ? 0u :
+                    (width == 16u ? 1u : (width == 32u ? 2u : 3u));
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
                 if (rt > 31u || rn > 31u || immediate > 0xfffu ||
-                    (width != 32u && width != 64u) || shift != expectedShift ||
+                    (width != 8u && width != 16u &&
+                     width != 32u && width != 64u) || shift != expectedShift ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
                     state[33] = pc;
@@ -375,7 +377,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const bool load = opcode == 17u;
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
                 if (rt > 31u || rn > 31u ||
-                    (width != 32u && width != 64u) ||
+                    (width != 8u && width != 16u &&
+                     width != 32u && width != 64u) ||
                     mode > 3u || mode == 2u ||
                     displacement < -256 || displacement > 255 ||
                     (mode != 0u && rn != 31u && rn == rt) ||

@@ -2,6 +2,7 @@
 #include "integer_ops_shared.h"
 
 #include <cassert>
+#include <array>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -250,6 +251,41 @@ int main() {
   assert(storeXzrUnscaled->shift == 0 && storeXzrUnscaled->width == 64);
 
   assert(!decode_operation(0xf8408c00).has_value());
+
+  struct NarrowMemoryCase {
+    std::uint32_t encoding;
+    Opcode opcode;
+    std::uint32_t target;
+    std::uint32_t base;
+    std::int32_t offset;
+    std::uint32_t mode;
+    std::uint32_t width;
+  };
+  const std::array<NarrowMemoryCase, 12> narrowMemoryCases{{
+      {0x390004c2, Opcode::StoreUnsignedImmediate, 2, 6, 1, 0, 8},
+      {0x394004c3, Opcode::LoadUnsignedImmediate, 3, 6, 1, 0, 8},
+      {0x790004c2, Opcode::StoreUnsignedImmediate, 2, 6, 1, 1, 16},
+      {0x794004c3, Opcode::LoadUnsignedImmediate, 3, 6, 1, 1, 16},
+      {0x381ff0c2, Opcode::StoreUnscaledWriteback, 2, 6, -1, 0, 8},
+      {0x385ff0c3, Opcode::LoadUnscaledWriteback, 3, 6, -1, 0, 8},
+      {0x781fe0c2, Opcode::StoreUnscaledWriteback, 2, 6, -2, 0, 16},
+      {0x785fe0c3, Opcode::LoadUnscaledWriteback, 3, 6, -2, 0, 16},
+      {0x38001cc2, Opcode::StoreUnscaledWriteback, 2, 6, 1, 3, 8},
+      {0x385ff4c3, Opcode::LoadUnscaledWriteback, 3, 6, -1, 1, 8},
+      {0x780024c2, Opcode::StoreUnscaledWriteback, 2, 6, 2, 1, 16},
+      {0x785fecc3, Opcode::LoadUnscaledWriteback, 3, 6, -2, 3, 16},
+  }};
+  for (const auto& memoryCase : narrowMemoryCases) {
+    const auto decoded = decode_operation(memoryCase.encoding);
+    assert(decoded.has_value());
+    assert(decoded->opcode == memoryCase.opcode);
+    assert(decoded->destination == memoryCase.target);
+    assert(decoded->source == memoryCase.base);
+    assert(static_cast<std::int32_t>(decoded->immediate) == memoryCase.offset);
+    assert(decoded->shift == memoryCase.mode);
+    assert(decoded->width == memoryCase.width);
+  }
+  assert(!decode_operation(0x38400c00).has_value());
 
   const auto lowered = make_operation_instruction(
       *wide, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);

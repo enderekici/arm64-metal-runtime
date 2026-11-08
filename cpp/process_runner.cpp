@@ -314,8 +314,11 @@ ProcessKernelPlan plan_process_kernel(
                 !unsignedMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 0xfff &&
-                 (operation.width == 32 || operation.width == 64) &&
-                 operation.shift == (operation.width == 32 ? 2U : 3U));
+                 (operation.width == 8 || operation.width == 16 ||
+                  operation.width == 32 || operation.width == 64) &&
+                 operation.shift == (operation.width == 8 ? 0U :
+                    (operation.width == 16 ? 1U :
+                     (operation.width == 32 ? 2U : 3U))));
             const auto elementBytes = operation.width / 8U;
             const auto pairOffset = static_cast<std::int32_t>(operation.immediate);
             const auto pairMode = operation.shift >> 5U;
@@ -339,7 +342,8 @@ ProcessKernelPlan plan_process_kernel(
             const bool validIndexedScalarMemoryOperation =
                 !indexedScalarMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
-                 (operation.width == 32 || operation.width == 64) &&
+                 (operation.width == 8 || operation.width == 16 ||
+                  operation.width == 32 || operation.width == 64) &&
                  operation.shift <= 3 && operation.shift != 2 &&
                  indexedScalarOffset >= -256 && indexedScalarOffset <= 255 &&
                  (operation.shift == 0 || operation.source == 31 ||
@@ -4844,7 +4848,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         activeKernel->interpretedPackets.end(),
                         [faultPc](const auto& packet) { return packet.pc == faultPc; });
                     if (registers[guestFaultAddress] != requested ||
-                        (width != 4 && width != 8 && width != 16) ||
+                        (width != 1 && width != 2 && width != 4 &&
+                         width != 8 && width != 16) ||
                         faultPacket == activeKernel->interpretedPackets.end()) {
                         throw std::runtime_error(
                             "Interpreter cache retry has invalid fault provenance");
@@ -4863,7 +4868,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (pairAccess ? 2U : 1U);
                     if ((!scalarAccess && !pairAccess) ||
                         faultPacket->operation[5] % 8U != 0 ||
-                        (faultPacket->operation[5] / 8U != 4 &&
+                        (faultPacket->operation[5] / 8U != 1 &&
+                         faultPacket->operation[5] / 8U != 2 &&
+                         faultPacket->operation[5] / 8U != 4 &&
                          faultPacket->operation[5] / 8U != 8) ||
                         width != expectedWidth) {
                         throw std::runtime_error(

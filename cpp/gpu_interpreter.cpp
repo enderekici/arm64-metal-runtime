@@ -176,9 +176,11 @@ Result Interpreter::dispatch(const Backend& backend,
             hasMemoryAccess = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto width = operation[5];
+            const auto expectedShift = width == 8 ? 0U : (width == 16 ? 1U :
+                                      (width == 32 ? 2U : 3U));
             if (operation[1] > 31 || operation[2] > 31 || operation[3] > 0xfff ||
-                (width != 32 && width != 64) ||
-                operation[4] != (width == 32 ? 2U : 3U) ||
+                (width != 8 && width != 16 && width != 32 && width != 64) ||
+                operation[4] != expectedShift ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
                 throw std::invalid_argument("Interpreter memory packet metadata is invalid");
@@ -213,7 +215,8 @@ Result Interpreter::dispatch(const Backend& backend,
             const auto mode = operation[4];
             const auto offset = static_cast<std::int32_t>(operation[3]);
             if (operation[1] > 31 || operation[2] > 31 ||
-                (operation[5] != 32 && operation[5] != 64) ||
+                (operation[5] != 8 && operation[5] != 16 &&
+                 operation[5] != 32 && operation[5] != 64) ||
                 mode > 3 || mode == 2 || offset < -256 || offset > 255 ||
                 (mode != 0 && operation[2] != 31 &&
                  operation[2] == operation[1]) ||

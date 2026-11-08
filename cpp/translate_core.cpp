@@ -95,7 +95,9 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   }
 
   const auto unsignedMemory = bits & 0xffc00000U;
-  const auto memoryWidths = std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{
+  const auto memoryWidths = std::array<std::pair<std::uint32_t, std::uint32_t>, 8>{
+      std::pair{0x39400000U, 8U}, std::pair{0x39000000U, 8U},
+      std::pair{0x79400000U, 16U}, std::pair{0x79000000U, 16U},
       std::pair{0xb9400000U, 32U}, std::pair{0xb9000000U, 32U},
       std::pair{0xf9400000U, 64U}, std::pair{0xf9000000U, 64U}};
   for (const auto& [encoding, width] : memoryWidths) {
@@ -103,12 +105,16 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
       const auto opcode = (encoding & 0x00400000U) != 0
           ? Opcode::LoadUnsignedImmediate : Opcode::StoreUnsignedImmediate;
       return Operation{opcode, field(bits, 0, 5), field(bits, 5, 5),
-                       field(bits, 10, 12), width == 64 ? 3U : 2U, width};
+                       field(bits, 10, 12),
+                       width == 64 ? 3U : (width == 32 ? 2U : (width == 16 ? 1U : 0U)),
+                       width};
     }
   }
   const auto scalarIndexedMemory = bits & 0xffe00c00U;
   const auto indexedMemoryWidths =
-      std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{
+      std::array<std::pair<std::uint32_t, std::uint32_t>, 8>{
+          std::pair{0x38400000U, 8U}, std::pair{0x38000000U, 8U},
+          std::pair{0x78400000U, 16U}, std::pair{0x78000000U, 16U},
           std::pair{0xb8400000U, 32U}, std::pair{0xb8000000U, 32U},
           std::pair{0xf8400000U, 64U}, std::pair{0xf8000000U, 64U}};
   for (const auto& [encoding, width] : indexedMemoryWidths) {

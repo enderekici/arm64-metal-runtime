@@ -40,11 +40,14 @@ enum class Opcode : std::uint32_t {
 // full-width target and fallthrough PCs are carried in Instruction::next.
 // Add/Sub immediate uses destination/source/immediate/shift/width fields.
 // The set-flags variants use Rd=31 for the CMP/CMN aliases and Rn=31 as SP.
+// Scalar unsigned memory uses width 8/16 for LDRB/H and STRB/H (loads zero
+// extend Wt), or width 32/64 for LDR/STR; shift scales the unsigned offset.
 // Pair memory uses destination=Rt, source=Rn, immediate=signed byte offset,
 // shift=(addressing mode << 5) | Rt2 (1=post, 2=offset, 3=pre), and width=32 or 64.
 // Scalar unscaled/writeback memory uses destination=Rt, source=Rn,
 // immediate=signed byte offset, shift=addressing mode (0=unscaled, 1=post,
-// 3=pre), and width=32 or 64. Opcodes 17/18 select load/store.
+// 3=pre), and width=8/16/32/64. Narrow loads zero extend Wt. Opcodes 17/18
+// select load/store.
 // BranchCondition uses source for the condition and immediate for byte offset.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.
