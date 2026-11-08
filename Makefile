@@ -21,7 +21,7 @@ MEMORY := $(BUILD)/guest-memory
 CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
 
-.PHONY: all verify verify-cache bundle
+.PHONY: all verify verify-cache verify-apps bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
 
 verify: all
@@ -54,6 +54,14 @@ verify: all
 	@printf 'not a Mach-O\n' >"$(BUILD)/invalid.bin"
 	@! $(RUNTIME) translate "$(BUILD)/invalid.bin" update_words >"$(BUILD)/invalid.out" 2>"$(BUILD)/invalid.log"
 	@grep 'Expected a little-endian ARM64 Mach-O' "$(BUILD)/invalid.log"
+
+APP_VERIFY_RUNTIME ?= $(BUILD)/cpp/arm64-metal
+APP_VERIFY_RESULTS ?= $(BUILD)/app-verification
+APP_VERIFY_CASES ?= plutil tar libz-root libz-provider
+
+verify-apps:
+	@test -x "$(APP_VERIFY_RUNTIME)" || { echo "Build the C++ runtime first with make -C cpp app" >&2; exit 2; }
+	./verify-apps.sh "$(APP_VERIFY_RUNTIME)" "$(APP_VERIFY_RESULTS)" $(APP_VERIFY_CASES)
 
 verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
