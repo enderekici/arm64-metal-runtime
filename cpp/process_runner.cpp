@@ -1846,7 +1846,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
         {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
+    std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
+    std::uint32_t nextGuestThreadPortName = 0x40000003U;
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
     struct GuestCallbackFrame {
@@ -5644,6 +5646,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (references == 0) references = 1;
                 else if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
                 registers[0] = port;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-27))) {
+                constexpr std::uint64_t machPortNull = 0;
+                const auto threadId = guestScheduler.current_id();
+                auto threadPort = guestThreadPortNames.find(threadId);
+                if (threadPort == guestThreadPortNames.end()) {
+                    if (nextGuestThreadPortName >=
+                        std::numeric_limits<std::uint32_t>::max() - 4) {
+                        registers[0] = machPortNull;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto name = nextGuestThreadPortName;
+                    nextGuestThreadPortName += 4;
+                    threadPort = guestThreadPortNames.emplace(threadId, name).first;
+                    guestSendRightUrefs.emplace(name, 0);
+                }
+                auto& references = guestSendRightUrefs[threadPort->second];
+                if (references == std::numeric_limits<std::uint32_t>::max()) {
+                    registers[0] = machPortNull;
+                } else {
+                    ++references;
+                    registers[0] = threadPort->second;
+                }
                 registers[34] = 0;
                 continue;
             }
