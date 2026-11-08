@@ -557,7 +557,6 @@ Instruction make_operation_instruction(Operation operation,
       code.push_back("x[" + std::to_string(operation.destination) +
                      "] = " + value + ";");
     }
-  } else if (operation.opcode == Opcode::IntegerBitOperation) {    }
   } else if (operation.opcode == Opcode::IntegerBitOperation) {
     if (operation.destination > 31 || operation.source > 31 ||
         operation.immediate > 3U || operation.shift != 0 ||
