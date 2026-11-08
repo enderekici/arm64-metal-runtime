@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -79,6 +79,14 @@ SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
+AUTH_RETURN_NATIVE := $(BUILD_DIR)/authenticated-return-native
+AUTH_RETURN_CPU := $(BUILD_DIR)/process-authenticated-return
+AUTH_RETURN_MAIN := $(BUILD_DIR)/authenticated-return-main
+AUTH_RETURN_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-retab-main
+AUTH_RETURN_BAD_LR_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-main
+AUTH_RETURN_BAD_SP_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-main
+AUTH_RETURN_BAD_LR_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-retab-main
+AUTH_RETURN_BAD_SP_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-retab-main
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
 INTERPRETER_ADD_SUB_NATIVE := $(BUILD_DIR)/interpreter-add-sub-native
 INTERPRETER_ADD_SUB_MAIN := $(BUILD_DIR)/interpreter-add-sub-immediate-main
@@ -279,6 +287,83 @@ $(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interprete
 $(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp process_decoder.cpp process_decoder.hpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp translate_core.hpp integer_ops_shared.h
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. ../fixtures/handoff/typed-operation.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
+
+$(AUTH_RETURN_NATIVE): ../fixtures/handoff/authenticated-return.s ../fixtures/handoff/authenticated-return-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -Wall -Wextra -Werror $^ -o "$@"
+
+$(AUTH_RETURN_CPU): ../fixtures/handoff/process-authenticated-return.cpp process_decoder.cpp process_msl.cpp translate_core.cpp guest_strings.cpp guest_vector_crypto.cpp macho.cpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. $^ -o "$@"
+
+$(AUTH_RETURN_MAIN): ../fixtures/interpreter/authenticated-return-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(AUTH_RETURN_RETAB_MAIN): ../fixtures/interpreter/authenticated-return-retab-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(AUTH_RETURN_BAD_LR_MAIN): ../fixtures/interpreter/authenticated-return-bad-lr-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(AUTH_RETURN_BAD_SP_MAIN): ../fixtures/interpreter/authenticated-return-bad-sp-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(AUTH_RETURN_BAD_LR_RETAB_MAIN): ../fixtures/interpreter/authenticated-return-bad-lr-retab-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(AUTH_RETURN_BAD_SP_RETAB_MAIN): ../fixtures/interpreter/authenticated-return-bad-sp-retab-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+verify-authenticated-return-cpu: $(AUTH_RETURN_CPU) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN)
+	"$(AUTH_RETURN_CPU)" "$(AUTH_RETURN_MAIN)" "$(AUTH_RETURN_RETAB_MAIN)"
+
+verify-authenticated-return-native: $(AUTH_RETURN_NATIVE) $(INTERPRETER_TYPED_NATIVE) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN)
+	@set -eu; ulimit -c 0; \
+		"$(INTERPRETER_TYPED_NATIVE)"; \
+		"$(AUTH_RETURN_NATIVE)"; \
+		"$(AUTH_RETURN_NATIVE)" retab; \
+		"$(AUTH_RETURN_MAIN)"; \
+		"$(AUTH_RETURN_RETAB_MAIN)"; \
+		for mismatch in bad-lr bad-sp bad-lr-retab bad-sp-retab; do \
+			if "$(AUTH_RETURN_NATIVE)" "$$mismatch" >/dev/null 2>&1; then exit 1; \
+			else status=$$?; test "$$status" -gt 128 || exit 1; fi; \
+		done; \
+		for mismatch in "$(AUTH_RETURN_BAD_LR_MAIN)" "$(AUTH_RETURN_BAD_SP_MAIN)" \
+			"$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)"; do \
+			if "$$mismatch" >/dev/null 2>&1; then exit 1; \
+			else status=$$?; test "$$status" -gt 128 || exit 1; fi; \
+		done; \
+		echo 'Key-B native C and no-import _main controls passed'
+
+verify-authenticated-return: verify-authenticated-return-cpu verify-authenticated-return-native
+
+verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/auth-return-trace.XXXXXX"); \
+	trap 'rm -rf "$$run_dir"' EXIT; \
+	run_case() { \
+		name=$$1; executable=$$2; expected_status=$$3; expected_ops=$$4; \
+		if ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$$executable" >"$$run_dir/$$name.out" 2>"$$run_dir/$$name.trace"; then rc=0; else rc=$$?; fi; \
+		test "$$rc" -eq "$$expected_status"; \
+		awk -v wanted="$$expected_ops" ' \
+			function hexval(s, i, n, c) { sub(/^pc=0x/, "", s); n=0; for(i=1;i<=length(s);i++){ c=index("0123456789abcdef",tolower(substr(s,i,1)))-1; if(c<0)return -1; n=n*16+c } return n } \
+			/event=interpreter-block-ready/ { ready_pc=hexval($$5); ready_count=$$6; sub(/^detail=/,"",ready_count) } \
+			/event=interpreter-packet/ { pcs[++n]=hexval($$5); ops[n]=$$6; sub(/^detail=/,"",ops[n]) } \
+			END { m=split(wanted, expected, ","); start=n-m+1; if(start<1 || ready_count!=m || ready_pc!=pcs[start]) exit 1; for(i=1;i<=m;i++){ if(ops[start+i-1]!=expected[i]) exit 1; if(i>1 && pcs[start+i-1]-pcs[start+i-2]!=4) exit 1 } }' "$$run_dir/$$name.trace"; \
+		if test "$$expected_status" -eq 0; then test ! -s "$$run_dir/$$name.out"; else grep -q 'Guest return authentication failed' "$$run_dir/$$name.trace"; fi; \
+	}; \
+	run_case autibsp "$(AUTH_RETURN_MAIN)" 0 36,36,1,2; \
+	run_case retab "$(AUTH_RETURN_RETAB_MAIN)" 0 36,1,36; \
+	run_case bad-lr "$(AUTH_RETURN_BAD_LR_MAIN)" 1 36,23,36,1,2; \
+	run_case bad-sp "$(AUTH_RETURN_BAD_SP_MAIN)" 1 36,10,36,9,1,2; \
+	run_case bad-lr-retab "$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" 1 36,23,36; \
+	run_case bad-sp-retab "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" 1 36,10,36; \
+	echo 'Typed PACIBSP/AUTIBSP/RETAB packet PC traces and guest outcomes passed'
 
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"

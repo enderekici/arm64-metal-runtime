@@ -181,6 +181,18 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   };
   auto next = pc + 4;
   auto rd = field(0, 5), rn = field(5, 5);
+  if (const auto operation =
+          translate_core::decode_authenticated_return_operation(bits)) {
+    const auto step = static_cast<translate_core::AuthenticatedReturnStep>(
+        operation->destination);
+    const auto successors =
+        step == translate_core::AuthenticatedReturnStep::Return
+            ? PCs{}
+            : PCs{next};
+    return translate_core::make_operation_instruction(
+        *operation, successors, translate_core::LoweringMode::Process,
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
+  }
   const auto decodedOperation = translate_core::decode_operation(bits);
   const bool typedBranch = decodedOperation &&
                            decodedOperation->opcode == translate_core::Opcode::Branch;

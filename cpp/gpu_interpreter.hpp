@@ -39,6 +39,17 @@ inline constexpr std::size_t programCounterIndex = 33;
 inline constexpr std::size_t processStatusIndex = 34;
 inline constexpr std::size_t blockBudgetIndex = 36;
 inline constexpr std::size_t returnRegisterIndex = 30;
+inline constexpr std::size_t authShadowDepthIndex = 37;
+inline constexpr std::size_t authShadowStart = 38;
+inline constexpr std::size_t authShadowFrameWords = 3;
+inline constexpr std::size_t authShadowFrameCapacity = 256;
+inline constexpr std::size_t authShadowStateWords =
+    authShadowStart + authShadowFrameWords * authShadowFrameCapacity;
+[[nodiscard]] inline constexpr bool authenticated_return_state_valid(
+    std::size_t stateBytes, std::uint64_t shadowDepth) noexcept {
+    return stateBytes >= authShadowStateWords * sizeof(std::uint64_t) &&
+           shadowDepth <= authShadowFrameCapacity;
+}
 inline constexpr std::size_t resultRegisterIndex = 0;
 inline constexpr std::uint64_t noReturnAddress = UINT64_MAX;
 

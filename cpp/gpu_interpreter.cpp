@@ -68,6 +68,7 @@ Result Interpreter::dispatch(const Backend& backend,
     const auto* initialState = static_cast<const std::uint64_t*>(processState.data());
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
     bool hasInitialPc = false;
+    bool hasAuthenticatedReturn = false;
     std::size_t initialPacketIndex = packets.size();
     bool hasMemoryAccess = false;
     std::uint64_t previousPc = 0;
@@ -100,6 +101,20 @@ Result Interpreter::dispatch(const Backend& backend,
                 operation[2] != 30 || operation[3] != 0 || operation[4] != 0 ||
                 operation[5] != 64) {
                 throw std::invalid_argument("Interpreter RET packet metadata is invalid");
+            }
+        } else if (opcode == translate_core::Opcode::AuthenticatedReturn) {
+            hasAuthenticatedReturn = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const bool terminal = operation[1] == static_cast<std::uint32_t>(
+                translate_core::AuthenticatedReturnStep::Return);
+            if (operation[1] > static_cast<std::uint32_t>(
+                    translate_core::AuthenticatedReturnStep::Return) ||
+                operation[2] != 0 || operation[3] != 0 || operation[4] != 0 ||
+                operation[5] != 0 ||
+                (terminal && (!blockEnd || packet.successorCount != 0)) ||
+                (!terminal && packet.successorCount != (blockEnd ? 1U : 0U))) {
+                throw std::invalid_argument(
+                    "Interpreter authenticated-return packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::Branch) {
             if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 1 ||
@@ -427,6 +442,12 @@ Result Interpreter::dispatch(const Backend& backend,
     }
     if (!hasInitialPc) {
         throw std::invalid_argument("Interpreter process PC is absent from the packet table");
+    }
+    if (hasAuthenticatedReturn &&
+        !authenticated_return_state_valid(processState.size(),
+                                          initialState[authShadowDepthIndex])) {
+        throw std::invalid_argument(
+            "Interpreter authenticated-return state does not contain a valid shadow stack");
     }
     const auto& initialPacket = packets[initialPacketIndex];
     const auto initialOpcode = static_cast<translate_core::Opcode>(

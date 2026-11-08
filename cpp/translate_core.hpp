@@ -48,6 +48,16 @@ enum class Opcode : std::uint32_t {
   IntegerBitOperation = 34,
   IntegerDivide = 35,
   LoadLiteral = 38,
+  AuthenticatedReturn = 36,
+};
+
+// AuthenticatedReturn uses `destination` as its sub-operation: 0 pushes the
+// LR/SP shadow entry (PACIBSP), 1 validates and pops it (AUTIBSP), and 2
+// validates it then returns (RETAB). Other operands are zero.
+enum class AuthenticatedReturnStep : std::uint32_t {
+  SignLinkRegister = 0,
+  AuthenticateLinkRegister = 1,
+  Return = 2,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -166,6 +176,10 @@ struct Instruction {
 };
 
 std::optional<Operation> decode_operation(std::uint32_t bits);
+// Process-only key-B authenticated return operations. Kept separate from
+// decode_operation so standalone function translation retains its current
+// unsupported-instruction policy.
+std::optional<Operation> decode_authenticated_return_operation(std::uint32_t bits);
 std::optional<std::uint64_t> decode_logical_immediate_mask(
     std::uint32_t n, std::uint32_t immr, std::uint32_t imms,
     std::uint32_t width);

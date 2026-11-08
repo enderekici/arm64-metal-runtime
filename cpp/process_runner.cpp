@@ -339,7 +339,22 @@ ProcessKernelPlan plan_process_kernel(
             if (found == plan.instructions.end() || !found->second.operation) break;
             const auto& instruction = found->second;
             const auto opcode = instruction.operation->opcode;
-            if (opcode == translate_core::Opcode::Return) {
+            const bool authenticatedReturn =
+                opcode == translate_core::Opcode::AuthenticatedReturn;
+            if (authenticatedReturn &&
+                (instruction.operation->destination > static_cast<std::uint32_t>(
+                     translate_core::AuthenticatedReturnStep::Return) ||
+                 instruction.operation->source != 0 ||
+                 instruction.operation->immediate != 0 ||
+                 instruction.operation->shift != 0 ||
+                 instruction.operation->width != 0)) {
+                break;
+            }
+            const bool authenticatedTerminal =
+                authenticatedReturn && instruction.operation->destination ==
+                    static_cast<std::uint32_t>(
+                        translate_core::AuthenticatedReturnStep::Return);
+            if (opcode == translate_core::Opcode::Return || authenticatedTerminal) {
                 if (!instruction.next.empty()) break;
                 block.push_back({pc, &instruction, true});
                 complete = true;
@@ -422,6 +437,9 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::MoveWideZero ||
                 opcode == translate_core::Opcode::MoveWideNot ||
                 opcode == translate_core::Opcode::MoveWideKeep;
+            const bool authenticatedStep = authenticatedReturn &&
+                instruction.operation->destination <= static_cast<std::uint32_t>(
+                    translate_core::AuthenticatedReturnStep::AuthenticateLinkRegister);
             const bool unsignedMemoryOpcode =
                 opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                 opcode == translate_core::Opcode::StoreUnsignedImmediate;
@@ -644,7 +662,7 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 1 &&
                  operation.immediate <= 0x1fffffU && operation.shift == 0 &&
                  operation.width == 64);
-            if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
+            if ((!moveWideOpcode && !authenticatedStep && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
@@ -1793,6 +1811,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             progressTrace.event("interpreter-block-ready",
                                 static_cast<std::uint64_t>(entry),
                                 plan.interpretedPackets.size());
+            for (const auto& packet : plan.interpretedPackets) {
+                progressTrace.event("interpreter-packet", packet.pc,
+                                    packet.operation[0]);
+            }
             return CompiledProcessKernel{{}, plan.interpretedPackets, true};
         }
 

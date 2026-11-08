@@ -455,13 +455,72 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                    field(bits, 5, 16), shift, width};
 }
 
+std::optional<Operation> decode_authenticated_return_operation(
+    std::uint32_t bits) {
+  using Step = AuthenticatedReturnStep;
+  if (bits == 0xd503237f) {
+    return Operation{Opcode::AuthenticatedReturn,
+                     static_cast<std::uint32_t>(Step::SignLinkRegister),
+                     0, 0, 0, 0};
+  }
+  if (bits == 0xd50323ff) {
+    return Operation{Opcode::AuthenticatedReturn,
+                     static_cast<std::uint32_t>(Step::AuthenticateLinkRegister),
+                     0, 0, 0, 0};
+  }
+  if (bits == 0xd65f0fff) {
+    return Operation{Opcode::AuthenticatedReturn,
+                     static_cast<std::uint32_t>(Step::Return), 0, 0, 0, 0};
+  }
+  return std::nullopt;
+}
+
 Instruction make_operation_instruction(Operation operation,
                                        std::vector<std::int64_t> next,
                                        LoweringMode mode,
                                        std::uint64_t guest_code_limit,
                                        std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::LoadLiteral) {
+  if (operation.opcode == Opcode::AuthenticatedReturn) {
+    if (mode != LoweringMode::Process || operation.destination > 2 ||
+        operation.source != 0 || operation.immediate != 0 ||
+        operation.shift != 0 || operation.width != 0) {
+      throw std::invalid_argument("Invalid typed authenticated-return operation");
+    }
+    const auto step = static_cast<AuthenticatedReturnStep>(operation.destination);
+    if (step == AuthenticatedReturnStep::SignLinkRegister) {
+      if (next.size() != 1) {
+        throw std::invalid_argument("Typed PACIBSP needs a fallthrough PC");
+      }
+      code = {
+          "if (x[37] >= 256ul) { x[34] = 6; return; }",
+          "{ ulong slot = 38ul + 3ul * x[37]++;",
+          "x[slot] = x[30]; x[slot + 1] = x[31]; x[slot + 2] = " +
+              std::to_string(guest_pc) + "ul; }"};
+    } else if (step == AuthenticatedReturnStep::AuthenticateLinkRegister) {
+      if (next.size() != 1) {
+        throw std::invalid_argument("Typed AUTIBSP needs a fallthrough PC");
+      }
+      code = {
+          "if (x[37] == 0) { x[34] = 6; return; }",
+          "{ ulong slot = 38ul + 3ul * --x[37];",
+          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[34] = 6; return; } }"};
+    } else {
+      if (!next.empty() || guest_code_limit == 0) {
+        throw std::invalid_argument("Typed RETAB cannot have successors");
+      }
+      code = {
+          "if (x[37] == 0) { x[34] = 6; return; }",
+          "{ ulong slot = 38ul + 3ul * --x[37];",
+          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[34] = 6; return; } }",
+          "if (x[30] == ~0ul) { x[34] = 0; return; }",
+          "if (x[30] >= " + std::to_string(guest_code_limit) +
+              "ul) { x[34] = 3; return; }",
+          "x[33] = x[30];",
+          "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
+          "x[34] = 7; return;"};
+    }
+  } else if (operation.opcode == Opcode::LoadLiteral) {
     const auto displacement = static_cast<std::int32_t>(operation.immediate);
     const auto bytes = operation.shift == 1U ? 8U : 4U;
     if (operation.destination > 31 || operation.source != 0 || operation.shift > 2U ||
@@ -498,6 +557,7 @@ Instruction make_operation_instruction(Operation operation,
       code.push_back("x[" + std::to_string(operation.destination) +
                      "] = " + value + ";");
     }
+  } else if (operation.opcode == Opcode::IntegerBitOperation) {    }
   } else if (operation.opcode == Opcode::IntegerBitOperation) {
     if (operation.destination > 31 || operation.source > 31 ||
         operation.immediate > 3U || operation.shift != 0 ||

@@ -13,7 +13,9 @@
 using arm64metal::translate_core::LoweringMode;
 using arm64metal::translate_core::Operation;
 using arm64metal::translate_core::Opcode;
+using arm64metal::translate_core::AuthenticatedReturnStep;
 using arm64metal::translate_core::decode_operation;
+using arm64metal::translate_core::decode_authenticated_return_operation;
 using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
@@ -1275,6 +1277,44 @@ int main() {
   assert(branch.next == std::vector<std::int64_t>{0x500c});
   assert(branch.ends_block_at(0x5004));
   assert(branch.code == std::vector<std::string>{"pc = 20492ul; break;"});
+
+  const auto pacibsp = decode_authenticated_return_operation(0xd503237f);
+  assert(pacibsp.has_value());
+  assert(pacibsp->opcode == Opcode::AuthenticatedReturn);
+  assert(pacibsp->destination == static_cast<std::uint32_t>(
+                                    AuthenticatedReturnStep::SignLinkRegister));
+  assert((serialize_operation(*pacibsp) ==
+          arm64metal::translate_core::OperationPacket{36, 0, 0, 0, 0, 0}));
+  const auto pacibspLowered = make_operation_instruction(
+      *pacibsp, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(pacibspLowered.code.size() == 3);
+  assert(pacibspLowered.code[0].find("x[37] >= 256ul") != std::string::npos);
+  assert(pacibspLowered.code[1].find("38ul + 3ul * x[37]++") != std::string::npos);
+
+  const auto autibsp = decode_authenticated_return_operation(0xd50323ff);
+  assert(autibsp.has_value());
+  assert(autibsp->destination == static_cast<std::uint32_t>(
+                                    AuthenticatedReturnStep::AuthenticateLinkRegister));
+  const auto autibspLowered = make_operation_instruction(
+      *autibsp, {0x1008}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(autibspLowered.code.size() == 3);
+  assert(autibspLowered.code[2].find("x[30] != x[slot]") != std::string::npos);
+  assert(autibspLowered.code[2].find("x[31] != x[slot + 1]") != std::string::npos);
+
+  const auto retab = decode_authenticated_return_operation(0xd65f0fff);
+  assert(retab.has_value());
+  assert(retab->destination ==
+         static_cast<std::uint32_t>(AuthenticatedReturnStep::Return));
+  const auto retabLowered = make_operation_instruction(
+      *retab, {}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(retabLowered.ends_block_at(0x1008));
+  assert(retabLowered.code.size() == 8);
+  assert(retabLowered.code[2].find("x[30] != x[slot]") != std::string::npos);
+  assert(retabLowered.code[7] == "x[34] = 7; return;");
+  assert(!decode_authenticated_return_operation(0xd503233f).has_value());
+  assert(!decode_authenticated_return_operation(0xd50323bf).has_value());
+  assert(!decode_authenticated_return_operation(0xd65f0bff).has_value());
+  assert(!decode_operation(0xd503237f).has_value());
 
   const auto backwardBranch = decode_operation(0x17ffffff);
   assert(backwardBranch.has_value());

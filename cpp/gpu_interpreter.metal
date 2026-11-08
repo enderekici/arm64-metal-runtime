@@ -1065,6 +1065,69 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 state[34] = 7;
                 return;
             }
+            if (opcode == 36u) {
+                const uint step = instruction.operation[1];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (step > 2u || instruction.operation[2] != 0u ||
+                    instruction.operation[3] != 0u ||
+                    instruction.operation[4] != 0u ||
+                    instruction.operation[5] != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                if (step == 0u) {
+                    if (state[37] >= 256ul) {
+                        state[34] = 6;
+                        return;
+                    }
+                    const ulong slot = 38ul + 3ul * state[37]++;
+                    state[slot] = state[30];
+                    state[slot + 1] = state[31];
+                    state[slot + 2] = pc;
+                } else {
+                    if (state[37] == 0ul || state[37] > 256ul) {
+                        state[34] = 6;
+                        return;
+                    }
+                    const ulong slot = 38ul + 3ul * --state[37];
+                    if (state[30] != state[slot] || state[31] != state[slot + 1]) {
+                        state[34] = 6;
+                        return;
+                    }
+                }
+                if (step == 2u) {
+                    const ulong target = state[30];
+                    if (target == ~0ul) {
+                        state[34] = 0;
+                        return;
+                    }
+                    if (target >= (1ul << 48)) {
+                        state[34] = 3;
+                        return;
+                    }
+                    state[33] = target;
+                    state[34] = 7;
+                    return;
+                }
+                if (blockEnd) {
+                    if (instruction.successorCount != 1u) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             state[33] = pc;
             state[34] = 7;
             return;
