@@ -305,6 +305,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::SubImmediate ||
                 opcode == translate_core::Opcode::AddImmediateSetFlags ||
                 opcode == translate_core::Opcode::SubImmediateSetFlags;
+            const bool addSubShiftedRegisterOpcode =
+                opcode == translate_core::Opcode::AddSubShiftedRegister;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const auto& operation = *instruction.operation;
@@ -353,11 +355,21 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 31 && operation.shift <= 63 &&
                  (operation.width == 32 || operation.width == 64));
+            const auto shiftedType = (operation.shift >> 6U) & 3U;
+            const auto shiftedAmount = operation.shift & 63U;
+            const bool validAddSubShiftedRegister =
+                !addSubShiftedRegisterOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 shiftedType <= 2 && shiftedAmount < operation.width &&
+                 (operation.shift & ~0x3ffU) == 0);
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
-                 !conditionalSelectOpcode) ||
+                 !conditionalSelectOpcode && !addSubShiftedRegisterOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
+                !validAddSubShiftedRegister ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

@@ -4,6 +4,8 @@
 #include <cassert>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using arm64metal::translate_core::LoweringMode;
@@ -13,6 +15,55 @@ using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
 int main() {
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+      for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
+        for (std::uint32_t shiftType = 0; shiftType < 3; ++shiftType) {
+          const auto amount = width == 32 ? 31U : 63U;
+          const auto bits = 0x0b000000U | (width == 64 ? 0x80000000U : 0U) |
+                            (subtract << 30U) | (setFlags << 29U) |
+                            (shiftType << 22U) | (2U << 16U) |
+                            (amount << 10U) | (1U << 5U) | 3U;
+          const auto shifted = decode_operation(bits);
+          const auto packed = (setFlags << 9U) | (subtract << 8U) |
+                              (shiftType << 6U) | amount;
+          assert(shifted.has_value() &&
+                 shifted->opcode == Opcode::AddSubShiftedRegister &&
+                 shifted->destination == 3 && shifted->source == 1 &&
+                 shifted->immediate == 2 && shifted->shift == packed &&
+                 shifted->width == width);
+          assert((serialize_operation(*shifted) ==
+                  arm64metal::translate_core::OperationPacket{
+                      19, 3, 1, 2, packed, width}));
+          const auto lowered = make_operation_instruction(
+              *shifted, {0x1004}, LoweringMode::Process,
+              std::uint64_t{1} << 48);
+          assert(lowered.code.size() == 9 &&
+                 lowered.code[1].find("add_sub_shifted_apply(") !=
+                     std::string::npos &&
+                 lowered.code[7] == "x[32] = add_sub_result.flags;");
+        }
+      }
+    }
+  }
+  const auto shiftedCmp = decode_operation(0xeb02003fU);
+  assert(shiftedCmp.has_value() && shiftedCmp->destination == 31 &&
+         shiftedCmp->shift == 0x300U);
+  assert(make_operation_instruction(*shiftedCmp, {0x1004}, LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code[1]
+             .find("x[31]") == std::string::npos);
+  assert(!decode_operation(0x8be20c20U).has_value());  // ROR is reserved.
+  assert(!decode_operation(0x0b028020U).has_value());  // W shift amount 32.
+  const auto shiftedDiscard = decode_operation(0x8b02003fU);
+  assert(shiftedDiscard.has_value() && shiftedDiscard->destination == 31);
+  assert(make_operation_instruction(*shiftedDiscard, {0x1004},
+                                    LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code.size() == 8);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "add_sub_shifted_apply") != std::string_view::npos);
+
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};
   for (std::uint32_t variant = 0; variant < 4; ++variant) {

@@ -76,6 +76,7 @@ INTERPRETER_ADD_SUB_FLAGS_NATIVE := $(BUILD_DIR)/interpreter-add-sub-flags-nativ
 INTERPRETER_ADD_SUB_SP_MAIN := $(BUILD_DIR)/interpreter-add-sub-sp-flags-main
 INTERPRETER_BCOND_MAIN := $(BUILD_DIR)/interpreter-bcond-nzcv-main
 INTERPRETER_CSEL_MAIN := $(BUILD_DIR)/interpreter-csel-family-main
+INTERPRETER_ADD_SUB_SHIFTED_MAIN := $(BUILD_DIR)/interpreter-add-sub-shifted-register-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_MOVN_MOVK_MAIN := $(BUILD_DIR)/interpreter-movn-movk-main
 INTERPRETER_BRANCH_MAIN := $(BUILD_DIR)/interpreter-branch-main
@@ -123,7 +124,7 @@ $(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interprete
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
 
-$(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp translate_core.cpp translate_core.hpp
+$(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp translate_core.cpp translate_core.hpp integer_ops_shared.h
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. ../fixtures/handoff/typed-operation.cpp translate_core.cpp -o "$@"
 
@@ -160,6 +161,10 @@ $(INTERPRETER_BCOND_MAIN): ../fixtures/interpreter/bcond-nzcv-main.s
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_CSEL_MAIN): ../fixtures/interpreter/csel-family-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_ADD_SUB_SHIFTED_MAIN): ../fixtures/interpreter/add-sub-shifted-register-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -282,7 +287,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -468,6 +473,22 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-block-ready' "$$run_dir/csel.interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/csel.interpreter.err" && \
 		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit found }' "$$run_dir/csel.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_ADD_SUB_SHIFTED_MAIN)" >"$$run_dir/add-sub-shifted.native.out" 2>"$$run_dir/add-sub-shifted.native.err"; shifted_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_ADD_SUB_SHIFTED_MAIN)" >"$$run_dir/add-sub-shifted.translated.out" 2>"$$run_dir/add-sub-shifted.translated.err"; shifted_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_ADD_SUB_SHIFTED_MAIN)" >"$$run_dir/add-sub-shifted.interpreter.out" 2>"$$run_dir/add-sub-shifted.interpreter.err"; shifted_interpreter_rc=$$?; \
+		printf '%s\n' "$$shifted_native_rc" >"$$run_dir/add-sub-shifted.native.rc"; \
+		printf '%s\n' "$$shifted_translated_rc" >"$$run_dir/add-sub-shifted.translated.rc"; \
+		printf '%s\n' "$$shifted_interpreter_rc" >"$$run_dir/add-sub-shifted.interpreter.rc"; \
+		set -e; \
+		test "$$shifted_native_rc" -eq 42 && test "$$shifted_translated_rc" -eq "$$shifted_native_rc" && \
+		test "$$shifted_interpreter_rc" -eq "$$shifted_native_rc" && \
+		cmp "$$run_dir/add-sub-shifted.native.out" "$$run_dir/add-sub-shifted.translated.out" && \
+		cmp "$$run_dir/add-sub-shifted.native.out" "$$run_dir/add-sub-shifted.interpreter.out" && \
+		cmp "$$run_dir/add-sub-shifted.native.err" "$$run_dir/add-sub-shifted.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-shifted.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*pc=0x42d8' "$$run_dir/add-sub-shifted.interpreter.err" && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/add-sub-shifted.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_PAIR_MEMORY_MAIN)" >"$$run_dir/pair-memory.native.out" 2>"$$run_dir/pair-memory.native.err"; pair_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_PAIR_MEMORY_MAIN)" >"$$run_dir/pair-memory.translated.out" 2>"$$run_dir/pair-memory.translated.err"; pair_translated_rc=$$?; \

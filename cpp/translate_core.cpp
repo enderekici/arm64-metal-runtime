@@ -170,6 +170,18 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      destination, source, field(bits, 10, 12),
                      shiftField * 12u, width};
   }
+  if ((bits & 0x1f200000U) == 0x0b000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto shiftType = field(bits, 22, 2);
+    const auto amount = field(bits, 10, 6);
+    if (shiftType == 3U || amount >= width) return std::nullopt;
+    const auto subtract = field(bits, 30, 1);
+    const auto setFlags = field(bits, 29, 1);
+    const auto packed = (setFlags << 9U) | (subtract << 8U) |
+                        (shiftType << 6U) | amount;
+    return Operation{Opcode::AddSubShiftedRegister, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5), packed, width};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -227,6 +239,39 @@ Instruction make_operation_instruction(Operation operation,
                    std::to_string(operation.width) + "u, " +
                    std::string(setFlags ? "1u" : "0u") + ", previous_flags);");
     if (!setFlags || operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = add_sub_result.value;");
+    }
+    code.push_back("z = (add_sub_result.flags & 1u) != 0u;");
+    code.push_back("n = (add_sub_result.flags & 2u) != 0u;");
+    code.push_back("v = (add_sub_result.flags & 4u) != 0u;");
+    code.push_back("c = (add_sub_result.flags & 8u) != 0u;");
+    if (mode == LoweringMode::Process) {
+      code.push_back("x[32] = add_sub_result.flags;");
+    }
+    code.push_back("}");
+  } else if (operation.opcode == Opcode::AddSubShiftedRegister) {
+    const bool subtract = (operation.shift & 0x100U) != 0;
+    const bool setFlags = (operation.shift & 0x200U) != 0;
+    const auto shiftType = (operation.shift >> 6U) & 3U;
+    const auto amount = operation.shift & 63U;
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || shiftType > 2 || amount >= operation.width ||
+        (operation.width != 32 && operation.width != 64) ||
+        (operation.shift & ~0x3ffU) != 0) {
+      throw std::invalid_argument("Typed ADD/SUB shifted-register operands are invalid");
+    }
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("{");
+    code.push_back("const AddSubImmediateResult add_sub_result = "
+                   "add_sub_shifted_apply(" + std::string(subtract ? "1u" : "0u") +
+                   ", " + reg(operation.source, operation.width == 64) + ", " +
+                   reg(operation.immediate, operation.width == 64) + ", " +
+                   std::to_string(shiftType) + "u, " + std::to_string(amount) +
+                   "u, " + std::to_string(operation.width) + "u, " +
+                   std::string(setFlags ? "1u" : "0u") + ", " + flags + ");");
+    if (operation.destination != 31) {
       code.push_back("x[" + std::to_string(operation.destination) +
                      "] = add_sub_result.value;");
     }

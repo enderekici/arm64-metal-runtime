@@ -31,6 +31,7 @@ enum class Opcode : std::uint32_t {
   ConditionalSelect = 16,
   LoadUnscaledWriteback = 17,
   StoreUnscaledWriteback = 18,
+  AddSubShiftedRegister = 19,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -47,6 +48,9 @@ enum class Opcode : std::uint32_t {
 // BranchCondition uses source for the condition and immediate for byte offset.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.
+// ADD/SUB shifted register uses destination=Rd, source=Rn, immediate=Rm,
+// shift=(setFlags << 9) | (subtract << 8) | (shiftType << 6) | amount,
+// and width=32 or 64. Shift types 0/1/2 are LSL/LSR/ASR; register 31 is ZR.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

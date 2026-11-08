@@ -20,6 +20,12 @@
               ? (lhs) - (ulong(immediate) << (shift))                             \
               : (lhs) + (ulong(immediate) << (shift))))
 
+#define ARM64METAL_ADD_SUB_VALUE(subtract, lhs, rhs, width)                       \
+  ((width) == 32u                                                               \
+       ? ulong(uint((subtract) != 0u ? uint(lhs) - uint(rhs)                      \
+                                     : uint(lhs) + uint(rhs)))                     \
+       : ((subtract) != 0u ? (lhs) - (rhs) : (lhs) + (rhs)))
+
 #define ARM64METAL_ADD_SUB_IMM_NZCV(subtract, lhs, rhs, value, width, signBit)    \
   (uint((value) == 0ul) |                                                        \
    (uint(((value) & (signBit)) != 0ul) << 1u) |                                  \
@@ -67,11 +73,30 @@ inline AddSubImmediateResult add_sub_immediate_apply(
     uint setFlags, uint previousFlags) {
     const ulong left = width == 32u ? ulong(uint(lhs)) : lhs;
     const ulong right = ulong(immediate) << shift;
-    const ulong value = ARM64METAL_ADD_SUB_IMM_VALUE(
-        subtract, left, immediate, shift, width);
+    const ulong value = ARM64METAL_ADD_SUB_VALUE(subtract, left, right, width);
     const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
     const uint flags = setFlags != 0u
         ? ARM64METAL_ADD_SUB_IMM_NZCV(subtract, left, right, value, width, signBit)
+        : previousFlags;
+    return AddSubImmediateResult{value, flags};
+}
+inline AddSubImmediateResult add_sub_shifted_apply(
+    uint subtract, ulong lhs, ulong rhs, uint shiftType, uint amount,
+    uint width, uint setFlags, uint previousFlags) {
+    const ulong left = width == 32u ? ulong(uint(lhs)) : lhs;
+    const ulong source = width == 32u ? ulong(uint(rhs)) : rhs;
+    const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+    ulong shifted = source;
+    if (shiftType == 0u) shifted = source << amount;
+    else if (shiftType == 1u) shifted = source >> amount;
+    else if (shiftType == 2u && amount != 0u) {
+        shifted = source >> amount;
+        if ((source & signBit) != 0ul) shifted |= (~0ul << (width - amount));
+    }
+    if (width == 32u) shifted = ulong(uint(shifted));
+    const ulong value = ARM64METAL_ADD_SUB_VALUE(subtract, left, shifted, width);
+    const uint flags = setFlags != 0u
+        ? ARM64METAL_ADD_SUB_IMM_NZCV(subtract, left, shifted, value, width, signBit)
         : previousFlags;
     return AddSubImmediateResult{value, flags};
 }
@@ -118,12 +143,26 @@ inline constexpr char typed_integer_msl_source[] =
     "ulong left = width == 32u ? ulong(uint(lhs)) : lhs; "
     "ulong right = ulong(immediate) << shift; "
     "ulong value = "
-    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_VALUE(
-        subtract, left, immediate, shift, width))
+    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_VALUE(subtract, left, right, width))
     "; ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
     "uint flags = setFlags != 0u ? "
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
         subtract, left, right, value, width, signBit))
+    " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
+    "inline AddSubImmediateResult add_sub_shifted_apply(uint subtract, ulong lhs, "
+    "ulong rhs, uint shiftType, uint amount, uint width, uint setFlags, "
+    "uint previousFlags) { ulong left = width == 32u ? ulong(uint(lhs)) : lhs; "
+    "ulong source = width == 32u ? ulong(uint(rhs)) : rhs; "
+    "ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
+    "ulong shifted = source; if (shiftType == 0u) shifted = source << amount; "
+    "else if (shiftType == 1u) shifted = source >> amount; "
+    "else if (shiftType == 2u && amount != 0u) { shifted = source >> amount; "
+    "if ((source & signBit) != 0ul) shifted |= (~0ul << (width - amount)); } "
+    "if (width == 32u) shifted = ulong(uint(shifted)); ulong value = "
+    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_VALUE(subtract, left, shifted, width))
+    "; uint flags = setFlags != 0u ? "
+    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
+        subtract, left, shifted, value, width, signBit))
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
@@ -143,6 +182,7 @@ inline constexpr char typed_integer_msl_source[] =
 #undef ARM64METAL_STRINGIFY_INNER
 #undef ARM64METAL_MOVE_WIDE_VALUE
 #undef ARM64METAL_ADD_SUB_IMM_VALUE
+#undef ARM64METAL_ADD_SUB_VALUE
 #undef ARM64METAL_ADD_SUB_IMM_NZCV
 
 #endif  // ARM64METAL_INTEGER_OPS_SHARED_H
