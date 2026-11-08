@@ -131,6 +131,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_malloc_type_posix_memalign", 100, true, true},
     {"_issetugid", 101, true, true},
     {"_dyld_program_sdk_at_least", 102, true, true},
+    {"_dyld_sdk_at_least", 185, true, true},
     {"_dyld_program_minos_at_least", 103, true, true},
     {"_shm_open", 104, true, true},
     {"___shm_open", 105, true, true},
