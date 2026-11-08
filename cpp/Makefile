@@ -461,7 +461,7 @@ verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIV
 
 verify-guest-heap-allocate-at: $(GUEST_HEAP_ALLOCATE_AT_TEST)
 	"$(GUEST_HEAP_ALLOCATE_AT_TEST)" >"$(BUILD_DIR)/guest-heap-allocate-at.out"
-	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
+	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok avoid=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
 	cmp "$(BUILD_DIR)/guest-heap-allocate-at.expected.out" "$(BUILD_DIR)/guest-heap-allocate-at.out"
 
 verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
