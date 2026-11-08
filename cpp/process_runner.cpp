@@ -6250,6 +6250,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             guestMachReceiveWaiters[receiveName].push_back(threadId);
                                             progressTrace.event("mach-receive-wait", threadId,
                                                                 receiveName);
+                                            progressTrace.event("mach-receive-deadline", now,
+                                                                deadline);
                                             std::vector<std::uint64_t> liveRegisters(
                                                 registers, registers + stateBuffer.size() /
                                                     sizeof(std::uint64_t));
