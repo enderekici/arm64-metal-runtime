@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -113,6 +113,7 @@ INTERPRETER_BITFIELD_NATIVE := $(BUILD_DIR)/interpreter-bitfield-native
 INTERPRETER_INTEGER_BITOPS_MAIN := $(BUILD_DIR)/interpreter-integer-bitops-main
 INTERPRETER_INTEGER_DIVIDE_MAIN := $(BUILD_DIR)/interpreter-integer-divide-main
 INTERPRETER_LITERAL_LOAD_MAIN := $(BUILD_DIR)/interpreter-literal-load-main
+INTERPRETER_LDUMIN_LDUMAX_MAIN := $(BUILD_DIR)/interpreter-ldumin-ldumax-main
 INTERPRETER_LOGICAL_IMMEDIATE_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-main
 INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-invalid-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
@@ -474,6 +475,38 @@ $(INTERPRETER_ADD_SUB_FLAGS_NATIVE): ../fixtures/handoff/typed-add-sub-flags.s .
 $(INTERPRETER_MINIMAL_MAIN): ../fixtures/interpreter/minimal-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_LDUMIN_LDUMAX_MAIN): ../fixtures/interpreter/ldumin-ldumax-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+verify-interpreter-ldumin-ldumax-native: $(INTERPRETER_LDUMIN_LDUMAX_MAIN)
+	@set -eu; set +e; "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)"; rc=$$?; set -e; \
+		test "$$rc" -eq 42; echo "LDUMIN/LDUMAX native guest exit=$$rc"
+
+verify-interpreter-ldumin-ldumax: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/ldumin-ldumax.XXXXXX"); \
+	binary_sha=$$(shasum -a 256 "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" | awk '{print $$1}'); \
+	set +e; \
+	"$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+	"$(APP)" launch "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+		"$(APP)" launch "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+	set -e; \
+	test "$$binary_sha" = "$$(shasum -a 256 "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" | awk '{print $$1}')" && \
+		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq "$$native_rc" && \
+		test "$$interpreter_rc" -eq "$$native_rc" && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		awk '/event=interpreter-block-ready/ { blocks++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { block=$$i; sub(/^detail=/,"",block) } } \
+		     /event=interpreter-dispatch/ { dispatches++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { dispatch=$$i; sub(/^detail=/,"",dispatch) } } \
+		     /event=interpreter-packet/ { packets++; for (i=1; i<=NF; ++i) if ($$i == "detail=37") atomics++ } \
+		     END { exit !(blocks == 1 && dispatches == 1 && block > 0 && dispatch == block && packets == block && atomics == 7) }' \
+			"$$run_dir/interpreter.err" && \
+		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
+	echo "LDUMIN/LDUMAX native/translated/AOT fixture passed; sha256=$$binary_sha receipts=$$run_dir"
 
 $(INTERPRETER_MOVN_MOVK_MAIN): ../fixtures/interpreter/movn-movk-entry.s
 	@mkdir -p "$(BUILD_DIR)"
