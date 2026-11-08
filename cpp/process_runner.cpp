@@ -1154,6 +1154,38 @@ private:
     std::size_t periodicEvents_ = 0;
 };
 
+class DyldBootstrapTrace {
+public:
+    DyldBootstrapTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE_DYLD_BOOTSTRAP");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    void event(const char* name, std::uint64_t detail = 0) {
+        if (!enabled_) return;
+        if (events_ == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal dyld-bootstrap event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        ++events_;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::cerr << "arm64-metal dyld-bootstrap +" << elapsed << "ms event=" << name;
+        if (detail != 0) std::cerr << " detail=" << detail;
+        std::cerr << '\n';
+    }
+
+private:
+    static constexpr std::size_t maximumEvents = 16;
+    bool enabled_ = false;
+    bool limitReported_ = false;
+    std::size_t events_ = 0;
+    std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+};
+
 class JitExecutionTrace {
 public:
     JitExecutionTrace() {
@@ -1253,6 +1285,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
     ProgressTrace progressTrace;
+    DyldBootstrapTrace dyldBootstrapTrace;
     JitExecutionTrace jitExecutionTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
         throw std::invalid_argument("Process dispatch block budget must be in [1, 8192]");
@@ -1356,8 +1389,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         : DyldApisFacade{};
     bool dyldApisPublicationSeeded = dyldApis.publicationSeeded;
     if (dyldApisPublicationSeeded) {
-        progressTrace.event("dyld-apis-seeded", dyldApis.object,
-                            static_cast<std::uint64_t>(dyldApis.publicationCell));
+        dyldBootstrapTrace.event("gapis-seeded");
     }
     initialize_cached_globals(image, bootstrap);
     GuestTlvRuntime guestTlvRuntime;
@@ -3246,8 +3278,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                       dyldApis.object, sizeof(std::uint64_t));
             if (cellInPlan && !dyldApisPublicationSeeded) {
                 dyldApisPublicationSeeded = true;
-                progressTrace.event("dyld-apis-seeded", dyldApis.object,
-                    static_cast<std::uint64_t>(dyldApis.publicationCell));
+                dyldBootstrapTrace.event("gapis-seeded");
             }
         }
         if (image.cached_task_port) patchWord(*image.cached_task_port, guestMachTaskPort, 4);
@@ -4689,9 +4720,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackFrames.pop_back();
                 if (frame.dyldBootstrapCallback) {
                     writableTproCallbackCompleted = true;
-                    progressTrace.event("dyld-tpro-callback-return", frame.callback,
-                                        frame.savedRegisters.size() > 33
-                                            ? frame.savedRegisters[33] : 0);
+                    dyldBootstrapTrace.event("tpro-callback-return");
                 }
                 if (registers[37] != frame.authenticationDepth) {
                     throw std::runtime_error("Guest image callback left authentication stack unbalanced");
@@ -4931,8 +4960,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackFrames.push_back(std::move(frame));
                 syncTproThreadAccess();
                 if (cxxMethod) {
-                    progressTrace.event("dyld-tpro-callback-enter", callback,
-                                        hostRegisters[2]);
+                    dyldBootstrapTrace.event("tpro-callback-enter");
                 }
                 auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
                 callbackRegisters[0] = hostRegisters[cxxMethod ? 2U : 1U];
@@ -4947,14 +4975,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error(
                         "_libdyld_initialize dispatch did not use the published guest dyld API object");
                 }
-                progressTrace.event("dyld-libdyld-initialize", hostRegisters[33],
-                                    dyldApis.object);
+                dyldBootstrapTrace.event("libdyld-initialize");
                 const auto initializedDescriptors = initializeDyldRuntimeState();
                 if (!dyldRuntimeInitialized) {
                     throw std::runtime_error("libdyld loader state is not initialized");
                 }
-                progressTrace.event("dyld-runtime-ready", dyldApis.object,
-                                    initializedDescriptors);
+                dyldBootstrapTrace.event("runtime-ready", initializedDescriptors);
                 registers[0] = 0;
                 continue;
             }
