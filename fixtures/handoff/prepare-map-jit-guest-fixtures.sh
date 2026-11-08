@@ -11,6 +11,8 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror \
   "$fixture_dir/map-jit-perthread-fault.c" -o "$output/map-jit-perthread-fault"
 xcrun clang -arch arm64 -Wall -Wextra -Werror \
   "$fixture_dir/map-jit-call-guest.c" -o "$output/map-jit-call-guest"
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  "$fixture_dir/map-jit-siginfo-fault.c" -o "$output/map-jit-siginfo-fault"
 
 make_bundle() {
   name=$1
@@ -39,4 +41,6 @@ make_bundle hardened-perthread-fault \
   "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-perthread-fault
 make_bundle hardened-jit-call \
   "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-call-guest
+make_bundle hardened-jit-siginfo-fault \
+  "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-siginfo-fault
 printf 'GPU guest fixtures prepared under %s\n' "$output"
