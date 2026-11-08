@@ -198,7 +198,7 @@ int run_command(const std::vector<std::string>& args,
          packet(0xd65f03c0u, 0x14004, blockEnd)}};
     const std::vector<InstructionPacket> stackPointerProgram{
         packet(0x91400be0u, 0x15000, blockStart),
-        packet(0xd10043ffu, 0x15004),
+        packet(0xd14007ffu, 0x15004),
         packet(0xd65f03c0u, 0x15008, blockEnd)};
     const std::vector<InstructionPacket> wordStackPointerProgram{
         packet(0x52b0000au, 0x16000, blockStart),
@@ -358,64 +358,89 @@ int run_command(const std::vector<std::string>& args,
           backend, conditionalProgram(test.bits), initial));
     }
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 39 ||
-        first.state[34] != 0 || first.state[0] != 42 ||
-        second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
-        moveWideResults[0].state[34] != 0 ||
-        moveWideResults[0].state[0] != 0xffffffffedcbffffull ||
-        moveWideResults[1].state[34] != 0 ||
-        moveWideResults[1].state[0] != 0xedcbffffu ||
-        moveWideResults[2].state[34] != 0 ||
-        moveWideResults[2].state[0] != 0xabcd00005678ull ||
-        moveWideResults[3].state[34] != 0 ||
-        moveWideResults[3].state[0] != 0xabcd0000u ||
-        moveWideResults[4].state[34] != 0 ||
-        moveWideResults[4].state[0] != 0x5678u ||
-        moveWideResults[5].state[34] != 0 ||
-        moveWideResults[5].state[0] != 0x5678u ||
-        addSubImmediateResults[0].state[34] != 0 ||
-        addSubImmediateResults[0].state[0] != 0x123005u ||
-        addSubImmediateResults[1].state[34] != 0 ||
-        addSubImmediateResults[1].state[0] != 0x2332d000u ||
-        addSubImmediateResults[2].state[34] != 0 ||
-        addSubImmediateResults[2].state[0] != 0x10000u ||
-        addSubImmediateResults[3].state[34] != 0 ||
-        addSubImmediateResults[3].state[0] != 0x1221d000u ||
-        addSubImmediateResults[0].state[32] != 8 ||
-        addSubImmediateResults[1].state[32] != 8 ||
-        addSubImmediateResults[2].state[32] != 8 ||
-        addSubImmediateResults[3].state[32] != 8 ||
-        addSubFlagResults[0].state[32] != 6 ||
-        addSubFlagResults[0].state[34] != 0 ||
-        addSubFlagResults[1].state[32] != 2 ||
-        addSubFlagResults[1].state[34] != 0 ||
-        addSubFlagResults[2].state[32] != 9 ||
-        addSubFlagResults[2].state[34] != 0 ||
-        addSubFlagResults[3].state[32] != 9 ||
-        addSubFlagResults[3].state[34] != 0 ||
-        addSubFlagResults[4].state[32] != 9 ||
-        addSubFlagResults[4].state[34] != 0 ||
-        addSubFlagResults[5].state[32] != 2 ||
-        addSubFlagResults[5].state[34] != 0 ||
-        stackPointerResult.state[0] != 0x102000 ||
-        stackPointerResult.state[31] != 0xff000 ||
-        stackPointerResult.state[34] != 0 ||
-        wordStackPointerResult.state[31] != 0x80000000ull ||
-        wordStackPointerResult.state[0] != 0x80000001ull ||
-        wordStackPointerResult.state[34] != 0 ||
-        addWordFlagsResult.state[0] != 0 ||
-        addWordFlagsResult.state[32] != 9 || addWordFlagsResult.state[34] != 0 ||
-        compareStackPointerResult.state[32] != 8 ||
-        compareStackPointerResult.state[34] != 0 ||
-        continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
-        zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99 ||
-        branch.state[34] != 0 || branch.state[0] != 7 || branch.state[36] != 0 ||
-        branchBudget.state[34] != 1 || branchBudget.state[33] != 0x500c ||
-        branchBudget.state[0] != 7 || branchBudget.state[36] != 0 ||
-        missingTarget.state[34] != 7 || missingTarget.state[33] != 0x6008 ||
-        missingTarget.state[0] != 99 || missingTarget.state[36] != 1) {
-      throw std::runtime_error("Fixed GPU interpreter move-wide/block-flow probe mismatch");
-    }
+    const auto requireProbe = [](bool matches, const char* name) {
+      if (!matches) {
+        throw std::runtime_error(std::string("Fixed GPU interpreter probe mismatch: ") +
+                                 name);
+      }
+    };
+    requireProbe(compiled == 1 && sourceCompiles == 0, "AOT pipeline counters");
+    requireProbe(dispatches == 39, "completed dispatch count");
+    requireProbe(first.state[34] == 0 && first.state[0] == 42 &&
+                     second.state[34] == 0 && second.state[0] == 0xbeef0000u,
+                 "independent MOVZ programs");
+    requireProbe(moveWideResults[0].state[34] == 0 &&
+                     moveWideResults[0].state[0] == 0xffffffffedcbffffull &&
+                     moveWideResults[1].state[34] == 0 &&
+                     moveWideResults[1].state[0] == 0xedcbffffu &&
+                     moveWideResults[2].state[34] == 0 &&
+                     moveWideResults[2].state[0] == 0xabcd00005678ull &&
+                     moveWideResults[3].state[34] == 0 &&
+                     moveWideResults[3].state[0] == 0xabcd0000u &&
+                     moveWideResults[4].state[34] == 0 &&
+                     moveWideResults[4].state[0] == 0x5678u &&
+                     moveWideResults[5].state[34] == 0 &&
+                     moveWideResults[5].state[0] == 0x5678u,
+                 "MOVN/MOVK width and Rd31 cases");
+    requireProbe(addSubImmediateResults[0].state[34] == 0 &&
+                     addSubImmediateResults[0].state[0] == 0x123005u &&
+                     addSubImmediateResults[1].state[34] == 0 &&
+                     addSubImmediateResults[1].state[0] == 0x2332d000u &&
+                     addSubImmediateResults[2].state[34] == 0 &&
+                     addSubImmediateResults[2].state[0] == 0x10000u &&
+                     addSubImmediateResults[3].state[34] == 0 &&
+                     addSubImmediateResults[3].state[0] == 0x1221d000u &&
+                     addSubImmediateResults[0].state[32] == 8 &&
+                     addSubImmediateResults[1].state[32] == 8 &&
+                     addSubImmediateResults[2].state[32] == 8 &&
+                     addSubImmediateResults[3].state[32] == 8,
+                 "non-flag-setting W/X arithmetic and NZCV preservation");
+    requireProbe(addSubFlagResults[0].state[32] == 6 &&
+                     addSubFlagResults[0].state[34] == 0,
+                 "ADDS X overflow expected packed N|V (6)");
+    requireProbe(addSubFlagResults[1].state[32] == 2 &&
+                     addSubFlagResults[1].state[34] == 0,
+                 "SUBS X borrow expected packed N (2)");
+    requireProbe(addSubFlagResults[2].state[32] == 9 &&
+                     addSubFlagResults[2].state[34] == 0,
+                 "CMP X shifted equality expected packed Z|C (9)");
+    requireProbe(addSubFlagResults[3].state[32] == 9 &&
+                     addSubFlagResults[3].state[34] == 0,
+                 "CMN X shifted carry expected packed Z|C (9)");
+    requireProbe(addSubFlagResults[4].state[32] == 9 &&
+                     addSubFlagResults[4].state[34] == 0,
+                 "ADDS W carry expected packed Z|C (9)");
+    requireProbe(addSubFlagResults[5].state[32] == 2 &&
+                     addSubFlagResults[5].state[34] == 0,
+                 "SUBS W borrow expected packed N (2)");
+    requireProbe(stackPointerResult.state[0] == 0x102000 &&
+                     stackPointerResult.state[31] == 0xff000 &&
+                     stackPointerResult.state[34] == 0,
+                 "X SP add/sub update");
+    requireProbe(wordStackPointerResult.state[31] == 0x80000000ull &&
+                     wordStackPointerResult.state[0] == 0x80000001ull &&
+                     wordStackPointerResult.state[34] == 0,
+                 "WSP zero extension");
+    requireProbe(addWordFlagsResult.state[0] == 0 &&
+                     addWordFlagsResult.state[32] == 9 &&
+                     addWordFlagsResult.state[34] == 0,
+                 "ADDS W result and NZCV");
+    requireProbe(compareStackPointerResult.state[32] == 8 &&
+                     compareStackPointerResult.state[34] == 0,
+                 "CMP SP expected NZCV");
+    requireProbe(continuation.state[34] == 7 && continuation.state[33] == 0x3004,
+                 "RET continuation address");
+    requireProbe(zeroBudget.state[34] == 1 && zeroBudget.state[0] == 99,
+                 "zero block budget");
+    requireProbe(branch.state[34] == 0 && branch.state[0] == 7 &&
+                     branch.state[36] == 0,
+                 "B target execution");
+    requireProbe(branchBudget.state[34] == 1 && branchBudget.state[33] == 0x500c &&
+                     branchBudget.state[0] == 7 && branchBudget.state[36] == 0,
+                 "B block budget");
+    requireProbe(missingTarget.state[34] == 7 && missingTarget.state[33] == 0x6008 &&
+                     missingTarget.state[0] == 99 && missingTarget.state[36] == 1,
+                 "missing branch target");
     for (std::size_t index = 0; index < conditionalCases.size(); ++index) {
       const auto& result = conditionalResults[index].state;
       if (result[34] != 0 || result[0] != conditionalCases[index].expected ||

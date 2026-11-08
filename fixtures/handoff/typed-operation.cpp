@@ -251,6 +251,18 @@ int main() {
   const auto cmpSp = decode_operation(0xf10003ff);
   assert(cmpSp.has_value() && cmpSp->opcode == Opcode::SubImmediateSetFlags);
   assert(cmpSp->destination == 31 && cmpSp->source == 31);
+  const auto subSpShifted = decode_operation(0xd14007ff);
+  assert(subSpShifted.has_value() &&
+         subSpShifted->opcode == Opcode::SubImmediate);
+  assert(subSpShifted->destination == 31 && subSpShifted->source == 31 &&
+         subSpShifted->immediate == 1 && subSpShifted->shift == 12 &&
+         subSpShifted->width == 64);
+  const auto subSpUnshifted = decode_operation(0xd10043ff);
+  assert(subSpUnshifted.has_value() &&
+         subSpUnshifted->opcode == Opcode::SubImmediate);
+  assert(subSpUnshifted->destination == 31 &&
+         subSpUnshifted->source == 31 &&
+         subSpUnshifted->immediate == 16 && subSpUnshifted->shift == 0);
   const auto cmnShifted = decode_operation(0xb140043f);
   assert(cmnShifted.has_value() &&
          cmnShifted->opcode == Opcode::AddImmediateSetFlags &&
