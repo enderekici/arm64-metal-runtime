@@ -7902,6 +7902,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         guestWorkqueueThreadIds.insert(threadId);
                                         guestThreadPortNames.emplace(threadId, threadPort);
                                         guestSendRightUrefs.emplace(threadPort, 1);
+                                        liveThreadStacks.emplace(threadId,
+                                            GuestMemoryRange{stackBottom, self});
                                         if (guestScheduler.add_thread(std::move(thread)) !=
                                             threadId) {
                                             throw std::logic_error(
@@ -7913,6 +7915,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         guestWorkqueueThreadIds.erase(threadId);
                                         guestThreadPortNames.erase(threadId);
                                         guestSendRightUrefs.erase(threadPort);
+                                        liveThreadStacks.erase(threadId);
                                         hostServiceState.heap->release(*allocation);
                                         throw;
                                     }
