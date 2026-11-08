@@ -962,6 +962,12 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
                  "] = value[1]; }"));
   };
+  if ((bits & 0xff3ffc00) == 0x5e31b800) {
+    const auto source = vector(rn);
+    return emit((std::string("{ ulong2 source = ") + str(source) +
+                 "; x[" + str(806 + 2 * rd) + "] = source[0] + source[1]; x[" +
+                 str(807 + 2 * rd) + "] = 0ul; }"));
+  }
   if (auto lowered = lower_vector_crypto(bits, pc)) {
     return *lowered;
   }

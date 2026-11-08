@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-addp-2d-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -75,6 +75,8 @@ SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
+INTERPRETER_ADDP_2D_MAIN := $(BUILD_DIR)/interpreter-addp-2d-main
+ADDP_2D_PROCESS_TEST := $(BUILD_DIR)/addp-2d-process-decode-test
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
 INTERPRETER_ADD_SUB_NATIVE := $(BUILD_DIR)/interpreter-add-sub-native
 INTERPRETER_ADD_SUB_MAIN := $(BUILD_DIR)/interpreter-add-sub-immediate-main
@@ -225,6 +227,23 @@ $(INTERPRETER_NATIVE): ../fixtures/interpreter/movz-ret.s ../fixtures/interprete
 $(INTERPRETER_TYPED_NATIVE): ../fixtures/handoff/typed-operation.cpp process_decoder.cpp process_decoder.hpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp translate_core.hpp integer_ops_shared.h
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. ../fixtures/handoff/typed-operation.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
+
+$(INTERPRETER_ADDP_2D_MAIN): ../fixtures/interpreter/addp-2d-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(ADDP_2D_PROCESS_TEST): ../fixtures/handoff/addp-2d-process-decode.cpp $(APP_SOURCES) $(APP_HEADERS)
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -UNDEBUG -I. -fblocks \
+		$(filter-out main.cpp,$(APP_SOURCES)) $< \
+		-framework Foundation -framework Metal -framework Security -o "$@"
+
+verify-addp-2d-native: $(INTERPRETER_ADDP_2D_MAIN) $(ADDP_2D_PROCESS_TEST)
+	@set -eu; \
+		"$(ADDP_2D_PROCESS_TEST)"; \
+		set +e; "$(INTERPRETER_ADDP_2D_MAIN)"; result=$$?; set -e; \
+		test "$$result" -eq 42; \
+		echo "addp.2d native guest exit=$$result"
 
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
