@@ -1,5 +1,30 @@
 # Loader probes
 
+## Late writable-TPRO rejection
+
+This control resolves the SPI at runtime and calls it from `main`, after
+libSystem initialization. The callback writes a unique stderr marker and
+mutates its context, so neither effect can be mistaken for an abort before the
+callback. Native dyld exits 134 with `Illegal TPRO memory access`, prints the
+`BEFORE` line, and never prints `CALLBACK_ENTERED` or `AFTER`.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O0 \
+  fixtures/handoff/tpro-late-negative.c -o .build/handoff-probes/tpro-late-negative
+.build/handoff-probes/tpro-late-negative
+```
+
+For the guest negative comparison, build the C++ runtime and launch with the
+same four cache/startup flags used by the positive cache-root control:
+
+```sh
+env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+  .build/cpp/arm64-metal launch .build/handoff-probes/tpro-late-negative
+```
+
+The guest must preserve the late abort and omit both callback markers.
+
 Build these from the repository root. Use the same compiled probe for native and Metal runs. Set `JDK_HOME` to the installed JDK you are qualifying.
 
 ```sh
