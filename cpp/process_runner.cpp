@@ -988,6 +988,10 @@ DyldApisFacade initialize_dyld_apis(
         "__guest_dyld_is_simulator_platform");
     const auto bulkImageService = addSyntheticService(
         "__dyld_register_for_bulk_image_loads");
+    const auto sharedCacheRealPathService = addSyntheticService(
+        "__guest_dyld_shared_cache_real_path");
+    const auto sharedCacheContainsPathService = addSyntheticService(
+        "__guest_dyld_shared_cache_contains_path");
 
     constexpr std::uint64_t objectBytes = 16;
     constexpr std::uint64_t vtableBytes = 0x428;
@@ -1018,6 +1022,12 @@ DyldApisFacade initialize_dyld_apis(
         (simulatorPlatformSlot & addressMask) | 0x198a000000000000ULL;
     const auto bulkImageSlot = vtable + 0x290;
     const auto bulkImageModifier = (bulkImageSlot & addressMask) | 0x8dec000000000000ULL;
+    const auto sharedCacheRealPathSlot = vtable + 0x2d0;
+    const auto sharedCacheRealPathModifier =
+        (sharedCacheRealPathSlot & addressMask) | 0x222a000000000000ULL;
+    const auto sharedCacheContainsPathSlot = vtable + 0x2d8;
+    const auto sharedCacheContainsPathModifier =
+        (sharedCacheContainsPathSlot & addressMask) | 0x11cb000000000000ULL;
     store_u64(bootstrap.memory, basePlatformSlot,
               append_guest_pointer_token(bootstrap, basePlatformService, 0,
                                          basePlatformModifier));
@@ -1030,6 +1040,12 @@ DyldApisFacade initialize_dyld_apis(
     store_u64(bootstrap.memory, bulkImageSlot,
               append_guest_pointer_token(bootstrap, bulkImageService, 0,
                                          bulkImageModifier));
+    store_u64(bootstrap.memory, sharedCacheRealPathSlot,
+              append_guest_pointer_token(bootstrap, sharedCacheRealPathService, 0,
+                                         sharedCacheRealPathModifier));
+    store_u64(bootstrap.memory, sharedCacheContainsPathSlot,
+              append_guest_pointer_token(bootstrap, sharedCacheContainsPathService, 0,
+                                         sharedCacheContainsPathModifier));
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
@@ -4006,6 +4022,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         destination[value.size()] = 0;
         stableGuestStrings.emplace(value, address);
         return address;
+    };
+    const auto canonicalSharedCachePath = [&](const std::string& requestedPath)
+        -> std::optional<std::string> {
+        if (!image.cache_reader) return std::nullopt;
+        const auto& cachedImages = image.cache_reader->images();
+        auto found = cachedImages.find(requestedPath);
+        if (found == cachedImages.end()) {
+            std::error_code error;
+            const auto resolvedPath = std::filesystem::canonical(requestedPath, error);
+            if (!error) found = cachedImages.find(resolvedPath.string());
+        }
+        if (found == cachedImages.end()) return std::nullopt;
+        return found->first;
     };
     std::size_t startupIndex = 0;
     const auto advanceStartup = [&]() {
@@ -7220,6 +7249,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackRegisters[30] = kNoFault;
                 callbackRegisters[33] = callback;
                 selectKernel(static_cast<std::int64_t>(callback));
+                continue;
+            }
+            if (service == 217 || service == 218) {
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "Dyld shared-cache path method did not use the published API object");
+                }
+                std::optional<std::string> canonicalPath;
+                if (hostRegisters[1] != 0) {
+                    canonicalPath = canonicalSharedCachePath(
+                        guest_cstring(guestMemory, hostRegisters[1]));
+                }
+                if (service == 217) {
+                    const auto guestPath = canonicalPath
+                        ? stableGuestString(*canonicalPath) : std::nullopt;
+                    registers[0] = guestPath.value_or(0);
+                } else {
+                    registers[0] = canonicalPath ? 1U : 0U;
+                }
                 continue;
             }
             if (service == 201) {
