@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -147,6 +147,7 @@ INTERPRETER_ADR_ADRP_MAIN := $(BUILD_DIR)/interpreter-adr-adrp-main
 INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
 INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 INTERPRETER_SCALAR_FP_COMPARE_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-compare-main
+INTERPRETER_SCALAR_FP_COMPARE_CASES := $(addprefix $(BUILD_DIR)/interpreter-scalar-fp-compare-case-,1 2 3 4 5)
 ADC_SBC_CARRY_DECODE_TEST := $(BUILD_DIR)/adc-sbc-carry-decode-test
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
@@ -444,6 +445,10 @@ $(INTERPRETER_SCALAR_FP_COMPARE_MAIN): ../fixtures/interpreter/scalar-fp-compare
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(BUILD_DIR)/interpreter-scalar-fp-compare-case-%: ../fixtures/interpreter/scalar-fp-compare-cases.S
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main -DFP_CASE=$* -x assembler-with-cpp "$<" -lSystem -o "$@"
+
 verify-scalar-fp-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_MAIN)
 	@set -eu; \
 		"$(INTERPRETER_TYPED_NATIVE)"; \
@@ -469,11 +474,15 @@ verify-scalar-fp-interpreter: $(APP) $(INTERPRETER_SCALAR_FP_MAIN) $(INTERPRETER
 		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/interpreter.err" && \
 		echo "scalar-fp native/translated/interpreter verified: $$run_dir"
 
-verify-scalar-fp-compare-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_COMPARE_MAIN)
+verify-scalar-fp-compare-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_COMPARE_MAIN) $(INTERPRETER_SCALAR_FP_COMPARE_CASES)
 	@set -eu; \
 		"$(INTERPRETER_TYPED_NATIVE)"; \
 		set +e; "$(INTERPRETER_SCALAR_FP_COMPARE_MAIN)"; status=$$?; set -e; \
 		test "$$status" -eq 42; \
+		for fixture in $(INTERPRETER_SCALAR_FP_COMPARE_CASES); do \
+			set +e; "$$fixture"; case_status=$$?; set -e; \
+			test "$$case_status" -eq 42; \
+		done; \
 		echo "scalar-fp-compare native guest exit=$$status"
 
 verify-scalar-fp-compare-interpreter: $(APP) $(INTERPRETER_SCALAR_FP_COMPARE_MAIN) $(INTERPRETER_METALLIB)
@@ -493,6 +502,27 @@ verify-scalar-fp-compare-interpreter: $(APP) $(INTERPRETER_SCALAR_FP_COMPARE_MAI
 		test "$$(grep -c 'event=interpreter-dispatch' "$$run_dir/interpreter.err")" -eq 1 && \
 		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/interpreter.err" && \
 		echo "scalar-fp-compare native/translated/interpreter verified: $$run_dir"
+
+diagnose-scalar-fp-compare-translated: $(APP) $(INTERPRETER_SCALAR_FP_COMPARE_CASES)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/scalar-fp-compare-translated.XXXXXX"); \
+		failures=0; \
+		for fixture in $(INTERPRETER_SCALAR_FP_COMPARE_CASES); do \
+			case_id=$${fixture##*-}; \
+			set +e; "$$fixture" >"$$run_dir/case-$$case_id.native.out" 2>"$$run_dir/case-$$case_id.native.err"; native_rc=$$?; \
+			"$(APP)" launch "$$fixture" >"$$run_dir/case-$$case_id.translated.out" 2>"$$run_dir/case-$$case_id.translated.err"; translated_rc=$$?; set -e; \
+			printf '%s\n' "$$native_rc" >"$$run_dir/case-$$case_id.native.rc"; \
+			printf '%s\n' "$$translated_rc" >"$$run_dir/case-$$case_id.translated.rc"; \
+			printf '%s native=%s translated=%s\n' "$$case_id" "$$native_rc" "$$translated_rc" >>"$$run_dir/statuses.txt"; \
+			if test "$$native_rc" -ne 42 || test "$$translated_rc" -ne 42; then failures=1; fi; \
+			if test "$$native_rc" -eq 42 && test "$$translated_rc" -eq 42; then \
+				if ! cmp "$$run_dir/case-$$case_id.native.out" "$$run_dir/case-$$case_id.translated.out" || \
+				   ! cmp "$$run_dir/case-$$case_id.native.err" "$$run_dir/case-$$case_id.translated.err"; then failures=1; fi; \
+			fi; \
+		done; \
+		cat "$$run_dir/statuses.txt"; \
+		test "$$failures" -eq 0; \
+		echo "scalar-fp compare translated cases recorded: $$run_dir"
 
 $(ADC_SBC_CARRY_DECODE_TEST): ../fixtures/handoff/adc-sbc-carry-decode.cpp process_decoder.cpp process_decoder.hpp translate_core.cpp translate_core.hpp integer_ops_shared.h guest_strings.cpp guest_strings.hpp guest_vector_crypto.cpp guest_vector_crypto.hpp
 	@mkdir -p "$(BUILD_DIR)"

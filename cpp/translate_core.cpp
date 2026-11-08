@@ -815,7 +815,13 @@ Instruction make_operation_instruction(Operation operation,
                      scalarRegister(operation.source) + "], " + right + ", " +
                      std::to_string(operation.width) + "u, " +
                      std::to_string(detail & 1U) + "u, uint(x[870])); " +
-                     "x[32] = (x[32] & ~0xful) | fp_result.value; " +
+                     "z = (fp_result.value & 1u) != 0u; " +
+                     "n = (fp_result.value & 2u) != 0u; " +
+                     "v = (fp_result.value & 4u) != 0u; " +
+                     "c = (fp_result.value & 8u) != 0u; " +
+                     (mode == LoweringMode::Process
+                          ? "x[32] = (x[32] & ~0xful) | fp_result.value; "
+                          : "") +
                      "x[871] |= fp_result.fpsrFlags; }");
     }
   } else if (operation.opcode == Opcode::Return) {

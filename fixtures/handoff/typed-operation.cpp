@@ -772,8 +772,15 @@ int main() {
   const auto loweredFcmp = make_operation_instruction(
       *fcmpeS, {0x1000}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(loweredFcmp.code[0].find("scalar_fp_compare(") != std::string::npos &&
+         loweredFcmp.code[0].find("z = (fp_result.value & 1u)") !=
+             std::string::npos &&
          loweredFcmp.code[0].find("x[32] = (x[32] & ~0xful)") !=
              std::string::npos);
+  const auto loweredFcmpFunction = make_operation_instruction(
+      *fcmpeS, {0x1000}, LoweringMode::Function, std::uint64_t{1} << 48);
+  assert(loweredFcmpFunction.code[0].find("c = (fp_result.value & 8u)") !=
+             std::string::npos &&
+         loweredFcmpFunction.code[0].find("x[32] =") == std::string::npos);
   assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0).value ==
          0x4340000000000000ULL);
   assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0)
