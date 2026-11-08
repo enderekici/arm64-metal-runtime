@@ -35,54 +35,52 @@ Capture stdout, stderr, and exit status separately for native and Metal. Freeze 
 - Cached initializer order for the CoreFoundation control matched 385 native constructor addresses across ten images after slide normalization. The runtime models libSystem's own initializer separately.
 - Cached pthread detach and raw Darwin gettid match native in their focused controls. Inactive prebound CryptoKit correctly misses `RTLD_NOLOAD`.
 
-## Resume from here
+## Current wave
 
-The C++ regression gate passed with a runtime built from source commit
-0d64700. The tested launcher SHA-256 is
-4bb8a5b116cfa23b8366a76396abfca3ed84502be0d534498958eb7c0b45b0f1.
-The full gate recorded 42 native launch comparisons and 2,048 native/Metal
-function runs. The packaged C++ launcher SHA-256 matched this tested runtime.
+The integrated guest VM range change at source 8bfa6f6 passed the strict
+C++ app build and full verification gate. The test runner SHA-256 before and
+after the gate was
+3162adc7a229d9e27578ca134d7e6c98d1f5b51ef40059830b43d57413bd9e45.
+The gate completed 42 launch comparisons and 2,048 function runs. The packaged
+archive's launcher digest matched the tested runtime. Receipts are under
+/tmp/metal-vm-integrated.C6e4d6.
 
-The bounded app gate is make verify-apps / verify-apps.sh. It compares native
-and guest stdout, stderr, and status for valid/malformed plutil, tar, cached
-libz root/provider, and optional JNI. It records each receipt under a unique
-results directory, pins the runtime hash, and serializes guest invocations.
-Run it with make verify-apps APP_VERIFY_RUNTIME=/path/to/frozen/arm64-metal
-APP_VERIFY_RESULTS=/path/to/results APP_VERIFY_CASES=all. Set JDK_HOME to add
-the optional JNI case. make bundle-cpp packages a previously verified C++
-launcher. The app-gate receipt records the runtime digest for each comparison.
-APP_VERIFY_TIMEOUT_SECONDS sets the per-process timeout. The recent serial
-plutil run timed out at 85 seconds; this is unresolved, not a pass.
-ARM64_METAL_TRACE=1 records bounded compile, dispatch, and host-service progress
-(128 events maximum) to classify stalls and first boundaries.
+The false-green Makefile wiring is fixed. The Swift compiler recipe now
+always builds SWIFT_RUNTIME. Previously, overriding RUNTIME for a C++ gate
+could bind the Swift recipe to that path and overwrite the binary under test.
+Now RUNTIME can select the already-built C++ executable for verify without
+changing the Swift build target. Keep the runtime path and digest attached to
+every gate result.
 
-Commpage parity is integrated at 144a70d. Its focused fixture compares both
-page-shift bytes with native value 14. The final libz-root replay used the
-exact 144a70d runtime. Native exited 0; guest exited 1 with a guest memory
-access fault at address 0, PC 0x100466370, width 0, x10=0, tp=0x500df50.
-The normalized PC 0x180466370 is in __dyld_call_with_writable_tpro_memory.
-The preceding x0 load reads dyld4::gAPIs. Both page-shift reads passed. The
-failure is recorded in /tmp/metal-integrated-final.dah4mT/app-root-correct.
-Next compare native callback and permission behavior, then test the existing
-guest callback machinery. Do not invent a vtable layout. Libz-root/provider
-behavior remains unverified.
+The app gate remains bounded and serial. It compares native and guest output,
+diagnostics, and exit status for plutil, tar, both cached-libz controls and
+optional JNI. Its receipts pin the runtime digest. The plutil trace shows
+kernel compilation continuing late into the run before timeout; its result
+remains unresolved. ARM64_METAL_TRACE samples compile/dispatch/host-service
+events, then emits periodic progress plus image-load, initializer, and raw
+syscall boundaries.
 
-The JIT candidate is isolated at 0399c77. Native and Metal both returned
-first=42 second=73 wx=13/13, exit 0, and empty stderr for the RW-to-RX call
-path. Execute-after-RW negative behavior, unmapping, and MAP_JIT remain open.
+Both libz-root and libz-provider reach the same
+__dyld_call_with_writable_tpro_memory path after reading dyld4::gAPIs.
+The exact VM gate artifact previously passed commpage reads and then faulted
+at address 0, normalized PC 0x180466370. A TPRO parser/callback candidate is
+isolated and unverified. Compare native callback and permission behavior,
+then exercise existing guest callback machinery. Do not infer or invent a
+dyld vtable layout.
 
-A fresh binary built from source 144a70d has SHA-256
-37aebd011d25dad0dd05568b6d9ca0a70d0712f5083fdf9923402def8191e29c. Its strict
-app build and full make verify both passed, exit 0, with 42 launch comparisons
-and 2,048 function runs. This supersedes the older full-gate runtime digest
-above. The exact-artifact libz-root replay is in
-/tmp/metal-integrated-final.dah4mT/app-root-correct and failed after both
-commpage fields at PC 0x100466370, address 0, width 0.
+A corrected JIT transaction candidate is also isolated. The positive RW-to-RX
+call fixture matched native (first=42, second=73, wx=13/13, exit 0). Negative
+execute-after-RW, unmap and MAP_JIT cases remain open pending their own
+differentials.
 
-Broader dyld bootstrap, general Java execution, GUI launch/interaction, full
-Mach IPC, and compatibility outside named cases remain open. Continue one GPU
-application invocation at a time, keep native positive controls, and preserve
-stdout, stderr, exit status, timeout/crash receipt, flags, and runtime digest.
+The project goal remains broad compatibility for unchanged macOS applications,
+with guest instructions translated for GPU execution and CPU work limited to
+host services. Astra's direction is to grow the interpreter from observed
+application behavior and real loader state. Use native evidence to define the
+TPRO callback/permission contract, reuse the guest image/callback machinery,
+and keep constructor ordering, publication, rollback, and pointer checks
+consistent. Keep the full goal intact: CLI and VM gates are milestones, not
+the application-compatibility finish line.
 
 ## Evidence locations
 
@@ -92,24 +90,16 @@ The [loader probe sources](fixtures/handoff/README.md) are included in the repos
 
 ## Final checkpoint verification
 
-The strict C++ app build and full make verify passed for the runtime built
-from source commit 0d64700. The gate covered 42 native launch comparisons,
-external SIGUSR1, both 1,024-case function gates, and authentication, budget,
-bounds, instruction, and malformed-input rejection checks. The tested runtime
-SHA-256 is
-4bb8a5b116cfa23b8366a76396abfca3ed84502be0d534498958eb7c0b45b0f1.
-The packaged C++ launcher digest matched this runtime.
+The integrated VM runtime passed the strict C++ app build and full gate on
+8 November 2026. Runtime digest matched before and after:
+3162adc7a229d9e27578ca134d7e6c98d1f5b51ef40059830b43d57413bd9e45.
+The gate completed 42 launch comparisons and 2,048 function runs. The archive
+contains the same launcher digest. Receipts are under
+/tmp/metal-vm-integrated.C6e4d6.
 
-The separate unchanged-app gate now captures bounded native/guest receipts,
-validates positive-control status, compares stdout/stderr/status, pins the
-runtime digest across the run, and runs guests serially. Valid and malformed
-plutil timed out at 85 seconds in the recent serial run. Commpage parity is
-integrated at 144a70d and compares both shift bytes with native value 14. The
-exact 144a70d libz-root replay matched native status only up to the first
-later memory fault at PC 0x100466370, address 0, width 0; both shifts passed.
-The latest full make verify for runtime hash
-37aebd011d25dad0dd05568b6d9ca0a70d0712f5083fdf9923402def8191e29c passed with
-42 launch comparisons and 2,048 function runs. A bounded libz-root replay
-against that runtime is in progress. The isolated JIT candidate's positive
-RW-to-RX path matches native; negative execute-after-RW, unmap and MAP_JIT
-remain open. See Resume and COMPATIBILITY.md.
+The latest app trace showed plutil compiling kernels late in its bounded run
+before timing out. Both libz controls converge on the TPRO callback path and
+remain unresolved. TPRO and corrected JIT work are isolated candidates, not
+part of this verified artifact. See COMPATIBILITY.md for source ownership and
+the next native differential boundaries. General unchanged-app compatibility
+remains the project goal.
