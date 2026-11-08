@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -141,6 +141,7 @@ MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
 MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
 MEMCPY_CHK_DECODE_TEST := $(BUILD_DIR)/memcpy-chk-decode-test
 MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
+MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
 SHA256_NATIVE := $(BUILD_DIR)/sha256-instructions-native
 VECTOR_CRYPTO_LOWER_TEST := $(BUILD_DIR)/vector-crypto-lowering-test
 VECTOR_CRYPTO_MSL := $(BUILD_DIR)/vector-crypto.metal
@@ -355,10 +356,19 @@ $(MACH_VM_OVERWRITE_NATIVE): ../fixtures/handoff/mach-vm-map-overwrite.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
+$(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@" -ldl
+
 verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
 	printf '%s\n' 'mach_vm_map overwrite full=ok partial=ok hole=ok null=1 bad_flags=4' >"$(BUILD_DIR)/mach-vm-map-overwrite.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-map-overwrite.expected.out" "$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
+
+verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIVE)
+	"$(MACH_VM_DEFERRED_RECLAMATION_NATIVE)" >"$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
+	printf '%s\n' 'mach_vm_deferred_reclamation valid=0x20004006 invalid=4 oversized=3 outputs=unchanged' >"$(BUILD_DIR)/mach-vm-deferred-reclamation.expected.out"
+	cmp "$(BUILD_DIR)/mach-vm-deferred-reclamation.expected.out" "$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
 
 verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
 	nm -u "$(MEMCPY_CHK_NATIVE)" | grep -q '___memcpy_chk'

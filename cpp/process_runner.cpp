@@ -7098,6 +7098,100 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                if (messageId == 4822) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    constexpr kern_return_t kernInvalidTask = 16;
+                    constexpr kern_return_t kernInvalidArgument = 4;
+                    constexpr kern_return_t kernNoSpace = 3;
+                    constexpr kern_return_t vmResourceShortage =
+                        static_cast<kern_return_t>(0x20004006U);
+                    constexpr std::uint32_t requestSize = 40;
+                    constexpr std::uint32_t replySize = 36;
+
+                    struct DeferredReclamationErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    static_assert(sizeof(DeferredReclamationErrorReply) == replySize);
+
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto reply = static_cast<std::uint32_t>(registers[5] >> 32);
+                    const auto taskSendRight = guestSendRightUrefs.find(remote);
+                    if (taskSendRight == guestSendRightUrefs.end() ||
+                        taskSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        (registers[2] >> 32) != requestSize ||
+                        (registers[3] >> 32) != 0 ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        (registers[4] >> 32) != messageId ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        registers[6] < replySize ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    const auto* request = guestMemory.buffer(registers[0], requestSize);
+                    mach_msg_header_t requestHeader{};
+                    NDR_record_t requestNdr{};
+                    std::uint32_t length = 0;
+                    std::uint32_t maxLength = 0;
+                    std::memcpy(&requestHeader, request, sizeof(requestHeader));
+                    std::memcpy(&requestNdr, request + sizeof(requestHeader),
+                                sizeof(requestNdr));
+                    std::memcpy(&length, request + sizeof(requestHeader) +
+                                sizeof(requestNdr), sizeof(length));
+                    std::memcpy(&maxLength, request + sizeof(requestHeader) +
+                                sizeof(requestNdr) + sizeof(length), sizeof(maxLength));
+                    if (requestHeader.msgh_bits != 0x1513 ||
+                        requestHeader.msgh_remote_port != remote ||
+                        requestHeader.msgh_local_port != reply ||
+                        requestHeader.msgh_voucher_port != MACH_PORT_NULL ||
+                        requestHeader.msgh_id != static_cast<mach_msg_id_t>(messageId) ||
+                        std::memcmp(&requestNdr, &NDR_record, sizeof(requestNdr)) != 0) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    kern_return_t result = KERN_SUCCESS;
+                    if (remote != guestMachTaskPort) {
+                        result = kernInvalidTask;
+                    } else if (length == 0 || maxLength == 0 || length > maxLength) {
+                        result = kernInvalidArgument;
+                    } else if (maxLength > 0x7ffff8U) {
+                        result = kernNoSpace;
+                    } else {
+                        // Native task-port oracle returns VM resource shortage for valid
+                        // requests when deferred reclamation is unavailable.
+                        result = vmResourceShortage;
+                    }
+
+                    DeferredReclamationErrorReply response{};
+                    response.header.msgh_bits = 0x1200;
+                    response.header.msgh_size = replySize;
+                    response.header.msgh_remote_port = MACH_PORT_NULL;
+                    response.header.msgh_local_port = reply;
+                    response.header.msgh_voucher_port = MACH_PORT_NULL;
+                    response.header.msgh_id = messageId + 100;
+                    response.ndr = NDR_record;
+                    response.returnCode = result;
+                    std::memcpy(guestMemory.buffer(registers[0], replySize, true),
+                                &response, sizeof(response));
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (registers[1] != 0x2'0000'0003ULL ||
                     static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
                     static_cast<std::uint32_t>(registers[3]) != guestMachTaskPort ||
