@@ -5239,9 +5239,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     stateBuffer.size() / sizeof(std::uint64_t));
             const auto service = registers[35];
             progressTrace.event("host-service", hostRegisters[33], service);
-            if (service == kMemcpyChkFailureService) {
+            if (service == kMemcpyChkFailureService ||
+                service == kMemsetChkFailureService) {
                 if (hostRegisters[2] <= hostRegisters[3]) {
-                    throw std::runtime_error("Invalid checked memcpy failure dispatch");
+                    throw std::runtime_error("Invalid checked memory failure dispatch");
                 }
                 const auto resume = hostRegisters[33];
                 const auto faultPC = resume >= 4 ? resume - 4 : resume;
@@ -5259,7 +5260,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     selectKernel(static_cast<std::int64_t>(delivery.handler));
                     continue;
                 }
-                throw std::runtime_error("Guest checked memcpy SIGTRAP was not delivered");
+                throw std::runtime_error("Guest checked memory SIGTRAP was not delivered");
             }
             if (service == 166 || service == 167) {
                 auto target = hostRegisters[0];

@@ -79,10 +79,11 @@ Instruction hostCall(const std::string &name,
                                                  {"_memset_pattern8", 8},
                                                  {"_memset_pattern16", 16}};
   bool checkedCopy = name == "___memcpy_chk";
+  bool checkedFill = name == "___memset_chk";
   bool copy = name == "_memcpy" || name == "_memmove" || checkedCopy;
   bool zero = name == "_bzero";
   auto pattern = patternWidths.find(name);
-  if (copy || zero || name == "_memset" || pattern != patternWidths.end()) {
+  if (copy || zero || name == "_memset" || checkedFill || pattern != patternWidths.end()) {
     std::string count = zero ? "x[1]" : "x[2]";
     std::string destination =
         cached ? mappedOffset("x[0]", count, true) : "x[0]";
@@ -113,11 +114,13 @@ Instruction hostCall(const std::string &name,
                   (zero ? "0" : "uchar(x[1])") + ", " + count + ");";
     }
     Strings code{returnAddress ? "x[30] = " + str(*returnAddress) + "ul;" : ""};
-    if (checkedCopy) {
+    if (checkedCopy || checkedFill) {
       code.push_back("if (x[2] > x[3]) {");
       code.push_back("x[33] = x[30];");
       code.push_back("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
-      code.push_back("x[35] = " + str(kMemcpyChkFailureService) + "ul; x[34] = 4; return;");
+      const auto failureService = checkedCopy ? kMemcpyChkFailureService
+                                              : kMemsetChkFailureService;
+      code.push_back("x[35] = " + str(failureService) + "ul; x[34] = 4; return;");
       code.push_back("}");
     }
     const std::string failureAddress = zero

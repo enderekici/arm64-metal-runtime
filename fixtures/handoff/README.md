@@ -292,6 +292,17 @@ overflow service is wired to deliver the same signal and code through
 libsystem addresses. The successful GPU path remains a GPU byte-copy; only an
 object-size violation crosses to the host failure service.
 
+## Fortified guest memset
+
+`make -C cpp verify-memset-chk` builds a native ARM64 control with an explicit
+`___memset_chk` import. It checks a successful bounded fill, confirms an
+oversized fill terminates through the native checked-failure trap (shell status
+133 on this host), and runs CPU assertions for direct and cached GPU lowering.
+An `SA_SIGINFO` native control captures SIGTRAP's signal number, `si_code`, fault
+PC, and address before exiting from its handler with status 77. The guest
+overflow service delivers SIGTRAP through `GuestSignalRuntime`, matching the
+existing fortified-copy behavior. Successful fills remain guest-side writes.
+
 ## SHA-256 crypto instructions
 
 The failing instruction at `libcorecrypto`'s `_AccelerateCrypto_SHA256_compress`

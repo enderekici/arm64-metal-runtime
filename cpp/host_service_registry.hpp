@@ -8,6 +8,7 @@
 namespace arm64metal {
 
 inline constexpr int kMemcpyChkFailureService = 184;
+inline constexpr int kMemsetChkFailureService = 198;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -217,6 +218,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_jit_write_protect_np", 182, true, true},
     {"_bootstrap_look_up", 183, true, true},
     {"___memcpy_chk", kMemcpyChkFailureService, true, true},
+    {"___memset_chk", kMemsetChkFailureService, true, true},
     {"_mach_host_self", 193, true, true},
     {"_mach_thread_self", 194, true, true},
 };
