@@ -111,9 +111,15 @@ verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@echo "Unmodified /usr/bin/bzip2 decompression of 37,000 bytes and copied xattr match native"
 
 SYNCHRONOUS_FAULT_ORACLE := $(BUILD)/synchronous-fault-oracle
-.PHONY: verify-synchronous-fault-oracle
+SYNCHRONOUS_FAULT_GUEST := $(BUILD)/synchronous-fault-guest
+.PHONY: verify-synchronous-fault-oracle sync-fault-guest
 $(SYNCHRONOUS_FAULT_ORACLE): fixtures/handoff/synchronous-fault-oracle.c | $(BUILD)
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+$(SYNCHRONOUS_FAULT_GUEST): fixtures/handoff/synchronous-fault-oracle.c | $(BUILD)
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+sync-fault-guest: $(SYNCHRONOUS_FAULT_GUEST)
 
 verify-synchronous-fault-oracle: $(SYNCHRONOUS_FAULT_ORACLE)
 	$(SYNCHRONOUS_FAULT_ORACLE)
