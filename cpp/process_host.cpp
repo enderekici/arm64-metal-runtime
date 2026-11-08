@@ -2564,17 +2564,29 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 21: {  // open read-only files
+        case 21: {  // open guest-owned files
             const auto path = string_at(registers[0]);
             const auto flags = static_cast<std::int32_t>(registers[1]);
-            constexpr std::int32_t allowed = O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW |
-                                               O_NOCTTY | O_DIRECTORY;
-            if ((flags & ~allowed) != O_RDONLY) {
-                throw std::runtime_error("Guest open flags unsupported");
+            constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
+                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY;
+            if ((flags & ~allowed) != 0) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
             }
-            const auto descriptor = ::open(path.c_str(), flags | O_CLOEXEC);
-            if (descriptor >= 0) state.openDescriptors.insert(descriptor);
-            else set_errno(errno);
+            const auto needsMode = (flags & O_CREAT) != 0;
+            const auto mode = static_cast<mode_t>(registers[2]);
+            const auto descriptor = needsMode
+                ? ::open(path.c_str(), flags | O_CLOEXEC, mode)
+                : ::open(path.c_str(), flags | O_CLOEXEC);
+            if (descriptor >= 0) {
+                state.openDescriptors.insert(descriptor);
+                if ((flags & O_ACCMODE) != O_RDONLY) {
+                    state.writableDescriptors.insert(descriptor);
+                }
+            } else {
+                set_errno(errno);
+            }
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(descriptor));
             break;
         }

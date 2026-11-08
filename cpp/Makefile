@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -68,6 +68,7 @@ APP_SOURCES := \
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
 OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
+OPEN_APPEND_NATIVE := $(BUILD_DIR)/open-append-native
 PROC_INFO_NATIVE := $(BUILD_DIR)/proc-info-self
 AF_UNIX_SOCKET_NATIVE := $(BUILD_DIR)/af-unix-socket
 AF_UNIX_CONNECT_NATIVE := $(BUILD_DIR)/af-unix-connect
@@ -190,6 +191,15 @@ $(OPEN_NOCANCEL_NATIVE): ../fixtures/handoff/open-nocancel.c \
 
 verify-open-nocancel-native: $(OPEN_NOCANCEL_NATIVE)
 	"$(OPEN_NOCANCEL_NATIVE)" "$(abspath ../fixtures/handoff/open-nocancel-input.txt)"
+
+$(OPEN_APPEND_NATIVE): ../fixtures/handoff/open-append.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-open-append-native: $(OPEN_APPEND_NATIVE)
+	"$(OPEN_APPEND_NATIVE)" >"$(BUILD_DIR)/open-append.native.out"
+	printf '%s\n' 'named=seedAB raw=seedAB offset=6 cleanup=ok' >"$(BUILD_DIR)/open-append.expected.out"
+	cmp "$(BUILD_DIR)/open-append.expected.out" "$(BUILD_DIR)/open-append.native.out"
 
 $(PROC_INFO_NATIVE): ../fixtures/handoff/proc-info-self.c
 	@mkdir -p "$(BUILD_DIR)"

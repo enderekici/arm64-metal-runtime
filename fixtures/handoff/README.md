@@ -303,6 +303,15 @@ PC, and address before exiting from its handler with status 77. The guest
 overflow service delivers SIGTRAP through `GuestSignalRuntime`, matching the
 existing fortified-copy behavior. Successful fills remain guest-side writes.
 
+## Guest append-mode opens
+
+`make -C cpp verify-open-append-native` exercises native `_open` and raw
+`open_nocancel` with owned temporary paths. Each opens with
+`O_WRONLY|O_CREAT|O_APPEND`, writes once, seeks to offset zero, writes again,
+then checks the file is `seedAB` and the descriptor offset is six. The host
+service keeps the OS `O_APPEND` file-description behavior and records newly
+opened writable descriptors; raw `open_nocancel` shares that same open service.
+
 ## SHA-256 crypto instructions
 
 The failing instruction at `libcorecrypto`'s `_AccelerateCrypto_SHA256_compress`
