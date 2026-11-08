@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <mach/mach_host.h>
+#include <mach/mach_traps.h>
 #include <stdio.h>
 
 int main(void) {
@@ -12,10 +13,10 @@ int main(void) {
                        host_a != MACH_PORT_NULL && host_a != MACH_PORT_DEAD &&
                        host_a == host_b && thread_a != MACH_PORT_NULL &&
                        thread_a != MACH_PORT_DEAD && thread_a == thread_b;
-  const kern_return_t host_release_a = mach_port_deallocate(task, host_a);
-  const kern_return_t host_release_b = mach_port_deallocate(task, host_b);
-  const kern_return_t thread_release_a = mach_port_deallocate(task, thread_a);
-  const kern_return_t thread_release_b = mach_port_deallocate(task, thread_b);
+  const kern_return_t host_release_a = _kernelrpc_mach_port_deallocate_trap(task, host_a);
+  const kern_return_t host_release_b = _kernelrpc_mach_port_deallocate_trap(task, host_b);
+  const kern_return_t thread_release_a = _kernelrpc_mach_port_deallocate_trap(task, thread_a);
+  const kern_return_t thread_release_b = _kernelrpc_mach_port_deallocate_trap(task, thread_b);
   const int releases_ok = host_release_a == KERN_SUCCESS &&
                           host_release_b == KERN_SUCCESS &&
                           thread_release_a == KERN_SUCCESS &&

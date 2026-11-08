@@ -2002,12 +2002,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         hostServiceState.heap->release(static_cast<std::int64_t>(address));
     };
     std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
-        {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
+        {static_cast<std::uint32_t>(guestMachTaskPort), 3U}};
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::set<std::uint64_t> guestWorkqueueThreadIds;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
-    constexpr auto maxGuestPortUrefs =
-        static_cast<std::uint32_t>(std::numeric_limits<mach_port_urefs_t>::max());
+    constexpr std::uint32_t maxGuestPortUrefs = 0xffffU;
     const auto acquireGuestFixedSendRight = [&](std::uint32_t name) {
         auto& references = guestSendRightUrefs[name];
         if (references == 0) references = 1;
@@ -7181,6 +7180,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernSuccess = 0;
                 constexpr std::uint64_t kernInvalidName = 15;
                 constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t kernInvalidCapability = 20;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 const auto name = static_cast<std::uint32_t>(registers[1]);
@@ -7194,8 +7194,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else {
                     const auto sendRight = guestSendRightUrefs.find(name);
                     if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
-                        --sendRight->second;
-                        if (sendRight->second == 0) {
+                        if (sendRight->second == maxGuestPortUrefs) {
+                            // Saturated rights remain pegged until explicitly released by
+                            // a MACH_PORT_UREFS_MAX delta through -19.
+                        } else if (name == guestMachTaskPort && sendRight->second == 1) {
+                            result = kernInvalidCapability;
+                        } else if (--sendRight->second == 0) {
                             const auto hostRight =
                                 hostServiceState.guestBootstrapSendRights.find(name);
                             if (hostRight != hostServiceState.guestBootstrapSendRights.end()) {
@@ -7219,6 +7223,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernInvalidName = 15;
                 constexpr std::uint64_t kernInvalidRight = 17;
                 constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t kernInvalidCapability = 20;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 constexpr std::uint32_t machPortNull = 0;
                 constexpr std::uint32_t machPortDead =
@@ -7242,14 +7247,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         result = kernInvalidRight;
                     } else if (sendRight == guestSendRightUrefs.end() ||
                                sendRight->second == 0) {
-                        result = kernInvalidName;
+                        result = guestReceiveRights.find(name) != guestReceiveRights.end()
+                            ? kernInvalidRight : kernInvalidName;
                     } else if (delta > static_cast<std::int32_t>(maxGuestPortUrefs)) {
                         result = kernInvalidValue;
                     } else {
                         const auto current = static_cast<std::int64_t>(sendRight->second);
-                        const auto updated = current + static_cast<std::int64_t>(delta);
+                        const auto updated = current == maxGuestPortUrefs &&
+                                delta != -static_cast<std::int32_t>(maxGuestPortUrefs)
+                            ? current : current + static_cast<std::int64_t>(delta);
                         if (updated < 0) {
                             result = kernInvalidValue;
+                        } else if (name == guestMachTaskPort && updated < 1) {
+                            result = kernInvalidCapability;
                         } else if (updated == 0) {
                             const auto hostRight =
                                 hostServiceState.guestBootstrapSendRights.find(name);
@@ -7271,12 +7281,35 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else if (right == MACH_PORT_RIGHT_RECEIVE) {
                     const auto receiveRight = guestReceiveRights.find(name);
                     if (receiveRight == guestReceiveRights.end()) {
-                        result = guestDeadPortNames.find(name) != guestDeadPortNames.end()
+                        const auto sendRight = guestSendRightUrefs.find(name);
+                        result = guestDeadPortNames.find(name) != guestDeadPortNames.end() ||
+                                 (sendRight != guestSendRightUrefs.end() &&
+                                  sendRight->second != 0)
                             ? kernInvalidRight : kernInvalidName;
                     } else if (delta == 0) {
                         result = 0;
                     } else if (delta != -1) {
                         result = kernInvalidValue;
+                    } else if ((receiveRight->second.flags & MPO_CONTEXT_AS_GUARD) != 0) {
+                        std::vector<std::uint64_t> live(
+                            registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                        const GuestSynchronousFault fault{
+                            SIGKILL, GUARD_TYPE_MACH_PORT, name, registers[33]};
+                        const auto delivery = signalRuntime.deliver_synchronous(
+                            hostServiceState.signals, hostServiceState.threadSignalMask,
+                            live, guestMemory, fault, live[37],
+                            static_cast<std::uint64_t>(activeEntry));
+                        if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                            return delivery.exitStatus;
+                        }
+                        if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                            std::memcpy(stateBuffer.data(), live.data(),
+                                        live.size() * sizeof(std::uint64_t));
+                            selectKernel(static_cast<std::int64_t>(delivery.handler));
+                            continue;
+                        }
+                        throw std::runtime_error(
+                            "Guarded Mach receive-right destruction was not terminated");
                     } else {
                         const auto waiting = guestMachReceiveWaiters.find(name);
                         if (waiting != guestMachReceiveWaiters.end()) {
@@ -7317,8 +7350,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     } else if (delta > static_cast<std::int32_t>(maxGuestPortUrefs)) {
                         result = kernInvalidValue;
                     } else {
-                        const auto updated = static_cast<std::int64_t>(deadRefs->second) +
-                                             static_cast<std::int64_t>(delta);
+                        const auto current = static_cast<std::int64_t>(deadRefs->second);
+                        const auto updated = current == maxGuestPortUrefs &&
+                                delta != -static_cast<std::int32_t>(maxGuestPortUrefs)
+                            ? current : current + static_cast<std::int64_t>(delta);
                         if (updated < 0) {
                             result = kernInvalidValue;
                         } else if (updated == 0) {
@@ -7335,6 +7370,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     result = kernInvalidName;
                 } else {
                     result = kernInvalidRight;
+                }
+                if (progressTrace.enabled()) {
+                    static std::uint32_t modRefsTraceCount = 0;
+                    if (modRefsTraceCount < 32) {
+                        ++modRefsTraceCount;
+                        std::cerr << "arm64-metal trace mach-port-mod-refs"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " task=0x" << hexadecimal(target)
+                                  << " name=0x" << hexadecimal(name)
+                                  << " right=" << right << " delta=" << delta
+                                  << " result=" << result << '\n';
+                    }
                 }
                 registers[0] = result;
                 registers[34] = 0;

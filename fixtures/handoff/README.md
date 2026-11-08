@@ -522,10 +522,10 @@ Use this fixture for the focused cached 3207 gate, separately from raw trap
 
 `mach-public-self.c` calls the executable-imported `_mach_host_self` and
 `_mach_thread_self` wrappers, checks for non-sentinel stable names, then releases
-each acquired right through `mach_port_deallocate`. `_mach_task_self_` remains a
-modeled data symbol. The fixture avoids the separate `_mach_port_get_refs`
-executable import, so it isolates the public self wrappers and deallocation
-path. It makes no host service connection.
+each acquired right through the raw deallocate trap. `_mach_task_self_` remains a
+modeled data symbol. The fixture avoids the separate `_mach_port_get_refs` and
+`_mach_port_deallocate` executable imports, so it isolates the public self
+wrappers and raw right lifecycle. It makes no host service connection.
 
 ```sh
 xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
@@ -544,8 +544,12 @@ status is 0.
 receive allocation. It covers send uref increment/decrement, underflow and
 oversized-delta errors, invalid target/name/right ordering, null/dead send
 sentinels, the receive-right decrement lifecycle, and dead-name uref increment
-and decrement after receive destruction. Send-once mutation remains outside
-this supported slice.
+and decrement after receive destruction. The native task-self baseline has
+three send urefs in this process; both controls reduce it to the one-reference
+floor, then verify `KERN_INVALID_CAPABILITY` instead of destroying the active
+task name. Send-once mutation remains outside this supported slice. It also
+checks that SEND and DEAD_NAME urefs peg at
+`MACH_PORT_UREFS_MAX` until a `-MACH_PORT_UREFS_MAX` delta releases them.
 
 ```sh
 xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
@@ -556,10 +560,17 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 Native normalized output:
 
 ```text
-send plus=0 minus=0 underflow=18 oversized_delta=18
+task_send plus=0 minus=0 floor_step=0 floor_hit=20 deallocate_floor=20 underflow=18 oversized_delta=18
 errors target=268435459 unknown=15 right=18 unsupported=17/15 sentinels null=0 dead=0
 receive allocate=0 zero=0 plus=18 minus=0 missing=15
-dead allocate=0 insert=0 destroy=0 send=17 receive=17 send_once=17 refs=0/0/0 missing=15
+saturated allocate=0 insert=0 plus=0 deallocate=0 minus_one=0 minus_max=0 send_missing=17 destroy=0
+dead allocate=0 insert=0 destroy=0 send=17 receive=17 send_once=17 refs=0/0/0/0 missing=15
 ```
 
 Status is 0.
+
+`mach-port-mod-refs-guarded.c` constructs a guarded receive right and then
+attempts `mod_refs(RECEIVE, -1)`. The native kernel delivers a Mach port guard
+violation as `SIGKILL`; expected stdout is `guarded_port_ready=1` and status is
+137. The guest path uses the same synchronous signal runtime and must terminate
+instead of returning success.
