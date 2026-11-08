@@ -1107,6 +1107,40 @@ private:
     std::size_t periodicEvents_ = 0;
 };
 
+class WorkqueueTrace {
+public:
+    WorkqueueTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE_WORKQUEUE");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    void event(const char* name, std::uint64_t operation, std::uint64_t pc,
+               std::uint64_t thread, std::uint64_t related = 0,
+               std::uint64_t detail = 0) {
+        if (!enabled_) return;
+        std::cerr << "arm64-metal workqueue-trace event=" << name
+                  << " syscall=368 operation=0x" << hexadecimal(operation)
+                  << " pc=0x" << hexadecimal(pc)
+                  << " thread=" << thread << " related=" << related
+                  << " detail=0x" << hexadecimal(detail) << '\n';
+    }
+
+    void open(std::uint64_t pc) {
+        if (!enabled_) return;
+        std::cerr << "arm64-metal workqueue-trace event=open syscall=367 pc=0x"
+                  << hexadecimal(pc) << '\n';
+    }
+
+    void dispatch_config(std::uint64_t pc) {
+        if (!enabled_) return;
+        std::cerr << "arm64-metal workqueue-trace event=dispatch-config syscall=368 pc=0x"
+                  << hexadecimal(pc) << '\n';
+    }
+
+private:
+    bool enabled_ = false;
+};
+
 class JitExecutionTrace {
 public:
     JitExecutionTrace() {
@@ -1206,6 +1240,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
     ProgressTrace progressTrace;
+    WorkqueueTrace workqueueTrace;
     JitExecutionTrace jitExecutionTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
         throw std::invalid_argument("Process dispatch block budget must be in [1, 8192]");
@@ -5379,6 +5414,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 196) {
+                const auto thread = hostRegisters[0];
+                const auto outputAddress = hostRegisters[1];
+                if (outputAddress == 0) {
+                    hostRegisters[0] = EINVAL;
+                } else if (thread != 0 && guestScheduler.find(thread) == nullptr) {
+                    hostRegisters[0] = ESRCH;
+                } else {
+                    const auto threadId = thread == 0 ? guestScheduler.current_id() : thread;
+                    auto* output = guestMemory.buffer(outputAddress, sizeof(threadId), true);
+                    std::memcpy(output, &threadId, sizeof(threadId));
+                    hostRegisters[0] = 0;
+                }
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 193) {
                 hostRegisters[0] = acquireGuestFixedSendRight(
                     static_cast<std::uint32_t>(guestMachHostPort));
@@ -8444,6 +8496,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 // Native workq_open is argument-free and succeeds even before
                 // an individual workqueue request is made.
                 guestWorkqueueOpened = true;
+                workqueueTrace.open(registers[33]);
                 registers[0] = 0;
                 registers[32] &= ~std::uint64_t{8};
                 registers[34] = 0;
@@ -8461,6 +8514,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (registers[0] == threadReturn &&
                     guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0 &&
                     registers[1] == 0 && registers[2] == 0 && registers[3] == 0) {
+                    workqueueTrace.event("worker-return", threadReturn, registers[33],
+                                         guestScheduler.current_id());
                     std::vector<std::uint64_t> live(registers, registers + 36);
                     const bool exited = finishGuestThread(0, live);
                     std::copy_n(live.begin(), 36, registers);
@@ -8573,6 +8628,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             throw std::logic_error(
                                                 "Unexpected guest workqueue thread id");
                                         }
+                                        workqueueTrace.event("request", requestThreads,
+                                            registers[33], guestScheduler.current_id(),
+                                            threadId, *workerEntry);
                                         registers[0] = 0;
                                         registers[32] &= ~carryMask;
                                     } catch (...) {
@@ -8618,6 +8676,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             // only guest-supplied metadata; dispatch's callback
                             // pointers are published by guest libpthread.
                             guestWorkqueueDispatchConfig = config;
+                            workqueueTrace.dispatch_config(registers[33]);
                         }
                     } catch (const std::out_of_range&) {
                         error = EFAULT;
