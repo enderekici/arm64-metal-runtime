@@ -121,6 +121,8 @@ INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
+CHAINED_ADDENDS_TEST := $(BUILD_DIR)/chained-addends-test
+CHAINED_ADDENDS_FIXTURE := $(BUILD_DIR)/libchained-addend-fixture.dylib
 MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
 MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
@@ -312,6 +314,19 @@ verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CH
 		 test "$$result" -eq 133 && test ! -s "$(BUILD_DIR)/memcpy-chk.overflow.out"
 	python3 -c 'import struct, subprocess, sys; result = subprocess.run([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE); assert result.returncode == 77, result.returncode; assert result.stderr == b"", result.stderr; assert len(result.stdout) == 24, len(result.stdout); signum, code, pc, address = struct.unpack("<iiQQ", result.stdout); assert (signum, code) == (5, 0), (signum, code); assert pc != 0 and address != 0, (hex(pc), hex(address)); print("native SA_SIGINFO SIGTRAP: signal=5 code=0 controlled_exit=77 pc/address captured")' "$(MEMCPY_CHK_SIGINFO_NATIVE)"
 	"$(MEMCPY_CHK_DECODE_TEST)"
+
+$(CHAINED_ADDENDS_TEST): ../fixtures/handoff/chained-addends-test.cpp macho.cpp macho.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/chained-addends-test.cpp macho.cpp -o "$@"
+
+$(CHAINED_ADDENDS_FIXTURE): ../fixtures/handoff/chained-addend-fixture.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
+		-Wl,-undefined,dynamic_lookup -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-chained-addends
+verify-chained-addends: $(CHAINED_ADDENDS_TEST) $(CHAINED_ADDENDS_FIXTURE)
+	"$(CHAINED_ADDENDS_TEST)" "$(CHAINED_ADDENDS_FIXTURE)"
 
 $(INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
 	@mkdir -p "$(dir $@)"

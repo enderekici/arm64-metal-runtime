@@ -1042,14 +1042,31 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
       const auto address = item.base + binding.first;
       auto [target, name] = resolve_import(binding.second);
       bindings[address] = name;
-      if (target) function_bindings[address] = static_cast<std::int64_t>(*target);
+      const auto apply_addend = [&](std::uint64_t value) {
+        const auto addend = binding.second.addend;
+        if ((addend > 0 && value > static_cast<std::uint64_t>(
+                                      std::numeric_limits<std::int64_t>::max()) -
+                                      static_cast<std::uint64_t>(addend)) ||
+            (addend < 0 && value < static_cast<std::uint64_t>(-(addend + 1)) + 1)) {
+          fail("Executable binding addend overflows");
+        }
+        const auto adjusted = addend > 0
+            ? value + static_cast<std::uint64_t>(addend)
+            : value - (static_cast<std::uint64_t>(-(addend + 1)) + 1);
+        if (adjusted > static_cast<std::uint64_t>(
+                           std::numeric_limits<std::int64_t>::max())) {
+          fail("Executable binding target exceeds guest range");
+        }
+        return static_cast<std::int64_t>(adjusted);
+      };
+      if (target) function_bindings[address] = apply_addend(*target);
       else if (!binding.second.weak || host_service_ids.count(name) || guest_memory_imports.count(name)) {
         auto it = synthetic.find(name);
         const auto stub = it == synthetic.end()
             ? static_cast<std::int64_t>(0x80000000ULL + 4 * synthetic.size()) : it->second;
         synthetic[name] = stub;
         imports[stub] = name;
-        function_bindings[address] = stub;
+        function_bindings[address] = apply_addend(static_cast<std::uint64_t>(stub));
       }
     }
   }

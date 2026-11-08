@@ -394,6 +394,17 @@ ChainedFixups apply_chained_fixups(
   auto read = [&payload](std::size_t offset, std::size_t size) {
     return read_integer(payload, offset, size);
   };
+  const auto signed_value = [](std::uint64_t value, unsigned width) {
+    const std::uint64_t mask = width == 64
+        ? std::numeric_limits<std::uint64_t>::max()
+        : (std::uint64_t{1} << width) - 1;
+    value &= mask;
+    const std::uint64_t sign = std::uint64_t{1} << (width - 1);
+    if ((value & sign) == 0) return static_cast<std::int64_t>(value);
+    const std::uint64_t magnitude = ((~value) & mask) + 1;
+    if (width == 64 && magnitude == sign) return std::numeric_limits<std::int64_t>::min();
+    return -static_cast<std::int64_t>(magnitude);
+  };
   if (read(0, 4) != 0 || read(24, 4) != 0) fail("Unsupported dyld chained fixup header");
   const std::size_t starts = static_cast<std::size_t>(read(4, 4));
   const std::size_t import_offset = static_cast<std::size_t>(read(8, 4));
@@ -421,8 +432,8 @@ ChainedFixups apply_chained_fixups(
     const std::int64_t sign_threshold = format == 3 ? 0xfff1 : 0xf1;
     const std::int64_t modulus = format == 3 ? 65536 : 256;
     const std::int64_t ordinal = raw_ordinal >= sign_threshold ? raw_ordinal - modulus : raw_ordinal;
-    const std::int64_t addend = format == 3 ? static_cast<std::int64_t>(read(offset + 8, 8))
-        : format == 2 ? static_cast<std::int32_t>(read(offset + 4, 4)) : 0;
+    const std::int64_t addend = format == 3 ? signed_value(read(offset + 8, 8), 64)
+        : format == 2 ? signed_value(read(offset + 4, 4), 32) : 0;
     imports.push_back({std::string(payload.begin() + static_cast<std::ptrdiff_t>(name_start), nul), ordinal,
                        (record & (format == 3 ? 0x10000U : 0x100U)) != 0, addend});
   }
@@ -432,6 +443,15 @@ ChainedFixups apply_chained_fixups(
       segment_count > (payload.size() - starts - 4) / 4) fail("Invalid dyld segment starts");
   ChainedFixups result;
   std::set<std::size_t> visited;
+  const auto add_bind_addends = [](std::int64_t import_addend, std::int64_t embedded_addend) {
+    if ((embedded_addend > 0 &&
+         import_addend > std::numeric_limits<std::int64_t>::max() - embedded_addend) ||
+        (embedded_addend < 0 &&
+         import_addend < std::numeric_limits<std::int64_t>::min() - embedded_addend)) {
+      fail("Dyld bind addend overflows");
+    }
+    return import_addend + embedded_addend;
+  };
   for (std::size_t index = 0; index < segment_count; ++index) {
     const std::size_t delta = static_cast<std::size_t>(read(starts + 4 + index * 4, 4));
     if (delta == 0) continue;
@@ -489,13 +509,20 @@ ChainedFixups apply_chained_fixups(
         std::uint64_t replacement = 0;
         if (bind) {
           const std::size_t ordinal = static_cast<std::size_t>(raw &
-              (arm64e ? (pointer_format == 12 ? 0xffffffU : 0xffffU) : 0xfffffU));
+              (arm64e ? (pointer_format == 12 ? 0xffffffU : 0xffffU) : 0xffffffU));
           if (ordinal >= imports.size()) fail("Invalid dyld bind ordinal");
-          const auto& imported = imports[ordinal];
-          const std::int64_t embedded = authenticated ? 0 : arm64e
-              ? static_cast<std::int64_t>((raw >> 32) & 0x7ffffU)
-              : static_cast<std::int64_t>((raw >> 20) & 0xffU);
-          if (embedded != 0 || imported.addend != 0) fail("Nonzero dyld bind addends unsupported");
+          auto imported = imports[ordinal];
+          std::int64_t embedded = 0;
+          if (!authenticated && arm64e) {
+            const std::uint64_t encoded = (raw >> 32) & 0x7ffffU;
+            embedded = (encoded & 0x40000U) != 0
+                ? static_cast<std::int64_t>(encoded) - (std::int64_t{1} << 19)
+                : static_cast<std::int64_t>(encoded);
+          } else if (!authenticated) {
+            // DYLD_CHAINED_PTR_64 stores an unsigned 8-bit embedded addend.
+            embedded = static_cast<std::int64_t>((raw >> 24) & 0xffU);
+          }
+          imported.addend = add_bind_addends(imported.addend, embedded);
           result.bindings[address] = imported;
           replacement = imported.weak ? 0 : std::numeric_limits<std::uint64_t>::max();
         } else {
