@@ -9961,7 +9961,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto flags = fields[5];
                 const auto pidIsHostSelf = pid == static_cast<std::int64_t>(::getpid());
                 const bool pathQuery = pidIsHostSelf && filter == 1 && flags == 0;
-                const bool writeDataStatus = pid == 1 && filter == 240 && pathAddress == 0 &&
+                const bool writeDataStatus = pid == 1 && filter == 240 &&
                                              flags == 0x20000005;
                 if (!pathQuery && !writeDataStatus) {
                     const char* traceSandbox = std::getenv("ARM64_METAL_TRACE_SANDBOX");
@@ -9985,27 +9985,41 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[32] |= 8U;
                 registers[0] = EFAULT;
                 if (resultAddress != 0 && operationAddress != 0) {
+                    bool unsupportedQuery = false;
                     try {
                         const auto operation = guest_cstring(guestMemory, operationAddress);
-                        if (writeDataStatus && operation != "file-write-data") {
-                            throw std::runtime_error("Unexpected guest sandbox operation");
+                        std::string argument;
+                        if (writeDataStatus && pathAddress != 0) {
+                            argument = guest_cstring(guestMemory, pathAddress);
                         }
-                        auto* output = guestMemory.buffer(resultAddress, sizeof(std::uint64_t), true);
-                        std::uint64_t resultValue = 0;
-                        const auto error = pathQuery
-                            ? [&] {
-                                  const auto path = guest_cstring(guestMemory, pathAddress);
-                                  return guest_sandbox_check_path(operation.c_str(), path.c_str(),
-                                                                  &resultValue);
-                              }()
-                            : guest_sandbox_check_write_data_status(&resultValue);
-                        registers[0] = static_cast<std::uint64_t>(error);
-                        if (error == 0) {
-                            std::memcpy(output, &resultValue, sizeof(resultValue));
-                            registers[32] &= ~std::uint64_t{8};
+                        if (writeDataStatus &&
+                            (operation != "file-write-data" ||
+                             (pathAddress != 0 && !argument.empty()))) {
+                            unsupportedQuery = true;
+                        }
+                        if (!unsupportedQuery) {
+                            auto* output = guestMemory.buffer(resultAddress,
+                                sizeof(std::uint64_t), true);
+                            std::uint64_t resultValue = 0;
+                            const auto error = pathQuery
+                                ? [&] {
+                                      const auto path = guest_cstring(guestMemory, pathAddress);
+                                      return guest_sandbox_check_path(operation.c_str(),
+                                          path.c_str(), &resultValue);
+                                  }()
+                                : guest_sandbox_check_write_data_status(pathAddress != 0,
+                                                                        &resultValue);
+                            registers[0] = static_cast<std::uint64_t>(error);
+                            if (error == 0) {
+                                std::memcpy(output, &resultValue, sizeof(resultValue));
+                                registers[32] &= ~std::uint64_t{8};
+                            }
                         }
                     } catch (const std::exception&) {
                         registers[0] = EFAULT;
+                    }
+                    if (unsupportedQuery) {
+                        throw std::runtime_error("Unsupported guest sandbox status query shape");
                     }
                 }
                 registers[34] = 0;

@@ -261,7 +261,7 @@ int guest_sandbox_check_path(const char* operation, const char* path, std::uint6
     return 0;
 }
 
-int guest_sandbox_check_write_data_status(std::uint64_t* result) {
+int guest_sandbox_check_write_data_status(bool emptyArgument, std::uint64_t* result) {
     std::uint64_t reply[5] = {};
     struct Request {
         std::uint64_t* reply;
@@ -270,7 +270,8 @@ int guest_sandbox_check_write_data_status(std::uint64_t* result) {
         std::uint64_t filter;
         const char* path;
         std::uint64_t flags;
-    } request{reply, 1, "file-write-data", 240, nullptr, 0x20000005};
+    } request{reply, 1, "file-write-data", 240,
+              emptyArgument ? "" : nullptr, 0x20000005};
     if (__mac_syscall("Sandbox", 2, &request) == -1) return errno;
     *result = reply[0];
     return 0;
@@ -310,7 +311,7 @@ int guest_feature_enabled(const char* domain, const char* feature) {
 int guest_sandbox_check_path(const char* operation, const char* path, std::uint64_t* result) {
     return arm64metal::guest_sandbox_check_path(operation, path, result);
 }
-int guest_sandbox_check_write_data_status(std::uint64_t* result) {
-    return arm64metal::guest_sandbox_check_write_data_status(result);
+int guest_sandbox_check_write_data_status(bool emptyArgument, std::uint64_t* result) {
+    return arm64metal::guest_sandbox_check_write_data_status(emptyArgument, result);
 }
 }  // extern "C"
