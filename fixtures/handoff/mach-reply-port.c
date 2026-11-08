@@ -22,7 +22,7 @@ int main(void) {
   const uint64_t destroy_second = raw_trap((uint64_t)-25, task, second, 0, 0);
   const uint64_t destroy_first_again = raw_trap((uint64_t)-25, task, first, 0, 0);
 
-  printf("task=%d first=%d second=%d distinct=%d destroy_first=%llu " 
+  printf("task=%d first=%d second=%d distinct=%d destroy_first=%llu "
          "destroy_second=%llu destroy_again=%llu wrong_task=%llu\n",
          task != 0, first != 0, second != 0, first != second,
          (unsigned long long)destroy_first, (unsigned long long)destroy_second,
