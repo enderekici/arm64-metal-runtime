@@ -347,6 +347,24 @@ ProcessKernelPlan plan_process_kernel(
                 complete = true;
                 break;
             }
+            if (opcode == translate_core::Opcode::BranchLink) {
+                const auto& operation = *instruction.operation;
+                const auto target = static_cast<std::int64_t>(pc) +
+                    static_cast<std::int32_t>(operation.immediate);
+                if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
+                    instruction.next[0] != target || instruction.next[1] != pc + 4 ||
+                    target < 0 || instruction.next[1] < 0 ||
+                    (operation.immediate & 3U) != 0 ||
+                    static_cast<std::int32_t>(operation.immediate) < -(1 << 27) ||
+                    static_cast<std::int32_t>(operation.immediate) > ((1 << 27) - 4) ||
+                    operation.destination != 0 || operation.source != 0 ||
+                    operation.shift != 0 || operation.width != 64) {
+                    break;
+                }
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
             if (opcode == translate_core::Opcode::BranchZero) {
                 if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
                     instruction.next[0] < 0 || instruction.next[1] < 0) {

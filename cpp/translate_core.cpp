@@ -145,7 +145,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 31, 1) == 1 ? 64U : 32U};
   }
 
-  if ((bits & 0xfc000000) == 0x14000000) {
+  const auto immediateBranch = bits & 0xfc000000U;
+  if (immediateBranch == 0x94000000U) {
+    const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
+    return Operation{Opcode::BranchLink, 0, 0,
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     0, 64};
+  }
+  if (immediateBranch == 0x14000000U) {
     const auto displacement = signed_field(field(bits, 0, 26), 26) * 4;
     return Operation{Opcode::Branch, 0, 0,
                      static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
@@ -612,6 +619,22 @@ Instruction make_operation_instruction(Operation operation,
       throw std::invalid_argument("Typed B needs one resolved guest target");
     }
     code.push_back("pc = " + std::to_string(next.front()) + "ul; break;");
+  } else if (operation.opcode == Opcode::BranchLink) {
+    const auto displacement = static_cast<std::int32_t>(operation.immediate);
+    if (mode != LoweringMode::Process || operation.destination != 0 ||
+        operation.source != 0 || operation.shift != 0 || operation.width != 64 ||
+        next.size() != 2 || guest_code_limit == 0 || guest_pc >= guest_code_limit ||
+        (operation.immediate & 3U) != 0 || displacement < -(1 << 27) ||
+        displacement > ((1 << 27) - 4) || next[0] < 0 || next[0] >=
+            static_cast<std::int64_t>(guest_code_limit) || next[1] < 0 ||
+        next[1] >= static_cast<std::int64_t>(guest_code_limit) ||
+        next[0] != static_cast<std::int64_t>(guest_pc) +
+            displacement ||
+        next[1] != static_cast<std::int64_t>(guest_pc) + 4) {
+      throw std::invalid_argument("Typed BL needs a valid target and return PC");
+    }
+    code.push_back("x[30] = " + std::to_string(next[1]) + "ul;");
+    code.push_back("pc = " + std::to_string(next[0]) + "ul; break;");
   } else if (operation.opcode == Opcode::BranchZero) {
     if (operation.source > 31 || operation.immediate > 1 ||
         (operation.width != 32 && operation.width != 64) || next.size() != 2) {
@@ -692,7 +715,8 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation->opcode != Opcode::StorePair &&
       operation->opcode != Opcode::LoadUnscaledWriteback &&
       operation->opcode != Opcode::StoreUnscaledWriteback &&
-      operation->opcode != Opcode::LoadSignedScalar) {
+      operation->opcode != Opcode::LoadSignedScalar &&
+      operation->opcode != Opcode::BranchLink) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

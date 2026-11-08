@@ -1,5 +1,6 @@
 #include "translate_core.hpp"
 #include "integer_ops_shared.h"
+#include "process_decoder.hpp"
 
 #include <cassert>
 #include <array>
@@ -883,6 +884,75 @@ int main() {
   const auto backwardBranch = decode_operation(0x17ffffff);
   assert(backwardBranch.has_value());
   assert(static_cast<std::int32_t>(backwardBranch->immediate) == -4);
+
+  const auto branchLinkForward = decode_operation(0x94000002U);
+  assert(branchLinkForward && branchLinkForward->opcode == Opcode::BranchLink);
+  assert(static_cast<std::int32_t>(branchLinkForward->immediate) == 8);
+  assert(branchLinkForward->destination == 0 && branchLinkForward->source == 0 &&
+         branchLinkForward->shift == 0 && branchLinkForward->width == 64);
+  const auto branchLinkLowered = make_operation_instruction(
+      *branchLinkForward, {0x1008, 0x1004}, LoweringMode::Process, 0x10000,
+      0x1000);
+  assert((branchLinkLowered.code == std::vector<std::string>{
+      "x[30] = 4100ul;", "pc = 4104ul; break;"}));
+  assert((branchLinkLowered.next == std::vector<std::int64_t>{0x1008, 0x1004}));
+  assert(serialize_operation(*branchLinkForward)[0] == 28);
+  const auto branchLinkBackward = decode_operation(0x97ffffffU);
+  assert(branchLinkBackward && branchLinkBackward->opcode == Opcode::BranchLink);
+  assert(static_cast<std::int32_t>(branchLinkBackward->immediate) == -4);
+  const auto backwardCall = make_operation_instruction(
+      *branchLinkBackward, {0x1000, 0x1008}, LoweringMode::Process, 0x10000,
+      0x1004);
+  assert(backwardCall.code[0] == "x[30] = 4104ul;");
+  assert(backwardCall.code[1] == "pc = 4096ul; break;");
+  bool branchLinkRejected = false;
+  try {
+    (void)make_operation_instruction(*branchLinkForward, {0x1008},
+                                     LoweringMode::Process, 0x10000, 0x1000);
+  } catch (const std::invalid_argument&) {
+    branchLinkRejected = true;
+  }
+  assert(branchLinkRejected);
+  branchLinkRejected = false;
+  try {
+    (void)make_operation_instruction(*branchLinkForward, {0x1008, 0x1004},
+                                     LoweringMode::Function, 0x10000, 0x1000);
+  } catch (const std::invalid_argument&) {
+    branchLinkRejected = true;
+  }
+  assert(branchLinkRejected);
+  auto invalidBranchLink = *branchLinkForward;
+  invalidBranchLink.immediate = 9;
+  branchLinkRejected = false;
+  try {
+    (void)make_operation_instruction(invalidBranchLink, {0x1009, 0x1004},
+                                     LoweringMode::Process, 0x10000, 0x1000);
+  } catch (const std::invalid_argument&) {
+    branchLinkRejected = true;
+  }
+  assert(branchLinkRejected);
+  invalidBranchLink = *branchLinkForward;
+  invalidBranchLink.width = 32;
+  branchLinkRejected = false;
+  try {
+    (void)make_operation_instruction(invalidBranchLink, {0x1008, 0x1004},
+                                     LoweringMode::Process, 0x10000, 0x1000);
+  } catch (const std::invalid_argument&) {
+    branchLinkRejected = true;
+  }
+  assert(branchLinkRejected);
+  const auto importedBranchLink = arm64metal::decode_process(
+      0x94000002U, 0x1000, {{0x1008, "_exit"}}, {}, false);
+  assert(!importedBranchLink.operation);
+  assert(importedBranchLink.next.empty());
+  assert(importedBranchLink.code.back().find("x[35] = 169ul") !=
+         std::string::npos);
+  const auto stubBranchLink = arm64metal::decode_process(
+      0x94000002U, 0x1000, {}, {{0x1008, 0x2000}}, false);
+  assert(!stubBranchLink.operation);
+  assert((stubBranchLink.next == std::vector<std::int64_t>{0x2000, 0x1004}));
+  assert(stubBranchLink.code[0] == "x[30] = 4100ul;");
+  assert(stubBranchLink.code[1] == "pc = 8192ul; break;");
 
   const auto loadWord = decode_operation(0xb9400403);
   assert(loadWord.has_value());

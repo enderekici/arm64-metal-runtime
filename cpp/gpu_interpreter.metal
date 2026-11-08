@@ -380,6 +380,28 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 leftBlock = true;
                 break;
             }
+            if (opcode == 28u) {
+                const long displacement = long(int(instruction.operation[3]));
+                const ulong target = instruction.pc + ulong(displacement);
+                if ((instruction.flags & 2u) == 0u ||
+                    instruction.successorCount != 2u ||
+                    instruction.operation[1] != 0u ||
+                    instruction.operation[2] != 0u ||
+                    (instruction.operation[3] & 3u) != 0u ||
+                    displacement < -134217728l || displacement > 134217724l ||
+                    instruction.operation[4] != 0u ||
+                    instruction.operation[5] != 64u ||
+                    target != instruction.successor0 ||
+                    instruction.successor1 != instruction.pc + 4ul) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                state[30] = instruction.successor1;
+                pc = instruction.successor0;
+                leftBlock = true;
+                break;
+            }
             if (opcode == 15u) {
                 if ((instruction.flags & 2u) == 0u ||
                     instruction.successorCount != 2u) {

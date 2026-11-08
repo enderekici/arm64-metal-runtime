@@ -183,6 +183,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   const auto decodedOperation = translate_core::decode_operation(bits);
   const bool typedBranch = decodedOperation &&
                            decodedOperation->opcode == translate_core::Opcode::Branch;
+  const bool typedBranchLink = decodedOperation &&
+                               decodedOperation->opcode == translate_core::Opcode::BranchLink;
   const bool typedBranchZero = decodedOperation &&
                                decodedOperation->opcode == translate_core::Opcode::BranchZero;
   const bool typedBranchCondition = decodedOperation &&
@@ -194,6 +196,15 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     if (!imports.count(target) && !guestStubs.count(target)) {
       return translate_core::make_operation_instruction(
           *decodedOperation, {target}, translate_core::LoweringMode::Process,
+          guestCodeLimit, static_cast<std::uint64_t>(pc));
+    }
+  }
+  if (typedBranchLink) {
+    const auto target = pc + static_cast<std::int32_t>(decodedOperation->immediate);
+    if (target >= 0 && static_cast<std::uint64_t>(target) < guestCodeLimit &&
+        !imports.count(target) && !guestStubs.count(target)) {
+      return translate_core::make_operation_instruction(
+          *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
           guestCodeLimit, static_cast<std::uint64_t>(pc));
     }
   }
@@ -215,7 +226,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
         guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
-  if (decodedOperation && !typedBranch && !typedBranchZero && !typedBranchCondition &&
+  if (decodedOperation && !typedBranch && !typedBranchLink && !typedBranchZero &&
+      !typedBranchCondition &&
       !typedTestBitBranch &&
       decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnsignedImmediate &&

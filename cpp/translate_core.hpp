@@ -39,6 +39,7 @@ enum class Opcode : std::uint32_t {
   LogicalImmediate = 24,
   TestBitBranch = 25,
   Adr = 27,
+  BranchLink = 28,
   LogicalVariableShiftRegister = 29,
 };
 
@@ -65,6 +66,8 @@ enum class Opcode : std::uint32_t {
 // Its full-width target and fallthrough PCs are carried in Instruction::next.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.
+// Direct BL uses immediate=signed byte displacement, width=64, and resolved
+// next edges {target, return PC}; LR receives the return PC.
 // ADD/SUB shifted register uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(setFlags << 9) | (subtract << 8) | (shiftType << 6) | amount,
 // and width=32 or 64. Shift types 0/1/2 are LSL/LSR/ASR; register 31 is ZR.
