@@ -919,6 +919,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     mainThread.tsdAddress = static_cast<std::int64_t>(bootstrap.mainThreadSpecificData);
     mainThread.registers = bootstrap.registers;
     GuestScheduler guestScheduler(std::move(mainThread));
+    std::map<std::uint64_t, GuestMemoryRange> liveThreadStacks;
+    liveThreadStacks.emplace(guestMainThreadID,
+        GuestMemoryRange{bootstrap.stack.begin, bootstrap.stack.end});
     initialize_bindings(image, bootstrap);
     initialize_authenticated_pointers(image, bootstrap);
     initialize_cached_globals(image, bootstrap);
@@ -1085,25 +1088,47 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                            static_cast<std::uint64_t>(range.second)});
     }
 
-    std::vector<std::uint64_t> writableTable{
-        bootstrap.errnoSlot,
-        static_cast<std::uint64_t>(config.writable_regions.size())};
-    writableTable.reserve(2 + 2 * config.writable_regions.size());
-    for (const auto& range : config.writable_regions) {
-        writableTable.push_back(range.begin);
-        writableTable.push_back(range.end);
-    }
-    auto writableBuffer = backend.makeSharedBuffer(
-        writableTable.size() * sizeof(std::uint64_t));
+    // The lower bound remains the current thread's errno slot. The linear heap
+    // above it remains writable by existing policy, including reclaimed
+    // allocations; explicit ranges grant older live stacks below it access.
+    std::vector<std::uint64_t> writableTable;
+    SharedBuffer writableBuffer;
+    const auto syncWritableTable = [&](std::uint64_t errnoAddress) {
+        writableTable.clear();
+        const auto rangeCount = config.writable_regions.size() + liveThreadStacks.size();
+        writableTable.reserve(2 + 2 * rangeCount);
+        writableTable.push_back(errnoAddress);
+        writableTable.push_back(static_cast<std::uint64_t>(rangeCount));
+        for (const auto& range : config.writable_regions) {
+            writableTable.push_back(range.begin);
+            writableTable.push_back(range.end);
+        }
+        for (const auto& [threadId, range] : liveThreadStacks) {
+            (void)threadId;
+            writableTable.push_back(range.begin);
+            writableTable.push_back(range.end);
+        }
+        const auto byteLength = writableTable.size() * sizeof(std::uint64_t);
+        if (writableBuffer.size() < byteLength) {
+            auto expanded = backend.makeSharedBuffer(byteLength);
+            if (expanded.data() == nullptr) {
+                throw std::runtime_error("Metal returned a null guest writable-range buffer");
+            }
+            writableBuffer = std::move(expanded);
+        }
+        if (writableBuffer.data() == nullptr) {
+            throw std::runtime_error("Metal returned a null guest writable-range buffer");
+        }
+        std::memcpy(writableBuffer.data(), writableTable.data(), byteLength);
+    };
+    syncWritableTable(bootstrap.errnoSlot);
     const std::array<std::uint64_t, 4> memoryConfig{
         config.minimum_image_address, config.shared_guest_base,
         config.linear_image_end, config.mapping_backing_end};
     auto memoryConfigBuffer = backend.makeSharedBuffer(sizeof(memoryConfig));
-    if (writableBuffer.data() == nullptr || memoryConfigBuffer.data() == nullptr) {
+    if (memoryConfigBuffer.data() == nullptr) {
         throw std::runtime_error("Metal returned a null guest memory configuration buffer");
     }
-    std::memcpy(writableBuffer.data(), writableTable.data(),
-                writableTable.size() * sizeof(std::uint64_t));
     std::memcpy(memoryConfigBuffer.data(), memoryConfig.data(), sizeof(memoryConfig));
 
     std::map<std::int64_t, std::string> decodeErrors;
@@ -1671,8 +1696,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 std::memcpy(output, &completion.joined->result, sizeof(std::uint64_t));
             }
         }
-        if (completion.reapedThread && completion.reapedThread->allocation) {
-            hostServiceState.heap->release(*completion.reapedThread->allocation);
+        if (completion.reapedThread) {
+            liveThreadStacks.erase(completion.reapedThread->id);
+            if (completion.reapedThread->allocation) {
+                hostServiceState.heap->release(*completion.reapedThread->allocation);
+            }
         }
         if (completion.allComplete) return true;
         if (!syncThreadSwitch(false, live)) {
@@ -3125,9 +3153,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto& currentThread = guestScheduler.current();
         registers[guestThreadPointer] = static_cast<std::uint64_t>(currentThread.tsdAddress);
         bootstrap.errnoSlot = static_cast<std::uint64_t>(currentThread.errnoAddress);
-        writableTable[0] = bootstrap.errnoSlot;
-        std::memcpy(writableBuffer.data(), writableTable.data(),
-                    writableTable.size() * sizeof(std::uint64_t));
+        syncWritableTable(bootstrap.errnoSlot);
         registers[36] = options.dispatchBlocks;
         registers[guestFaultAddress] = kNoFault;
         registers[guestCacheFaultAddress] = kNoFault;
@@ -3994,6 +4020,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (addedId != threadId) {
                         throw std::logic_error("Guest scheduler assigned an unexpected thread id");
                     }
+                    liveThreadStacks.emplace(threadId,
+                        GuestMemoryRange{stackStart, stackStart + stackSize});
                     std::memcpy(threadIdDestination, &threadId, sizeof(threadId));
                     hostRegisters[0] = 0;
                 }
@@ -4011,8 +4039,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             sizeof(std::uint64_t), true);
                         std::memcpy(output, &joined.value, sizeof(joined.value));
                     }
-                    if (joined.reapedThread && joined.reapedThread->allocation) {
-                        hostServiceState.heap->release(*joined.reapedThread->allocation);
+                    if (joined.reapedThread) {
+                        liveThreadStacks.erase(joined.reapedThread->id);
+                        if (joined.reapedThread->allocation) {
+                            hostServiceState.heap->release(*joined.reapedThread->allocation);
+                        }
                     }
                     hostRegisters[0] = 0;
                     std::copy_n(hostRegisters.begin(), 36,
@@ -4037,8 +4068,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (service == 174) {
                 const auto detached = guestScheduler.detach(hostRegisters[0]);
                 hostRegisters[0] = static_cast<std::uint32_t>(detached.error);
-                if (detached.reapedThread && detached.reapedThread->allocation) {
-                    hostServiceState.heap->release(*detached.reapedThread->allocation);
+                if (detached.reapedThread) {
+                    liveThreadStacks.erase(detached.reapedThread->id);
+                    if (detached.reapedThread->allocation) {
+                        hostServiceState.heap->release(*detached.reapedThread->allocation);
+                    }
                 }
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
