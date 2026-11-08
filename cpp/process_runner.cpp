@@ -1844,6 +1844,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::set<std::uint64_t> dynamicCodeRegionStarts;
     struct GuestReceiveRight { std::uint32_t flags; std::uint64_t context; };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
+    std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
+        {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
@@ -5546,13 +5548,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-28))) {
-                registers[0] = guestMachTaskPort;
-                registers[34] = 0;
-                continue;
-            }
-            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-29))) {
-                registers[0] = guestMachHostPort;
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-28)) ||
+                syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-29))) {
+                const auto port = syscall == static_cast<std::uint64_t>(
+                    static_cast<std::int64_t>(-28))
+                    ? static_cast<std::uint32_t>(guestMachTaskPort)
+                    : static_cast<std::uint32_t>(guestMachHostPort);
+                auto& references = guestSendRightUrefs[port];
+                if (references == 0) references = 1;
+                else if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
+                registers[0] = port;
                 registers[34] = 0;
                 continue;
             }
@@ -5604,6 +5609,35 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         nextGuestReceiveName += 4;
                         guestReceiveRights.emplace(name, GuestReceiveRight{flags, registers[2]});
                         std::memcpy(output, &name, sizeof(name));
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-18))) {
+                constexpr std::uint64_t kernSuccess = 0;
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                std::uint64_t result = kernSuccess;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else if (name == 0 || name == std::numeric_limits<std::uint32_t>::max()) {
+                    result = kernSuccess;
+                } else {
+                    const auto sendRight = guestSendRightUrefs.find(name);
+                    if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
+                        --sendRight->second;
+                        if (sendRight->second == 0) guestSendRightUrefs.erase(sendRight);
+                    } else if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
+                        result = kernInvalidRight;
+                    } else {
+                        result = kernInvalidName;
                     }
                 }
                 registers[0] = result;
