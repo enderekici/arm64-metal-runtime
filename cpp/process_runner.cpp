@@ -3912,6 +3912,65 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto replaceSparseRange = [&]() {
                 if (pageSize > static_cast<std::uint64_t>(
                         std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
+                // A replacement may need a larger contiguous lease than the free
+                // heap currently has (for example, XZM replaces two 2 MiB owners
+                // and a reserved 2 MiB hole with one 6 MiB mapping). Retire only
+                // leases whose every mapped byte is covered by this replacement.
+                std::vector<VmBackingLease> reclaimedBackings;
+                for (const auto& [unused, allocation] : vmAllocations) {
+                    (void)unused;
+                    if (!allocation.sparseAddressSpace) continue;
+                    const auto collectReclaimable = [&](const VmBackingLease& lease) {
+                        const auto leaseBegin = static_cast<std::uint64_t>(lease.backing);
+                        const auto leaseEnd = leaseBegin + lease.size;
+                        bool referenced = false;
+                        bool survives = false;
+                        for (const auto& [otherUnused, other] : vmAllocations) {
+                            (void)otherUnused;
+                            if (!other.sparseAddressSpace) continue;
+                            for (const auto& region : other.regions) {
+                                const auto regionEnd = region.backing +
+                                    static_cast<std::size_t>(region.end - region.begin);
+                                if (region.backing >= leaseEnd || leaseBegin >= regionEnd) continue;
+                                referenced = true;
+                                if (region.begin < begin || region.end > end) survives = true;
+                            }
+                        }
+                        if (referenced && !survives && std::none_of(
+                                reclaimedBackings.begin(), reclaimedBackings.end(),
+                                [&](const VmBackingLease& prior) {
+                                    return prior.backing == lease.backing;
+                                })) {
+                            reclaimedBackings.push_back(lease);
+                        }
+                    };
+                    if (allocation.ownedBackings.empty()) {
+                        collectReclaimable({static_cast<std::int64_t>(allocation.backing),
+                                            allocation.end - allocation.begin});
+                    } else {
+                        for (const auto& lease : allocation.ownedBackings) {
+                            collectReclaimable(lease);
+                        }
+                    }
+                }
+                for (const auto& lease : reclaimedBackings) mappingHeap.release(lease.backing);
+                struct ReclaimedBackingRollback {
+                    GuestHeap& heap;
+                    const std::vector<VmBackingLease>& leases;
+                    std::int64_t alignment;
+                    bool committed = false;
+                    ~ReclaimedBackingRollback() {
+                        if (committed) return;
+                        for (const auto& lease : leases) {
+                            try {
+                                (void)heap.allocate_at(lease.backing, lease.size, alignment);
+                            } catch (...) {
+                                std::terminate();
+                            }
+                        }
+                    }
+                } reclaimedRollback{mappingHeap, reclaimedBackings,
+                                    static_cast<std::int64_t>(pageSize)};
                 const auto allocated = mappingHeap.allocate(
                     static_cast<std::int64_t>(end - begin), static_cast<std::int64_t>(pageSize));
                 if (!allocated) return kernNoSpace;
@@ -4094,6 +4153,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
                                 static_cast<std::size_t>(end - begin));
                     syncResidentTable();
+                    reclaimedRollback.committed = true;
+                    retiredBackings.erase(std::remove_if(retiredBackings.begin(),
+                        retiredBackings.end(), [&](const VmBackingLease& lease) {
+                            return std::any_of(reclaimedBackings.begin(),
+                                reclaimedBackings.end(), [&](const VmBackingLease& reclaimed) {
+                                    return lease.backing == reclaimed.backing;
+                                });
+                        }), retiredBackings.end());
                     for (const auto& lease : retiredBackings) mappingHeap.release(lease.backing);
                     (void)overlapsManagedMapping;
                     guestAddress = begin;
