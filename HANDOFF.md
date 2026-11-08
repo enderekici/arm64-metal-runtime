@@ -37,58 +37,52 @@ Capture stdout, stderr, and exit status separately for native and Metal. Freeze 
 
 ## Current wave
 
-The integrated guest VM range change at source 8bfa6f6 passed the strict
-C++ app build and full verification gate. The test runner SHA-256 before and
-after the gate was
-3162adc7a229d9e27578ca134d7e6c98d1f5b51ef40059830b43d57413bd9e45.
-The gate completed 42 launch comparisons and 2,048 function runs. The packaged
-archive's launcher digest matched the tested runtime. Receipts are under
-/tmp/metal-vm-integrated.C6e4d6.
+Interpreter candidate 7e4656f passed both release gates against one stable
+runtime. The executable SHA-256 before and after qualification was
+d299993b613d3de4e457c2bab276ff3cfa3bfedf1a1af6cf8d67b8d5d203ec83.
+The packaged Metal library SHA-256 was
+ee48b85b1e4e4b9e71feb838c81a0f978d610b58af0df98009166f254faffcea.
+The gate recorded 42 launch comparisons and 2,048 function runs. Receipts are
+under /tmp/metal-release-gate.5rP5Do.
 
-The false-green Makefile wiring is fixed. The Swift compiler recipe now
-always builds SWIFT_RUNTIME. Previously, overriding RUNTIME for a C++ gate
-could bind the Swift recipe to that path and overwrite the binary under test.
-Now RUNTIME can select the already-built C++ executable for verify without
-changing the Swift build target. Keep the runtime path and digest attached to
-every gate result.
+The standalone interpreter probe loaded one precompiled pipeline, compiled
+zero Metal source files at runtime, and completed four dispatches. The
+interpreter remains opt-in with ARM64_METAL_INTERPRETER=1 and handles the
+typed MOVZ/RET slice. From the extracted C++ archive, the opt-in launcher
+loaded its adjacent interpreter library and ran a normal Mach-O fixture to
+exit 42. The archive SHA-256 is
+f1c668d27b4846b5c407975ed64f6c7c2b9c94e2acfb05186311dae0cd2d1862.
+This qualifies the tested interpreter path and package. It does not establish
+general application compatibility or all currently supported translated
+instructions in the interpreter. The translator remains available during the
+incremental migration.
 
-The app gate remains bounded and serial. It compares native and guest output,
-diagnostics, and exit status for plutil, tar, both cached-libz controls and
-optional JNI. Its receipts pin the runtime digest. The plutil trace shows
-kernel compilation continuing late into the run before timeout; its result
-remains unresolved. ARM64_METAL_TRACE samples compile/dispatch/host-service
-events, then emits periodic progress plus image-load, initializer, and raw
-syscall boundaries.
+A separate TPRO candidate is isolated at db2beae. On the prior frozen runtime whose SHA-256 begins deabfe4e, the observed path
+advanced to raw Darwin trap -29. Recover the full digest from its receipt
+before reusing that result. The latest ProgramVars relocation has not been rerun.
+Protected-write behavior and the late guest negative case remain open.
+Native verification is tracking the XNU host-self (-29), task-self (-28), and
+pid-for-task (-46) paths. Do not treat those mappings as native-qualified
+until their ABI and results are compared on the host.
 
-Both libz-root and libz-provider reach
-__dyld_call_with_writable_tpro_memory after reading dyld4::gAPIs. The latest
-trace reports guest 134, startup=0, prefix=0, target=0x44b0, LR=0x10089a95c
-in libsystem_platform. The callback token authenticates, but no callback runs.
-The native late path rejects this request after libSystem initialization
-and terminates with SIGABRT. Preserve that behavior. Do not invoke the callback
-after initialization or relax the guard. Investigate initialization ordering
-and deferred system roots to reproduce native behavior.
+MOVN/MOVK typed-decoder work is separately isolated at ec0dfd7 and has no GPU
+qualification yet. Keep it separate from the passing MOVZ/RET interpreter
+slice.
 
-Candidate commit 00541caf adds typed MOVZ/RET handling, with a fixed GPU
-interpreter regression test still in progress. Astra recommends a precompiled
-GPU interpreter as the eventual default while retaining translation during
-migration and for later hot code. Migrate one typed instruction slice at a
-time, sharing GPU semantics between interpreter and translator. Compare native,
-translator, and interpreter behavior before expanding. This improves coverage
-work but does not fill missing dyld, Darwin, GUI, or JIT behavior.
+The TPRO late path still reads dyld4::gAPIs and reaches
+__dyld_call_with_writable_tpro_memory. The prior trace reported guest 134,
+startup=0, prefix=0, target=0x44b0, LR=0x10089a95c in libsystem_platform.
+Native late behavior rejects after libSystem initialization and terminates
+with SIGABRT. Preserve that behavior. Continue checking initialization order,
+deferred system roots and the target's permissions without invoking a late
+callback or relaxing the guard.
 
-The JIT candidate at b545de0 passes its positive RW-to-RX call and
-revocation tests in isolation. Its full gate is running. This does not establish
-whole-app compatibility; retain the exact gate artifact and result separately.
-
-The project goal remains broad compatibility for unchanged macOS applications,
-with guest instructions translated for GPU execution and CPU work limited to
-host services. Astra's direction is to grow the interpreter from observed
-application behavior and real loader state. Use native evidence to define the
-TPRO callback/permission contract, reuse the guest image/callback machinery,
-and keep constructor ordering, publication, rollback, and pointer checks
-consistent. Keep the full goal intact: CLI and VM gates are milestones, not
-the application-compatibility finish line.
+Astra's interpreter direction remains the long-term path: use typed operations
+and shared GPU semantics, keep the translator during migration, and compare
+native, translator and interpreter outputs for each slice. The full objective
+remains general compatibility for unmodified macOS applications, with guest
+instructions executing on GPU and CPU services preserving host boundaries.
+CLI, VM, package, and interpreter gates are milestones, not completion.
 
 ## Evidence locations
 
@@ -98,30 +92,23 @@ The [loader probe sources](fixtures/handoff/README.md) are included in the repos
 
 ## Final checkpoint verification
 
-The integrated VM runtime passed the strict C++ app build and full gate on
-8 November 2026. Runtime digest matched before and after:
-3162adc7a229d9e27578ca134d7e6c98d1f5b51ef40059830b43d57413bd9e45.
-The gate completed 42 launch comparisons and 2,048 function runs. The archive
-contains the same launcher digest. Receipts are under
-/tmp/metal-vm-integrated.C6e4d6.
+The interpreter candidate 7e4656f passed both release gates on the same
+stable runtime. The runtime SHA-256 matched before and after:
+d299993b613d3de4e457c2bab276ff3cfa3bfedf1a1af6cf8d67b8d5d203ec83.
+The metallib SHA-256 was
+ee48b85b1e4e4b9e71feb838c81a0f978d610b58af0df98009166f254faffcea.
+The gates recorded 42 launch comparisons and 2,048 function runs. The archive
+SHA-256 is
+f1c668d27b4846b5c407975ed64f6c7c2b9c94e2acfb05186311dae0cd2d1862.
+Receipts are under /tmp/metal-release-gate.5rP5Do.
 
-The latest plutil trace showed kernel compilation continuing late into its
-bounded run before timeout. Both libz controls reach the same TPRO path. The
-trace reports guest 134, startup=0, prefix=0, target=0x44b0, LR=0x10089a95c in
-libsystem_platform. The authenticated callback token does not lead to callback
-execution. Native late behavior rejects after libSystem initialization and
-terminates with SIGABRT. Preserve it. Investigate initialization ordering and
-deferred system roots, without calling the callback late or relaxing the guard.
-Typed MOVZ/RET commit 00541caf and its fixed GPU interpreter test are WIP.
+The standalone interpreter run used one pipeline, zero runtime source
+compilations and four dispatches. An extracted archive with the opt-in
+interpreter loaded the adjacent metallib and ran a normal Mach-O fixture to
+exit 42. MOVN/MOVK GPU execution and broad interpreter coverage remain open.
 
-Astra recommends growing a precompiled GPU interpreter as the eventual default,
-keeping the translator during migration and for hot code, and sharing GPU
-instruction semantics across both paths. The interpreter regression should
-compare native, translator, and interpreter results. This does not replace the
-full goal of general unchanged-app compatibility or solve other missing
-subsystems.
-
-Anonymous JIT transaction support and protection-revocation/partial-unmap
-changes are integrated on the branch. The positive RW-to-RX fixture matches
-native. MAP_JIT and whole-app use remain open. General unchanged-app
-compatibility remains the project goal.
+TPRO candidate db2beae and MOVN/MOVK candidate ec0dfd7 are isolated work.
+The prior TPRO path advanced to trap -29, while ProgramVars relocation,
+protected-write behavior, and the late guest negative case remain unresolved.
+See the Current wave section and COMPATIBILITY.md for the exact proof boundary.
+General app compatibility remains the project goal.
