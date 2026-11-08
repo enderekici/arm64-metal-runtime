@@ -36,6 +36,33 @@ OperationPacket serialize_operation(const Operation& operation) {
           operation.shift, operation.width};
 }
 
+std::optional<std::uint64_t> decode_logical_immediate_mask(
+    std::uint32_t n, std::uint32_t immr, std::uint32_t imms,
+    std::uint32_t width) {
+  if (n > 1U || immr > 63U || imms > 63U ||
+      (width != 32U && width != 64U)) {
+    return std::nullopt;
+  }
+  const auto marker = (static_cast<std::uint64_t>(n) << 6U) |
+                       (~static_cast<std::uint64_t>(imms) & 63U);
+  if (marker < 2U) return std::nullopt;
+  const auto element = std::uint32_t{1} << (63U - __builtin_clzll(marker));
+  const auto length = (imms & (element - 1U)) + 1U;
+  if (element > width || length >= element) return std::nullopt;
+  const auto rotation = immr & (element - 1U);
+  const auto ones = (std::uint64_t{1} << length) - 1U;
+  const auto elementMask = element == 64U
+      ? UINT64_MAX : ((std::uint64_t{1} << element) - 1U);
+  const auto pattern = rotation == 0U
+      ? ones
+      : ((ones >> rotation) | (ones << (element - rotation))) & elementMask;
+  std::uint64_t mask = 0;
+  for (std::uint32_t offset = 0; offset < width; offset += element) {
+    mask |= pattern << offset;
+  }
+  return mask;
+}
+
 bool Instruction::ends_block_at(std::int64_t pc) const {
   const auto straight_line = next.size() == 1 && next.front() == pc + 4;
   const auto ends_with = [](const std::string& value, const std::string& suffix) {
@@ -75,6 +102,20 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::BranchCondition, 0, field(bits, 0, 4),
                      static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
                      0, 64};
+  }
+
+  if ((bits & 0x1f800000U) == 0x12000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto n = field(bits, 22, 1);
+    const auto immr = field(bits, 16, 6);
+    const auto imms = field(bits, 10, 6);
+    const auto mask = decode_logical_immediate_mask(n, immr, imms, width);
+    if (!mask) return std::nullopt;
+    const auto opc = field(bits, 29, 2);
+    const auto packedSource = (opc << 5U) | field(bits, 5, 5);
+    return Operation{Opcode::LogicalImmediate, field(bits, 0, 5), packedSource,
+                     static_cast<std::uint32_t>(*mask),
+                     static_cast<std::uint32_t>(*mask >> 32U), width};
   }
 
   const auto selectEncoding = bits & 0x7fe00c00U;
@@ -393,6 +434,40 @@ Instruction make_operation_instruction(Operation operation,
     code.push_back("c = (add_sub_result.flags & 8u) != 0u;");
     if (mode == LoweringMode::Process) {
       code.push_back("x[32] = add_sub_result.flags;");
+    }
+    code.push_back("}");
+  } else if (operation.opcode == Opcode::LogicalImmediate) {
+    const auto opc = operation.source >> 5U;
+    const auto rn = operation.source & 31U;
+    const auto mask = (static_cast<std::uint64_t>(operation.shift) << 32U) |
+                      operation.immediate;
+    if (operation.destination > 31 || operation.source > 127 || opc > 3U ||
+        (operation.width != 32 && operation.width != 64) ||
+        (operation.width == 32 && operation.shift != 0)) {
+      throw std::invalid_argument("Typed logical immediate operands are invalid");
+    }
+    const bool setFlags = opc == 3U;
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("{");
+    code.push_back("const LogicalShiftedResult logical_result = "
+                   "logical_immediate_apply(" + std::to_string(opc) + "u, " +
+                   reg(rn, operation.width == 64) + ", " +
+                   std::to_string(mask) + "ul, " +
+                   std::to_string(operation.width) + "u, " +
+                   std::string(setFlags ? "1u" : "0u") + ", " + flags + ");");
+    if (operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = logical_result.value;");
+    }
+    if (setFlags) {
+      code.push_back("z = (logical_result.flags & 1u) != 0u;");
+      code.push_back("n = (logical_result.flags & 2u) != 0u;");
+      code.push_back("v = (logical_result.flags & 4u) != 0u;");
+      code.push_back("c = (logical_result.flags & 8u) != 0u;");
+      if (mode == LoweringMode::Process) {
+        code.push_back("x[32] = logical_result.flags;");
+      }
     }
     code.push_back("}");
   } else if (operation.opcode == Opcode::LogicalShiftedRegister) {

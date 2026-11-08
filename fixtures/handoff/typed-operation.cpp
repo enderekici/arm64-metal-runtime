@@ -10,6 +10,7 @@
 #include <vector>
 
 using arm64metal::translate_core::LoweringMode;
+using arm64metal::translate_core::Operation;
 using arm64metal::translate_core::Opcode;
 using arm64metal::translate_core::decode_operation;
 using arm64metal::translate_core::make_operation_instruction;
@@ -155,7 +156,62 @@ int main() {
       }
     }
   }
-  assert(!decode_operation(0x12000000U).has_value());  // Logical immediate stays separate.
+  constexpr std::uint32_t logicalImmediateW = 0x72000000U |
+      (4U << 16U) | (39U << 10U) | (2U << 5U) | 31U;
+  const auto logicalImmediate = decode_operation(logicalImmediateW);
+  assert(logicalImmediate.has_value() &&
+         logicalImmediate->opcode == Opcode::LogicalImmediate &&
+         logicalImmediate->destination == 31 && logicalImmediate->source == 98 &&
+         logicalImmediate->immediate == 0xf00ff00fU &&
+         logicalImmediate->shift == 0 && logicalImmediate->width == 32);
+  assert((serialize_operation(*logicalImmediate) ==
+          arm64metal::translate_core::OperationPacket{
+              24, 31, 98, 0xf00ff00fU, 0, 32}));
+  const auto logicalImmediateLowered = make_operation_instruction(
+      *logicalImmediate, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(logicalImmediateLowered.code[1].find("logical_immediate_apply(") !=
+         std::string::npos);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "logical_immediate_apply") != std::string_view::npos);
+  assert(logicalImmediateLowered.code.size() == 8);
+  const auto logicalImmediateDiscard = make_operation_instruction(
+      Operation{Opcode::LogicalImmediate, 31, 0, 0xffU, 0, 64},
+      {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
+  for (const auto& line : logicalImmediateDiscard.code) {
+    assert(line.find("x[31] =") == std::string::npos);
+  }
+  const auto logicalImmediateX = decode_operation(
+      0xd2000000U | (1U << 22U) | (1U << 16U) | (1U << 10U) |
+      (31U << 5U) | 3U);
+  assert(logicalImmediateX.has_value() && logicalImmediateX->source == 95 &&
+         logicalImmediateX->immediate == 0x1U &&
+         logicalImmediateX->shift == 0x80000000U &&
+         logicalImmediateX->width == 64);
+  const auto logicalMaskW =
+      arm64metal::translate_core::decode_logical_immediate_mask(0, 4, 39, 32);
+  const auto logicalMaskX =
+      arm64metal::translate_core::decode_logical_immediate_mask(1, 1, 1, 64);
+  const auto rotatedPattern =
+      arm64metal::translate_core::decode_logical_immediate_mask(0, 8, 39, 64);
+  assert(logicalMaskW.has_value() && *logicalMaskW == 0xf00ff00fU);
+  assert(logicalMaskX.has_value() && *logicalMaskX == 0x8000000000000001ULL);
+  assert(rotatedPattern.has_value() && *rotatedPattern == 0xff00ff00ff00ff00ULL);
+  assert(!arm64metal::translate_core::decode_logical_immediate_mask(1, 0, 0, 32));
+  assert(!arm64metal::translate_core::decode_logical_immediate_mask(1, 0, 63, 64));
+  assert(!arm64metal::translate_core::decode_logical_immediate_mask(0, 0, 63, 64));
+  assert(!decode_operation(0x72000000U | (1U << 22U) | (1U << 10U)));
+  assert(!decode_operation(0x92000000U | (1U << 22U) | (63U << 10U)));
+  Operation invalidLogicalImmediate{Opcode::LogicalImmediate, 0, 0, 1, 1, 32};
+  bool invalidLogicalImmediateRejected = false;
+  try {
+    (void)make_operation_instruction(invalidLogicalImmediate, {0x1004},
+                                     LoweringMode::Process,
+                                     std::uint64_t{1} << 48);
+  } catch (const std::invalid_argument&) {
+    invalidLogicalImmediateRejected = true;
+  }
+  assert(invalidLogicalImmediateRejected);
   assert(!decode_operation(0x0a008020U).has_value());  // W shift amount 32 is invalid.
   const auto logicalCmp = decode_operation(0xea02003fU);
   assert(logicalCmp.has_value() && logicalCmp->destination == 31 &&
@@ -175,6 +231,22 @@ int main() {
          std::string_view::npos);
 
   using arm64metal::logical_shifted_apply;
+  using arm64metal::logical_immediate_apply;
+  assert(logical_immediate_apply(0, 0x1234, 0xff, 64, 0, 0xf).value == 0x34);
+  assert(logical_immediate_apply(1, 0, 0x8000000000000001ULL, 64, 0, 0xf)
+             .value == 0x8000000000000001ULL);
+  assert(logical_immediate_apply(2, 0x8000000000000001ULL,
+                                 0x8000000000000001ULL, 64, 0, 0xf)
+             .value == 0);
+  assert(logical_immediate_apply(3, 0x8000000000000000ULL,
+                                0x8000000000000000ULL, 64, 1, 0xf)
+             .flags == 2);
+  assert(logical_immediate_apply(3, 0, 0xff, 32, 1, 0xf).flags == 1);
+  assert(logical_immediate_apply(0, 0, 0xff00000000000000ULL, 32, 0, 0xf)
+             .value == 0);
+  assert(logical_immediate_apply(1, 0, 0x00ff00ffULL, 32, 0, 0xf).value ==
+         0x00ff00ffU);
+  assert(logical_immediate_apply(0, 0x12, 0xff, 64, 0, 0xf).flags == 0xf);
   assert(logical_shifted_apply(0, 0, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
              .value == 0);
   assert(logical_shifted_apply(0, 1, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)

@@ -137,6 +137,23 @@ struct LogicalShiftedResult {
     ulong value;
     uint flags;
 };
+inline LogicalShiftedResult logical_immediate_apply(
+    uint opc, ulong lhs, ulong immediate, uint width, uint setFlags,
+    uint previousFlags) {
+    const ulong mask = width == 32u ? 0xfffffffful : ~0ul;
+    const ulong left = lhs & mask;
+    const ulong right = immediate & mask;
+    ulong value = left & right;
+    if (opc == 1u) value = left | right;
+    else if (opc == 2u) value = left ^ right;
+    value &= mask;
+    uint flags = previousFlags;
+    if (setFlags != 0u) {
+        const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+        flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u);
+    }
+    return LogicalShiftedResult{value, flags};
+}
 inline LogicalShiftedResult logical_shifted_apply(
     uint opc, uint invert, ulong lhs, ulong rhs, uint shiftType, uint amount,
     uint width, uint setFlags, uint previousFlags) {
@@ -186,6 +203,25 @@ struct LogicalShiftedResult {
   std::uint64_t value;
   std::uint32_t flags;
 };
+inline constexpr LogicalShiftedResult logical_immediate_apply(
+    std::uint32_t opc, std::uint64_t lhs, std::uint64_t immediate,
+    std::uint32_t width, std::uint32_t setFlags,
+    std::uint32_t previousFlags) {
+  const auto mask = width == 32U ? std::uint64_t{0xffffffffU} : ~std::uint64_t{0};
+  const auto left = lhs & mask;
+  const auto right = immediate & mask;
+  auto value = left & right;
+  if (opc == 1U) value = left | right;
+  else if (opc == 2U) value = left ^ right;
+  value &= mask;
+  auto flags = previousFlags;
+  if (setFlags != 0U) {
+    const auto signBit = width == 32U ? 0x80000000ULL : 0x8000000000000000ULL;
+    flags = static_cast<std::uint32_t>(value == 0U) |
+            (static_cast<std::uint32_t>((value & signBit) != 0U) << 1U);
+  }
+  return {value, flags};
+}
 inline constexpr LogicalShiftedResult logical_shifted_apply(
     std::uint32_t opc, std::uint32_t invert, std::uint64_t lhs,
     std::uint64_t rhs, std::uint32_t shiftType, std::uint32_t amount,
@@ -291,6 +327,16 @@ inline constexpr char typed_integer_msl_source[] =
         subtract, left, shifted, value, width, signBit))
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
     "struct LogicalShiftedResult { ulong value; uint flags; };\n"
+    "inline LogicalShiftedResult logical_immediate_apply(uint opc, ulong lhs, "
+    "ulong immediate, uint width, uint setFlags, uint previousFlags) { "
+    "ulong mask = width == 32u ? 0xfffffffful : ~0ul; "
+    "ulong left = lhs & mask; ulong right = immediate & mask; "
+    "ulong value = left & right; if (opc == 1u) value = left | right; "
+    "else if (opc == 2u) value = left ^ right; value &= mask; "
+    "uint flags = previousFlags; if (setFlags != 0u) { "
+    "ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
+    "flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u); } "
+    "return LogicalShiftedResult{value, flags}; }\n"
     "inline LogicalShiftedResult logical_shifted_apply(uint opc, uint invert, "
     "ulong lhs, ulong rhs, uint shiftType, uint amount, uint width, "
     "uint setFlags, uint previousFlags) { ulong mask = width == 32u ? "

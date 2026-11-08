@@ -404,6 +404,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::AddSubExtendedRegister;
             const bool logicalShiftedRegisterOpcode =
                 opcode == translate_core::Opcode::LogicalShiftedRegister;
+            const bool logicalImmediateOpcode =
+                opcode == translate_core::Opcode::LogicalImmediate;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const auto& operation = *instruction.operation;
@@ -500,16 +502,21 @@ ProcessKernelPlan plan_process_kernel(
                  (operation.width == 32 || operation.width == 64) &&
                  logicalShiftType <= 3 && logicalAmount < operation.width &&
                  (operation.shift & ~0x7ffU) == 0);
+            const bool validLogicalImmediate =
+                !logicalImmediateOpcode ||
+                (operation.destination <= 31 && operation.source <= 127 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 (operation.width != 32 || operation.shift == 0));
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode &&
-                 !logicalShiftedRegisterOpcode) ||
+                 !logicalShiftedRegisterOpcode && !logicalImmediateOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
-                !validLogicalShiftedRegister ||
+                !validLogicalShiftedRegister || !validLogicalImmediate ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

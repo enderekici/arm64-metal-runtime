@@ -870,27 +870,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   }
   if ((bits & 0x1f800000) == 0x12000000) {
     auto width = field(31, 1) == 1 ? 64 : 32;
-    auto imms = int64_t(field(10, 6));
-    auto marker = (int64_t(field(22, 1)) << 6) | (~imms & 63);
-    if (!(marker >= 2)) {
+    const auto mask = translate_core::decode_logical_immediate_mask(
+        field(22, 1), field(16, 6), field(10, 6), width);
+    if (!mask) {
       throw GuestError((std::string("Reserved logical immediate")));
-    }
-    auto element = 1 << (63 - __builtin_clzll(marker));
-    auto length = (imms & (element - 1)) + 1;
-    if (!(element <= width && length < element)) {
-      throw GuestError((std::string("Reserved logical immediate")));
-    }
-    auto rotation = int64_t(field(16, 6)) & (element - 1);
-    auto ones = (uint64_t(1) << length) - 1;
-    auto elementMask =
-        element == 64 ? UINT64_MAX : (uint64_t(1) << element) - 1;
-    auto pattern = rotation == 0
-                       ? ones
-                       : ((ones >> rotation) | (ones << (element - rotation))) &
-                             elementMask;
-    uint64_t mask = 0;
-    for (int offset = 0; offset < width; offset += element) {
-      mask |= pattern << offset;
     }
     auto op =
         Strings{(std::string("&")), (std::string("|")), (std::string("^")),
@@ -898,7 +881,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto source =
         width == 32 ? (std::string("uint(") + str(reg(rn)) + ")") : reg(rn);
     auto result = (std::string("(") + str(source) + " " + str(op) + " " +
-                   str(mask) + "ul)");
+                   str(*mask) + "ul)");
     auto assign = rd == 31
                       ? (std::string(""))
                       : (std::string(str(reg(rd))) + " = " + str(result) + ";");

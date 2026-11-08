@@ -230,6 +230,43 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 24u) {
+                const uint rd = instruction.operation[1];
+                const uint packedSource = instruction.operation[2];
+                const uint opc = packedSource >> 5u;
+                const uint rn = packedSource & 31u;
+                const uint width = instruction.operation[5];
+                const ulong immediate = (ulong(instruction.operation[4]) << 32u) |
+                                        ulong(instruction.operation[3]);
+                const bool setFlags = opc == 3u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rd > 31u || packedSource > 127u || opc > 3u ||
+                    (width != 32u && width != 64u) ||
+                    (width == 32u && instruction.operation[4] != 0u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong lhs = rn == 31u ? 0ul : state[rn];
+                const LogicalShiftedResult result = logical_immediate_apply(
+                    opc, lhs, immediate, width, uint(setFlags), uint(state[32]));
+                if (rd != 31u) state[rd] = result.value;
+                if (setFlags) state[32] = result.flags;
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 1u || opcode == 3u || opcode == 4u) {
                 const uint rd = instruction.operation[1];
                 const uint immediate = instruction.operation[3];

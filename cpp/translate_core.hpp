@@ -35,6 +35,7 @@ enum class Opcode : std::uint32_t {
   LoadSignedScalar = 20,
   AddSubExtendedRegister = 22,
   LogicalShiftedRegister = 23,
+  LogicalImmediate = 24,
   TestBitBranch = 25,
 };
 
@@ -72,6 +73,9 @@ enum class Opcode : std::uint32_t {
 // and width=32 or 64. Rn/Rm/Rd register 31 is ZR. Opc selects AND, ORR,
 // EOR, or ANDS, with invert selecting BIC, ORN, EON, or BICS. Shift types
 // 0/1/2/3 are LSL/LSR/ASR/ROR. ANDS/BICS update NZCV.
+// Logical immediate uses destination=Rd, source=(opc << 5) | Rn,
+// immediate=mask low word, shift=mask high word, width=32 or 64. Register 31
+// is ZR. Opc selects AND, ORR, EOR, or ANDS; ANDS updates NZCV.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
@@ -111,6 +115,9 @@ struct Instruction {
 };
 
 std::optional<Operation> decode_operation(std::uint32_t bits);
+std::optional<std::uint64_t> decode_logical_immediate_mask(
+    std::uint32_t n, std::uint32_t immr, std::uint32_t imms,
+    std::uint32_t width);
 Instruction make_operation_instruction(Operation operation,
                                        std::vector<std::int64_t> next,
                                        LoweringMode mode,
