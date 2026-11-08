@@ -1469,6 +1469,29 @@ public:
         std::cerr << '\n';
     }
 
+    void metadata(const char* name, const std::string& path,
+                  const char* format, const char* descriptor) {
+        if (!enabled_) return;
+        if (events_ == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal dyld-bootstrap event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        ++events_;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::cerr << "arm64-metal dyld-bootstrap +" << elapsed << "ms event=" << name
+                  << " image=";
+        for (std::size_t index = 0; index < path.size() && index < 192; ++index) {
+            const auto value = static_cast<unsigned char>(path[index]);
+            std::cerr << ((value >= 0x20 && value <= 0x7e && value != ' ')
+                              ? static_cast<char>(value) : '_');
+        }
+        std::cerr << " format=" << format << " descriptor=" << descriptor << '\n';
+    }
+
 private:
     static constexpr std::size_t maximumEvents = 16;
     bool enabled_ = false;
@@ -3655,16 +3678,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                               std::uint64_t templateSize,
                                               bool diskV1) {
             const auto* raw = guestMemory.buffer(address, 24);
-            std::uint32_t key = 0;
-            std::uint32_t offset = 0;
+            std::uint64_t key = 0;
+            std::uint64_t offset = 0;
             if (diskV1) {
                 std::memcpy(&key, raw + 8, sizeof(key));
                 if (key != 0) throw std::runtime_error("Invalid disk-v1 initial-image TLV key");
                 std::memcpy(&offset, raw + 16, sizeof(offset));
                 key = expectedKey;
             } else {
-                std::memcpy(&key, raw + 8, sizeof(key));
-                std::memcpy(&offset, raw + 12, sizeof(offset));
+                std::uint32_t runtimeKey = 0;
+                std::uint32_t runtimeOffset = 0;
+                std::memcpy(&runtimeKey, raw + 8, sizeof(runtimeKey));
+                std::memcpy(&runtimeOffset, raw + 12, sizeof(runtimeOffset));
+                key = runtimeKey;
+                offset = runtimeOffset;
             }
             if (key != expectedKey || offset >= templateSize) {
                 throw std::runtime_error("Invalid initial-image TLV descriptor");
@@ -3703,6 +3730,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             const bool diskV1 = image.cache_reader->newFormatTlvs() !=
                 std::optional<bool>{true};
+            const auto assignedFallback = cachedV1TlvKeys.find(header);
+            const bool zeroKeyV2Fallback = !diskV1 &&
+                assignedFallback != cachedV1TlvKeys.end();
+            if (zeroKeyV2Fallback) {
+                const auto path = image.image_paths.find(header);
+                dyldBootstrapTrace.metadata("cached-tlv-fallback",
+                    path == image.image_paths.end() ? std::string("<unknown>") : path->second,
+                    "cache-v2", "disk-v1-key-zero-unoptimized");
+            }
             if (metadata.template_size == 0 || metadata.template_alignment == 0 ||
                 (metadata.template_alignment & (metadata.template_alignment - 1)) != 0) {
                 throw std::runtime_error("Invalid cached initial-image TLV geometry");
@@ -3714,12 +3750,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto* raw = guestMemory.buffer(begin + offset, 24);
                     std::uint32_t key = 0;
                     std::memcpy(&key, raw + 8, sizeof(key));
-                    if (key == 0 && diskV1) {
-                        const auto assigned = cachedV1TlvKeys.find(header);
-                        if (assigned == cachedV1TlvKeys.end()) {
+                    if (key == 0) {
+                        if (assignedFallback == cachedV1TlvKeys.end()) {
+                            const auto path = image.image_paths.find(header);
+                            std::uint64_t diskKey = 0;
+                            const auto diskDescriptor = image.cache_reader->bytes(
+                                image.cache_reader->originalAddress(
+                                    static_cast<std::int64_t>(begin + offset)), 8);
+                            if (diskDescriptor.size() == sizeof(diskKey)) {
+                                std::memcpy(&diskKey, diskDescriptor.data(), sizeof(diskKey));
+                            }
+                            dyldBootstrapTrace.metadata("cached-tlv-missing-key",
+                                path == image.image_paths.end() ? std::string("<unknown>") : path->second,
+                                diskV1 ? "cache-v1" : "cache-v2",
+                                diskKey == 0
+                                    ? (diskV1 ? "disk-v1-key-zero-no-assignment"
+                                              : "cache-v2-disk-v1-key-zero-no-assignment")
+                                    : "cache-v2-resident-key-zero-disk-key-nonzero");
                             throw std::runtime_error("Cached initial-image TLV has no key");
                         }
-                        key = assigned->second;
+                        key = assignedFallback->second;
                     }
                     if (key == 0) throw std::runtime_error("Cached initial-image TLV has no key");
                     if (imageKey && *imageKey != key) {
@@ -3749,7 +3799,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             for (const auto& [begin, length] : metadata.thunk_ranges) {
                 for (std::uint64_t offset = 0; offset < length; offset += 24) {
                     initializeDescriptor(begin + offset, *imageKey,
-                                          metadata.template_size, diskV1);
+                                          metadata.template_size,
+                                          diskV1 || zeroKeyV2Fallback);
                 }
             }
         }
@@ -7079,13 +7130,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 for (const auto& [begin, size] : metadata.thunk_ranges) {
                     geometry.thunkRanges.push_back({begin, size});
                 }
-                const auto parsed = parse_guest_tlv_descriptor(
-                    descriptor, descriptorAddress, GuestTlvDescriptorFormat::runtimeV2,
+                const auto assignedFallback = cachedV1TlvKeys.find(cachedOwner->first);
+                auto parsed = parse_guest_tlv_descriptor(
+                    descriptor, descriptorAddress,
+                    assignedFallback == cachedV1TlvKeys.end()
+                        ? GuestTlvDescriptorFormat::runtimeV2
+                        : GuestTlvDescriptorFormat::diskV1,
                     geometry);
-                const auto staticOwner = cachedStaticTlvOwners.find(parsed.key);
-                if (staticOwner == cachedStaticTlvOwners.end() ||
-                    staticOwner->second != cachedOwner->first) {
-                    throw std::runtime_error("Cached v2 guest TLV key conflicts with its owner");
+                if (assignedFallback != cachedV1TlvKeys.end()) {
+                    if (parsed.key != 0) {
+                        throw std::runtime_error(
+                            "Cached unoptimized v2 TLV disk key is not zero");
+                    }
+                    parsed.key = assignedFallback->second;
+                } else {
+                    const auto staticOwner = cachedStaticTlvOwners.find(parsed.key);
+                    if (staticOwner == cachedStaticTlvOwners.end() ||
+                        staticOwner->second != cachedOwner->first) {
+                        throw std::runtime_error(
+                            "Cached v2 guest TLV key conflicts with its owner");
+                    }
                 }
                 if (registeredCachedTlvImages.find(cachedOwner->first) ==
                     registeredCachedTlvImages.end()) {
