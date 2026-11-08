@@ -197,9 +197,8 @@ void decode_reachable(const ExecutableImage& image,
                        pc >= SharedCache::guestBase && image.is_code(pc)) {
                 instruction = decode_process(image.instruction(pc), pc, imports, guestStubs, true);
                 auto host = hostCall(import->second, std::nullopt, true);
-                constexpr std::uint64_t mappingBase = std::uint64_t{1} << 45U;
-                const auto lower = mappingBase + image.cache_backing_end();
-                const auto upper = mappingBase + image.mapping_backing_end();
+                const auto lower = guestMappingBase + image.cache_backing_end();
+                const auto upper = guestMappingBase + image.mapping_backing_end();
                 host.code.insert(host.code.begin(),
                     "if (x[0] < " + std::to_string(lower) + "ul || x[0] >= " +
                     std::to_string(upper) + "ul) {");
@@ -2443,6 +2442,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         image.mapping_backing_end() > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::runtime_error("Guest mapping backing exceeds allocator range");
     }
+    if (image.mapping_backing_end() > guestMappingLimit - guestMappingBase) {
+        throw std::runtime_error("Guest mapping arena exceeds the allocator address limit");
+    }
     GuestHeap mappingHeap({static_cast<std::int64_t>(image.cache_backing_end() + 40),
                            static_cast<std::int64_t>(image.mapping_backing_end())});
     std::uint64_t namedImagePlacementCursor = std::uint64_t{1} << 46U;
@@ -4463,7 +4465,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         publishVmRegion({static_cast<std::uint64_t>(address), end, backing, true, writable, false});
         syncResidentTable();
     };
-    constexpr std::uint64_t guestMappingBase = std::uint64_t{1} << 45U;
     constexpr std::uint32_t kernSuccess = 0;
     constexpr std::uint32_t kernInvalidAddress = 1;
     constexpr std::uint32_t kernProtectionFailure = 2;

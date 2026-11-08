@@ -65,7 +65,7 @@ let hostServiceIDs = [
 
 ]
 
-let guestMappingBase = 1 << 45
+let guestMappingBase = 1 << 44
 
 private let patternWidths = ["_memset_pattern4": 4, "_memset_pattern8": 8, "_memset_pattern16": 16]
 let guestMemoryImports = Set(["_memcpy", "_memmove", "_memset", "_bzero"])
