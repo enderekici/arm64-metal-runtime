@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -437,6 +437,10 @@ $(BUILD_DIR)/mach-vm-sparse-reservation-native: ../fixtures/handoff/mach-vm-spar
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
+$(BUILD_DIR)/mach-vm-region-native: ../fixtures/handoff/mach-vm-region.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
 $(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
@@ -453,6 +457,11 @@ verify-mach-vm-sparse-reservation-native: $(BUILD_DIR)/mach-vm-sparse-reservatio
 	"$(BUILD_DIR)/mach-vm-sparse-reservation-native" >"$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
 	printf '%s\n' 'reserve_align32m=1 fixed_24g=0 fixed_exact=1' 'fixed_overlap=3 protect_none_to_rw=2 overwrite_tag2=0 zero_fill=1 write_read=1 left_reserved_read=1 right_reserved_read=1 left_fixed_overlap=3 right_fixed_overlap=3 overwrite_tag2_mte=0 repeated_overwrite=0 repeated_zero=1' 'multi_owner_overwrite=0 exact=1 protect_mixed_none=0 zero=1/1/1 reads=0/0/0' 'adjacent_owners=0/0 protect_cross=0 query=0/0 current=1/1' 'reserved_fixed=3 partial_deallocate=0 failed_owner_hole=3 marker=0:6c hole=1 reuse=0 exact=1 zero=1' 'prefix_map=0 deallocate=0 reuse=0 exact=1 zero=1 suffix=0:7b' 'deallocate=0 fixed_reuse=0 reuse_exact=1' 'protect_commit_map=0 protect_rw=0 write_read=1 deallocate=0' 'anywhere_4m=0 aligned4m=1' 'anywhere_mte=0' 'anywhere_purgable=0' >"$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out" "$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
+
+verify-mach-vm-region-native: $(BUILD_DIR)/mach-vm-region-native
+	"$(BUILD_DIR)/mach-vm-region-native" >"$(BUILD_DIR)/mach-vm-region.native.out"
+	printf '%s\n' 'reserve=0 owners=0/0 deallocate_hole=0 queries=1/1/1/1' 'errors task=268435459/1 flavor=4/1 count=4/1' >"$(BUILD_DIR)/mach-vm-region.expected.out"
+	cmp "$(BUILD_DIR)/mach-vm-region.expected.out" "$(BUILD_DIR)/mach-vm-region.native.out"
 
 HOST_VM_SERVICE_TEST := $(BUILD_DIR)/host-vm-service-test
 MACH_VM_READ_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-read-overwrite

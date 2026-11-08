@@ -667,3 +667,12 @@ The native fixture covers overlapping source/destination, invalid source and
 destination ranges, preserved output size on failure, invalid task handling,
 and the named protect wrapper. The CPU test calls the registered host services
 directly and checks copyout behavior without dispatching a Metal kernel.
+
+## Named Mach VM region query
+
+`mach-vm-region.c` queries the logical VM map through `_mach_vm_region`. Its
+native oracle checks a reserved interval, two mapped owners, the next region
+after a deallocated hole, basic-info count and offset fields, a null object
+name, and atomic error replies for an invalid task, flavor, or info count. Run
+the native oracle with `make -C cpp verify-mach-vm-region-native`. Guest runtime
+parity is a separate replay gate.

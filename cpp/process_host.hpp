@@ -175,6 +175,16 @@ struct HostServiceResult {
     std::int32_t exitStatus = 0;
 };
 
+struct HostMachVmRegion {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+    std::uint64_t offset = 0;
+    std::uint32_t protection = 0;
+    std::uint32_t maximumProtection = 0;
+    std::uint32_t inheritance = 0;
+    std::uint32_t tag = 0;
+};
+
 // Host resources with guest-process lifetime. Guest FILE* values are opaque
 // synthetic addresses and never expose host pointers to guest code.
 struct HostServiceState {
@@ -224,6 +234,7 @@ struct HostServiceState {
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
                                 bool setMaximum, std::uint32_t protection)> machVmProtect;
+    std::function<std::optional<HostMachVmRegion>(std::uint64_t guestAddress)> machVmRegion;
     std::uint64_t nextFile = 0x7000000000000000ULL;
     std::size_t optionIndex = 1;
     std::size_t optionOffset = 1;

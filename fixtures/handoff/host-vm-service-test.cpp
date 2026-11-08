@@ -8,14 +8,18 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <mach/mach.h>
+#include <mach/vm_statistics.h>
 
 using namespace arm64metal;
 
 int main() {
   assert(decoder_host_service_ids().at("_mach_vm_protect") == 196);
   assert(decoder_host_service_ids().at("_mach_vm_read_overwrite") == 197);
+  assert(decoder_host_service_ids().at("_mach_vm_region") == 198);
   assert(runner_host_service_ids().at("_mach_vm_protect") == 196);
   assert(runner_host_service_ids().at("_mach_vm_read_overwrite") == 197);
+  assert(runner_host_service_ids().at("_mach_vm_region") == 198);
 
   std::vector<std::uint8_t> borrowedBytes(256, 0x31);
   std::vector<std::uint8_t> expandedBytes(512, 0x31);
@@ -62,6 +66,64 @@ int main() {
   registers[0] = 78;
   (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 196);
   assert(registers[0] == 0x10000003U);
+
+  state.machVmRegion = [](std::uint64_t address) -> std::optional<HostMachVmRegion> {
+    if (address < 0x4000 || address >= 0x6000) return std::nullopt;
+    return HostMachVmRegion{0x4000, 0x6000, 0, 3, 7, VM_INHERIT_SHARE, 2};
+  };
+  std::uint64_t queryAddress = 0x5000;
+  std::uint64_t querySize = 0;
+  std::uint32_t queryCount = VM_REGION_BASIC_INFO_COUNT_64;
+  const std::uint32_t objectSentinel = 0x1234;
+  std::memcpy(protectMemory.buffer(40, sizeof(queryAddress), true), &queryAddress,
+              sizeof(queryAddress));
+  std::memcpy(protectMemory.buffer(48, sizeof(querySize), true), &querySize,
+              sizeof(querySize));
+  std::memcpy(protectMemory.buffer(56, sizeof(queryCount), true), &queryCount,
+              sizeof(queryCount));
+  std::memcpy(protectMemory.buffer(60, sizeof(objectSentinel), true), &objectSentinel,
+              sizeof(objectSentinel));
+  registers[0] = bootstrap.guestTaskPort;
+  registers[1] = 40;
+  registers[2] = 48;
+  registers[3] = VM_REGION_BASIC_INFO_64;
+  registers[4] = 64;
+  registers[5] = 56;
+  registers[6] = 60;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 198);
+  assert(registers[0] == 0);
+  std::memcpy(&queryAddress, protectMemory.buffer(40, sizeof(queryAddress)),
+              sizeof(queryAddress));
+  std::memcpy(&querySize, protectMemory.buffer(48, sizeof(querySize)), sizeof(querySize));
+  std::memcpy(&queryCount, protectMemory.buffer(56, sizeof(queryCount)), sizeof(queryCount));
+  std::uint32_t objectName = objectSentinel;
+  std::memcpy(&objectName, protectMemory.buffer(60, sizeof(objectName)), sizeof(objectName));
+  vm_region_basic_info_data_64_t queryInfo{};
+  std::memcpy(&queryInfo, protectMemory.buffer(64, sizeof(queryInfo)), sizeof(queryInfo));
+  assert(queryAddress == 0x4000 && querySize == 0x2000 &&
+         queryCount == VM_REGION_BASIC_INFO_COUNT_64 && objectName == MACH_PORT_NULL &&
+         queryInfo.protection == 3 && queryInfo.max_protection == 7 &&
+         queryInfo.inheritance == VM_INHERIT_SHARE && queryInfo.offset == 0 &&
+         !queryInfo.shared && queryInfo.behavior == VM_BEHAVIOR_DEFAULT);
+
+  queryAddress = 0x5000;
+  querySize = 77;
+  queryCount = VM_REGION_BASIC_INFO_COUNT_64;
+  objectName = objectSentinel;
+  std::memcpy(protectMemory.buffer(40, sizeof(queryAddress), true), &queryAddress,
+              sizeof(queryAddress));
+  std::memcpy(protectMemory.buffer(48, sizeof(querySize), true), &querySize,
+              sizeof(querySize));
+  std::memcpy(protectMemory.buffer(60, sizeof(objectName), true), &objectName,
+              sizeof(objectName));
+  registers[0] = 78;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 198);
+  assert(registers[0] == 0x10000003U);
+  std::memcpy(&queryAddress, protectMemory.buffer(40, sizeof(queryAddress)),
+              sizeof(queryAddress));
+  std::memcpy(&querySize, protectMemory.buffer(48, sizeof(querySize)), sizeof(querySize));
+  std::memcpy(&objectName, protectMemory.buffer(60, sizeof(objectName)), sizeof(objectName));
+  assert(queryAddress == 0x5000 && querySize == 77 && objectName == objectSentinel);
 
   std::vector<std::uint8_t> initial(256, 0);
   std::memcpy(initial.data() + 32, "abcdefgh", 8);

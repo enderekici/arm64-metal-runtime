@@ -2243,6 +2243,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t maximumProtection;
         std::uint32_t inheritance;
         std::uint32_t tag;
+        std::uint64_t offset = 0;
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
     std::map<std::uint64_t, VmReservation> vmReservations;
@@ -3659,7 +3660,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         try {
             const auto [unused, inserted] = vmReservations.emplace(address,
                 VmReservation{address, end, currentProtection, maximumProtection,
-                              inheritance, tag});
+                              inheritance, tag, 0});
             (void)unused;
             return inserted ? kernSuccess : kernNoSpace;
         } catch (...) {
@@ -4071,6 +4072,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         if (reservation.end > middleEnd) {
                             auto right = reservation;
                             right.begin = middleEnd;
+                            right.offset += middleEnd - reservation.begin;
                             stagedReservations.emplace(right.begin, right);
                         }
                     }
@@ -4431,6 +4433,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (reservation.end > end) {
                     auto right = reservation;
                     right.begin = end;
+                    right.offset += end - reservation.begin;
                     stagedReservations.emplace(right.begin, right);
                 }
             }
@@ -4695,12 +4698,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     auto middle = old;
                     middle.begin = middleBegin;
                     middle.end = middleEnd;
+                    middle.offset += middleBegin - old.begin;
                     if (setMaximum) middle.maximumProtection = protection;
                     middle.currentProtection = 0;
                     stagedReservations.emplace(middle.begin, middle);
                     if (middleEnd < old.end) {
                         auto right = old;
                         right.begin = middleEnd;
+                        right.offset += middleEnd - old.begin;
                         stagedReservations.emplace(right.begin, right);
                     }
                 }
@@ -4826,6 +4831,93 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         syncResidentTable();
         return kernSuccess;
+    };
+    hostServiceState.machVmRegion = [&](std::uint64_t address)
+        -> std::optional<HostMachVmRegion> {
+        std::map<std::pair<std::uint64_t, std::uint64_t>, HostMachVmRegion> intervals;
+        for (std::size_t index = 0; index < resident[0]; ++index) {
+            const auto row = 1 + 4 * index;
+            const auto begin = resident[row];
+            const auto end = resident[row + 1];
+            const auto flags = resident[row + 3];
+            if (begin >= end) continue;
+            HostMachVmRegion region;
+            region.begin = begin;
+            region.end = end;
+            region.protection = ((flags & 2U) == 0 ? 1U : 0U) |
+                ((flags & 1U) != 0 ? 2U : 0U);
+            region.maximumProtection = region.protection;
+            region.inheritance = 1;
+            intervals[{begin, end}] = region;
+        }
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            for (const auto& mapped : allocation.regions) {
+                if (mapped.begin >= mapped.end) continue;
+                HostMachVmRegion region;
+                region.begin = mapped.begin;
+                region.end = mapped.end;
+                region.protection = (mapped.readable ? 1U : 0U) |
+                    (mapped.writable ? 2U : 0U) | (mapped.executable ? 4U : 0U);
+                region.maximumProtection = mapped.maximumProtection;
+                region.inheritance = mapped.inheritance;
+                region.tag = mapped.tag;
+                for (const auto& lease : allocation.ownedBackings) {
+                    if (mapped.backing >= static_cast<std::size_t>(lease.backing) &&
+                        mapped.backing - static_cast<std::size_t>(lease.backing) < lease.size) {
+                        region.offset = mapped.backing -
+                            static_cast<std::size_t>(lease.backing);
+                        break;
+                    }
+                }
+                intervals[{region.begin, region.end}] = region;
+            }
+        }
+        for (const auto& [unused, reservation] : vmReservations) {
+            (void)unused;
+            if (reservation.begin >= reservation.end) continue;
+            HostMachVmRegion region;
+            region.begin = reservation.begin;
+            region.end = reservation.end;
+            region.protection = reservation.currentProtection;
+            region.maximumProtection = reservation.maximumProtection;
+            region.inheritance = reservation.inheritance;
+            region.offset = reservation.offset;
+            region.tag = reservation.tag;
+            intervals[{region.begin, region.end}] = region;
+        }
+        std::vector<HostMachVmRegion> ordered;
+        ordered.reserve(intervals.size());
+        for (const auto& [unused, region] : intervals) {
+            (void)unused;
+            ordered.push_back(region);
+        }
+        const auto found = std::find_if(ordered.begin(), ordered.end(),
+            [address](const HostMachVmRegion& region) { return region.end > address; });
+        if (found == ordered.end()) return std::nullopt;
+        auto result = *found;
+        const auto sameRegionInfo = [](const HostMachVmRegion& left,
+                                       const HostMachVmRegion& right) {
+            return left.protection == right.protection &&
+                left.maximumProtection == right.maximumProtection &&
+                left.inheritance == right.inheritance && left.tag == right.tag &&
+                left.offset + (left.end - left.begin) == right.offset;
+        };
+        const auto foundIndex = static_cast<std::size_t>(found - ordered.begin());
+        auto firstIndex = foundIndex;
+        while (firstIndex > 0 && ordered[firstIndex - 1].end == result.begin &&
+               sameRegionInfo(ordered[firstIndex - 1], result)) {
+            result.begin = ordered[firstIndex - 1].begin;
+            result.offset = ordered[firstIndex - 1].offset;
+            --firstIndex;
+        }
+        auto lastIndex = foundIndex;
+        while (lastIndex + 1 < ordered.size() && result.end == ordered[lastIndex + 1].begin &&
+               sameRegionInfo(result, ordered[lastIndex + 1])) {
+            result.end = ordered[lastIndex + 1].end;
+            ++lastIndex;
+        }
+        return result;
     };
     bool activeJitWriteProtection = true;
     applyJitWriteProtection = [&](bool enabled) {

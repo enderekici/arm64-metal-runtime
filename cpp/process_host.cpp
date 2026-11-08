@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <mach/mach_time.h>
 #include <mach/mach.h>
+#include <mach/vm_statistics.h>
 #include <bootstrap.h>
 #include <sys/stat.h>
 #include <sys/attr.h>
@@ -2331,6 +2332,68 @@ HostServiceResult dispatch_guest_host_service(
                 std::memcpy(copiedSize, &copied, sizeof(copied));
                 registers[0] = 0;
             }
+            break;
+        }
+        case 198: {  // mach_vm_region over logical guest map and reservation intervals
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidAddress = 1;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+                break;
+            }
+            if (registers[3] != VM_REGION_BASIC_INFO_64) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            std::uint32_t count = 0;
+            try {
+                std::memcpy(&count, memory.buffer(registers[5], sizeof(count)), sizeof(count));
+            } catch (const std::exception&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            if (count < VM_REGION_BASIC_INFO_COUNT_64) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            mach_vm_address_t* address = nullptr;
+            mach_vm_size_t* size = nullptr;
+            vm_region_basic_info_data_64_t* info = nullptr;
+            mach_port_t* object = nullptr;
+            try {
+                address = reinterpret_cast<mach_vm_address_t*>(
+                    memory.buffer(registers[1], sizeof(*address), true));
+                size = reinterpret_cast<mach_vm_size_t*>(
+                    memory.buffer(registers[2], sizeof(*size), true));
+                info = reinterpret_cast<vm_region_basic_info_data_64_t*>(
+                    memory.buffer(registers[4], sizeof(*info), true));
+                count = VM_REGION_BASIC_INFO_COUNT_64;
+                object = reinterpret_cast<mach_port_t*>(
+                    memory.buffer(registers[6], sizeof(*object), true));
+            } catch (const std::exception&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            const auto region = state.machVmRegion
+                ? state.machVmRegion(*address) : std::nullopt;
+            if (!region) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            vm_region_basic_info_data_64_t result{};
+            result.protection = static_cast<vm_prot_t>(region->protection);
+            result.max_protection = static_cast<vm_prot_t>(region->maximumProtection);
+            result.inheritance = static_cast<vm_inherit_t>(region->inheritance);
+            result.offset = region->offset;
+            result.behavior = VM_BEHAVIOR_DEFAULT;
+            result.user_wired_count = 0;
+            *address = region->begin;
+            *size = region->end - region->begin;
+            *info = result;
+            *object = MACH_PORT_NULL;
+            std::memcpy(memory.buffer(registers[5], sizeof(count), true), &count, sizeof(count));
+            registers[0] = 0;
             break;
         }
         case 116: {  // mprotect on anonymous guest VM mappings
