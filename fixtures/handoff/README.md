@@ -509,14 +509,23 @@ sentinels null_send=0:1 dead_send=0:1 null_receive_invalid=1 dead_name_invalid=1
 errors unknown=1 invalid_task=1 host_task=1 right=1 send_once=0:0 port_set=0:0
 ```
 
+Status is 0. The strict guest error precedence is separate from this MIG
+message; public self wrappers have their own control below.
+
+`mach-port-get-refs-special.c` is the reduced MIG 3207 control: it asks only
+for the current task's send urefs, with no port allocation, insertion, or
+deallocation. Native output is `task_send_refs_result=0 valid=1`; status is 0.
+Use this fixture for the focused cached 3207 gate, separately from raw trap
+`-19` rights-lifecycle coverage below.
+
 ## Public Mach host and thread self wrappers
 
 `mach-public-self.c` calls the executable-imported `_mach_host_self` and
-`_mach_thread_self` wrappers, then checks that each returns the stable guest
-name and increments the same guest send-right reference state used by raw
-traps. It releases a baseline right before checking the net reference delta.
-`_mach_task_self_` remains a modeled data symbol. This is local namespace
-coverage; it makes no host service connection.
+`_mach_thread_self` wrappers, checks for non-sentinel stable names, then releases
+each acquired right through `mach_port_deallocate`. `_mach_task_self_` remains a
+modeled data symbol. The fixture avoids the separate `_mach_port_get_refs`
+executable import, so it isolates the public self wrappers and deallocation
+path. It makes no host service connection.
 
 ```sh
 xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
@@ -525,7 +534,32 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 ```
 
 Native normalized output is
-`host_same=1 host_delta=1 thread_same=1 thread_delta=1`; status is 0.
+`task_valid=1 host_valid=1 host_same=1 thread_valid=1 thread_same=1 releases=1`;
+status is 0.
 
-Status is 0. The strict guest error precedence is separate from this MIG
-message; public self wrappers have their own control below.
+## Raw Mach port reference modification (`-19`)
+
+`mach-port-mod-refs.c` uses the SDK-declared raw
+`_kernelrpc_mach_port_mod_refs_trap(target, name, right, delta)` ABI and raw
+receive allocation. It covers send uref increment/decrement, underflow and
+oversized-delta errors, invalid target/name/right ordering, null/dead send
+sentinels, the receive-right decrement lifecycle, and dead-name uref increment
+and decrement after receive destruction. Send-once mutation remains outside
+this supported slice.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-mod-refs.c -o /tmp/mach-port-mod-refs
+/tmp/mach-port-mod-refs
+```
+
+Native normalized output:
+
+```text
+send plus=0 minus=0 underflow=18 oversized_delta=18
+errors target=268435459 unknown=15 right=18 unsupported=17/15 sentinels null=0 dead=0
+receive allocate=0 zero=0 plus=18 minus=0 missing=15
+dead allocate=0 insert=0 destroy=0 send=17 receive=17 send_once=17 refs=0/0/0 missing=15
+```
+
+Status is 0.

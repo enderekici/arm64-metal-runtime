@@ -2006,10 +2006,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::set<std::uint64_t> guestWorkqueueThreadIds;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
+    constexpr auto maxGuestPortUrefs =
+        static_cast<std::uint32_t>(std::numeric_limits<mach_port_urefs_t>::max());
     const auto acquireGuestFixedSendRight = [&](std::uint32_t name) {
         auto& references = guestSendRightUrefs[name];
         if (references == 0) references = 1;
-        else if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
+        else if (references < maxGuestPortUrefs) ++references;
         return name;
     };
     const auto acquireGuestThreadSendRight = [&](std::uint64_t threadId) {
@@ -2025,7 +2027,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             guestSendRightUrefs.emplace(name, 0);
         }
         auto& references = guestSendRightUrefs[threadPort->second];
-        if (references == std::numeric_limits<std::uint32_t>::max()) return std::uint32_t{0};
+        if (references == maxGuestPortUrefs) return std::uint32_t{0};
         ++references;
         return threadPort->second;
     };
@@ -7208,6 +7210,131 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     } else {
                         result = kernInvalidName;
                     }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-19))) {
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint32_t machPortNull = 0;
+                constexpr std::uint32_t machPortDead =
+                    std::numeric_limits<std::uint32_t>::max();
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                const auto right = static_cast<mach_port_right_t>(registers[2]);
+                const auto delta = static_cast<std::int32_t>(registers[3]);
+                std::uint64_t result = 0;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else if (right >= MACH_PORT_RIGHT_NUMBER) {
+                    result = kernInvalidValue;
+                } else if (name == machPortNull || name == machPortDead) {
+                    result = right == MACH_PORT_RIGHT_SEND ? 0 : kernInvalidName;
+                } else if (right == MACH_PORT_RIGHT_SEND) {
+                    const auto sendRight = guestSendRightUrefs.find(name);
+                    if (guestDeadPortNames.find(name) != guestDeadPortNames.end()) {
+                        result = kernInvalidRight;
+                    } else if (sendRight == guestSendRightUrefs.end() ||
+                               sendRight->second == 0) {
+                        result = kernInvalidName;
+                    } else if (delta > static_cast<std::int32_t>(maxGuestPortUrefs)) {
+                        result = kernInvalidValue;
+                    } else {
+                        const auto current = static_cast<std::int64_t>(sendRight->second);
+                        const auto updated = current + static_cast<std::int64_t>(delta);
+                        if (updated < 0) {
+                            result = kernInvalidValue;
+                        } else if (updated == 0) {
+                            const auto hostRight =
+                                hostServiceState.guestBootstrapSendRights.find(name);
+                            if (hostRight != hostServiceState.guestBootstrapSendRights.end()) {
+                                (void)mach_port_deallocate(mach_task_self(), hostRight->second);
+                                hostServiceState.guestBootstrapSendRights.erase(hostRight);
+                            }
+                            if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
+                                sendRight->second = 0;
+                            } else {
+                                guestSendRightUrefs.erase(sendRight);
+                                guestDeadPortNames.erase(name);
+                            }
+                        } else {
+                            sendRight->second = static_cast<std::uint32_t>(std::min<std::int64_t>(
+                                updated, maxGuestPortUrefs));
+                        }
+                    }
+                } else if (right == MACH_PORT_RIGHT_RECEIVE) {
+                    const auto receiveRight = guestReceiveRights.find(name);
+                    if (receiveRight == guestReceiveRights.end()) {
+                        result = guestDeadPortNames.find(name) != guestDeadPortNames.end()
+                            ? kernInvalidRight : kernInvalidName;
+                    } else if (delta == 0) {
+                        result = 0;
+                    } else if (delta != -1) {
+                        result = kernInvalidValue;
+                    } else {
+                        const auto waiting = guestMachReceiveWaiters.find(name);
+                        if (waiting != guestMachReceiveWaiters.end()) {
+                            for (const auto threadId : waiting->second) {
+                                const auto blocked = guestMachBlockedReceives.find(threadId);
+                                auto* thread = guestScheduler.find(threadId);
+                                const auto* receiveWait = thread != nullptr &&
+                                        thread->wait.has_value()
+                                    ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+                                if (blocked != guestMachBlockedReceives.end() &&
+                                    receiveWait != nullptr && receiveWait->port == name) {
+                                    guestMachBlockedReceives.erase(blocked);
+                                    guestScheduler.wake(threadId,
+                                        static_cast<std::int32_t>(machReceivePortChanged));
+                                }
+                            }
+                            guestMachReceiveWaiters.erase(waiting);
+                        }
+                        const auto sendRight = guestSendRightUrefs.find(name);
+                        if (sendRight != guestSendRightUrefs.end() &&
+                            sendRight->second != 0) {
+                            guestDeadPortNames.insert(name);
+                        } else if (sendRight != guestSendRightUrefs.end()) {
+                            guestSendRightUrefs.erase(sendRight);
+                        }
+                        guestReceiveRights.erase(receiveRight);
+                        guestMachMessageQueues.erase(name);
+                    }
+                } else if (right == MACH_PORT_RIGHT_DEAD_NAME) {
+                    const auto deadName = guestDeadPortNames.find(name);
+                    const auto deadRefs = guestSendRightUrefs.find(name);
+                    if (deadName == guestDeadPortNames.end() ||
+                        deadRefs == guestSendRightUrefs.end() || deadRefs->second == 0) {
+                        const bool known = guestReceiveRights.find(name) !=
+                                guestReceiveRights.end() ||
+                            guestSendRightUrefs.find(name) != guestSendRightUrefs.end();
+                        result = known ? kernInvalidRight : kernInvalidName;
+                    } else if (delta > static_cast<std::int32_t>(maxGuestPortUrefs)) {
+                        result = kernInvalidValue;
+                    } else {
+                        const auto updated = static_cast<std::int64_t>(deadRefs->second) +
+                                             static_cast<std::int64_t>(delta);
+                        if (updated < 0) {
+                            result = kernInvalidValue;
+                        } else if (updated == 0) {
+                            guestDeadPortNames.erase(deadName);
+                            guestSendRightUrefs.erase(deadRefs);
+                        } else {
+                            deadRefs->second = static_cast<std::uint32_t>(std::min<std::int64_t>(
+                                updated, maxGuestPortUrefs));
+                        }
+                    }
+                } else if (guestReceiveRights.find(name) == guestReceiveRights.end() &&
+                           guestSendRightUrefs.find(name) == guestSendRightUrefs.end() &&
+                           guestDeadPortNames.find(name) == guestDeadPortNames.end()) {
+                    result = kernInvalidName;
+                } else {
+                    result = kernInvalidRight;
                 }
                 registers[0] = result;
                 registers[34] = 0;
