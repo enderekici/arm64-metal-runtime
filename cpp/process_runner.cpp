@@ -4459,6 +4459,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     static_cast<std::int64_t>(pageSize));
             } else {
                 allocated = mappingHeap.allocate(size, static_cast<std::int64_t>(pageSize));
+                if (!allocated && resident[0] + 1 < residentCapacity &&
+                    extendVmBacking(size)) {
+                    allocated = mappingHeap.allocate(size, static_cast<std::int64_t>(pageSize));
+                }
             }
             if (!allocated) return kernNoSpace;
             const auto backing = static_cast<std::size_t>(*allocated);
