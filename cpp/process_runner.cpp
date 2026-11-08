@@ -986,6 +986,8 @@ DyldApisFacade initialize_dyld_apis(
     const auto activePlatformService = addSyntheticService("__guest_dyld_get_active_platform");
     const auto simulatorPlatformService = addSyntheticService(
         "__guest_dyld_is_simulator_platform");
+    const auto bulkImageService = addSyntheticService(
+        "__dyld_register_for_bulk_image_loads");
 
     constexpr std::uint64_t objectBytes = 16;
     constexpr std::uint64_t vtableBytes = 0x428;
@@ -1014,6 +1016,8 @@ DyldApisFacade initialize_dyld_apis(
     const auto simulatorPlatformSlot = vtable + 0x220;
     const auto simulatorPlatformModifier =
         (simulatorPlatformSlot & addressMask) | 0x198a000000000000ULL;
+    const auto bulkImageSlot = vtable + 0x290;
+    const auto bulkImageModifier = (bulkImageSlot & addressMask) | 0x8dec000000000000ULL;
     store_u64(bootstrap.memory, basePlatformSlot,
               append_guest_pointer_token(bootstrap, basePlatformService, 0,
                                          basePlatformModifier));
@@ -1023,6 +1027,9 @@ DyldApisFacade initialize_dyld_apis(
     store_u64(bootstrap.memory, simulatorPlatformSlot,
               append_guest_pointer_token(bootstrap, simulatorPlatformService, 0,
                                          simulatorPlatformModifier));
+    store_u64(bootstrap.memory, bulkImageSlot,
+              append_guest_pointer_token(bootstrap, bulkImageService, 0,
+                                         bulkImageModifier));
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
@@ -1782,7 +1789,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
-    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 6U : 0U;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 7U : 0U;
     if (image.authentication.size() >
         std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
         throw std::length_error("Initial guest authentication table size overflow");
@@ -2253,6 +2260,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::array<std::uint64_t, 4> arguments{};
     };
     std::vector<std::uint64_t> addImageCallbacks;
+    std::vector<std::uint64_t> bulkImageCallbacks;
+    std::vector<std::vector<std::uint64_t>> bulkImageCallbackLeases;
     const auto collectImageNotifications = [&](std::size_t firstImage,
                                                std::size_t endImage,
                                                std::size_t firstCallback) {
@@ -3229,6 +3238,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t nextInitializer = 0;
         std::vector<GuestImageNotification> imageNotifications;
         std::size_t nextImageNotification = 0;
+        std::vector<std::uint64_t> bulkImageCallbacks;
+        std::size_t nextBulkImageCallback = 0;
+        std::vector<std::uint64_t> temporaryGuestAllocations;
+        std::vector<std::uint64_t> activeBulkImageCallbackLease;
+        bool registerBulkImageCallbackAfterReturn = false;
         std::optional<std::uint64_t> stopAddress;
         std::optional<std::uint64_t> exitDso;
         std::vector<std::uint64_t> exitImages;
@@ -4563,6 +4577,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (frame.stopAddress && hostServiceState.heap) {
                 hostServiceState.heap->release(static_cast<std::int64_t>(*frame.stopAddress));
             }
+            for (const auto allocation : frame.temporaryGuestAllocations) {
+                auto freeRegisters = frame.savedRegisters;
+                freeRegisters[0] = allocation;
+                (void)dispatch_guest_host_service(
+                    freeRegisters, guestMemory, bootstrap, hostServiceState, 56);
+            }
+            for (const auto header : frame.activeBulkImageCallbackLease) {
+                const auto owner = dynamicImageOwners.find(header);
+                if (owner == dynamicImageOwners.end() || owner->second == 0) continue;
+                if (--owner->second == 0) {
+                    dynamicImageOwners.erase(owner);
+                    if (!imageHandles.nodelete(header) &&
+                        !imageHandles.has_open_reference_for_image(header)) {
+                        pendingDynamicUnloads.insert(header);
+                    }
+                }
+            }
+            frame.activeBulkImageCallbackLease.clear();
             if (frame.activeExitCallbackImage) {
                 const auto active = activeImageExitCallbacks.find(
                     *frame.activeExitCallbackImage);
@@ -4629,6 +4661,104 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                   static_cast<std::uint8_t*>(memoryBuffer.data()) + backing);
         publishVmRegion({static_cast<std::uint64_t>(address), end, backing, true, writable, false});
         syncResidentTable();
+    };
+    const auto publishGuestImageHeader = [&](std::size_t index) {
+        const auto header = imageRegistry.header_at(index);
+        if (header && imageRegistry.cache_backed_at(index)) {
+            const auto* cache = image.metadata_cache_reader();
+            if (cache == nullptr) {
+                throw std::runtime_error("Guest cached image header has no shared-cache reader");
+            }
+            const auto headerBytes = cache->bytes(cache->originalAddress(
+                static_cast<std::int64_t>(*header)), 32);
+            const auto read32 = [&headerBytes](std::size_t offset) {
+                std::uint32_t value = 0;
+                for (unsigned byte = 0; byte < 4; ++byte) {
+                    value |= static_cast<std::uint32_t>(headerBytes[offset + byte]) << (byte * 8U);
+                }
+                return value;
+            };
+            const auto commandCount = read32(16);
+            const auto commandBytes = read32(20);
+            if (commandBytes > 1024U * 1024U || commandCount > commandBytes / 8U) {
+                throw std::runtime_error("Invalid cached Mach-O header metadata");
+            }
+            publishCacheMetadata(*cache, static_cast<std::int64_t>(*header),
+                                 32U + commandBytes, false);
+        }
+        if (!header) throw std::logic_error("Guest image registry index disappeared");
+        return *header;
+    };
+    const auto prepareBulkImageCallback = [&](GuestCallbackFrame& frame,
+                                              const std::vector<std::uint64_t>& savedRegisters,
+                                              std::vector<std::uint64_t> callbacks,
+                                              std::size_t firstImage,
+                                              std::size_t endImage,
+                                              bool registerAfterReturn) {
+        if (callbacks.empty()) return;
+        if (endImage < firstImage || endImage - firstImage >
+                std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("Guest bulk image callback count exceeds its ABI width");
+        }
+        const auto count = endImage - firstImage;
+        if (count > std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t)) {
+            throw std::runtime_error("Guest bulk image callback array size overflow");
+        }
+        std::vector<std::string> paths;
+        paths.reserve(count);
+        for (auto index = firstImage; index < endImage; ++index) {
+            const auto name = imageRegistry.name_at(index);
+            if (!name) throw std::logic_error("Guest image registry path disappeared");
+            paths.emplace_back(*name);
+        }
+        const auto headersBytes = std::max<std::size_t>(sizeof(std::uint64_t),
+            count * sizeof(std::uint64_t));
+        const auto pointersBytes = headersBytes;
+        std::vector<std::uint64_t> imageHeaders;
+        std::vector<std::uint64_t> pathAddresses;
+        imageHeaders.reserve(count);
+        pathAddresses.reserve(count);
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            imageHeaders.push_back(publishGuestImageHeader(firstImage + offset));
+            const auto pathAddress = stableGuestString(paths[offset]);
+            if (!pathAddress) {
+                throw std::runtime_error("Guest bulk image callback path allocation failed");
+            }
+            pathAddresses.push_back(*pathAddress);
+        }
+        const auto allocateGuest = [&](std::size_t bytes) {
+            auto allocationRegisters = savedRegisters;
+            allocationRegisters[0] = bytes;
+            const auto result = dispatch_guest_host_service(
+                allocationRegisters, guestMemory, bootstrap, hostServiceState, 26);
+            if (result.exited || allocationRegisters[0] == 0) {
+                throw std::runtime_error("Guest bulk image callback allocation failed");
+            }
+            frame.temporaryGuestAllocations.push_back(allocationRegisters[0]);
+            return allocationRegisters[0];
+        };
+        const auto headers = allocateGuest(headersBytes);
+        const auto pathPointers = allocateGuest(pointersBytes);
+        auto* headerData = guestMemory.buffer(headers, headersBytes, true);
+        auto* pointerData = guestMemory.buffer(pathPointers, pointersBytes, true);
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            std::memcpy(headerData + offset * sizeof(imageHeaders[offset]),
+                        &imageHeaders[offset], sizeof(imageHeaders[offset]));
+            std::memcpy(pointerData + offset * sizeof(pathAddresses[offset]),
+                        &pathAddresses[offset], sizeof(pathAddresses[offset]));
+        }
+        frame.savedRegisters.assign(savedRegisters.begin(), savedRegisters.begin() + 36);
+        frame.savedRegisters[34] = 0;
+        const auto* live = static_cast<const std::uint64_t*>(stateBuffer.data());
+        frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
+        frame.authenticationDepth = live[37];
+        frame.callback = callbacks.front();
+        frame.bulkImageCallbacks = std::move(callbacks);
+        frame.nextBulkImageCallback = 0;
+        frame.arguments.push_back({static_cast<std::uint64_t>(count), headers,
+                                   pathPointers, 0});
+        frame.nextArgument = frame.arguments.size();
+        frame.registerBulkImageCallbackAfterReturn = registerAfterReturn;
     };
     constexpr std::uint32_t kernSuccess = 0;
     constexpr std::uint32_t kernInvalidAddress = 1;
@@ -6627,6 +6757,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     selectKernel(static_cast<std::int64_t>(notification.callback));
                     continue;
                 }
+                if (frame.nextBulkImageCallback < frame.bulkImageCallbacks.size()) {
+                    const auto callback =
+                        frame.bulkImageCallbacks[frame.nextBulkImageCallback++];
+                    callbackFrames.push_back(std::move(frame));
+                    auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                    const auto& pending = callbackFrames.back();
+                    std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
+                              callbackRegisters);
+                    std::copy(pending.savedVectorAndAuth.begin(),
+                              pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                    callbackRegisters[37] = pending.authenticationDepth;
+                    std::copy(pending.arguments.front().begin(),
+                              pending.arguments.front().end(), callbackRegisters);
+                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[33] = callback;
+                    selectKernel(static_cast<std::int64_t>(callback));
+                    continue;
+                }
                 if (frame.nextInitializer < frame.initializerTargets.size()) {
                     const auto target = frame.initializerTargets[frame.nextInitializer++];
                     callbackFrames.push_back(std::move(frame));
@@ -6675,6 +6823,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 if (frame.stopAddress && hostServiceState.heap) {
                     hostServiceState.heap->release(static_cast<std::int64_t>(*frame.stopAddress));
+                }
+                if (frame.registerBulkImageCallbackAfterReturn) {
+                    if (frame.bulkImageCallbacks.size() != 1) {
+                        throw std::logic_error("Invalid deferred bulk image callback registration");
+                    }
+                    if (!frame.activeBulkImageCallbackLease.empty())
+                        bulkImageCallbackLeases.push_back(
+                            std::move(frame.activeBulkImageCallbackLease));
+                    bulkImageCallbacks.push_back(frame.bulkImageCallbacks.front());
+                }
+                for (const auto allocation : frame.temporaryGuestAllocations) {
+                    auto freeRegisters = frame.savedRegisters;
+                    freeRegisters[0] = allocation;
+                    const auto result = dispatch_guest_host_service(
+                        freeRegisters, guestMemory, bootstrap, hostServiceState, 56);
+                    if (result.exited) {
+                        throw std::runtime_error("Guest bulk image callback allocation cleanup failed");
+                    }
                 }
                 auto* restored = static_cast<std::uint64_t*>(stateBuffer.data());
                 std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), restored);
@@ -6869,6 +7035,68 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[0] = dyld_is_simulator_platform(
                         static_cast<std::uint32_t>(hostRegisters[1])) ? 1U : 0U;
                 }
+                continue;
+            }
+            if (service == 216) {
+                const bool cxxMethod = dyldApis.object != 0 &&
+                    hostRegisters[0] == dyldApis.object;
+                auto callback = hostRegisters[cxxMethod ? 1U : 0U];
+                if ((callback & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
+                    const auto authenticated = decode_guest_ia0_callback(
+                        hostRegisters.data(), hostRegisters.size(), callback);
+                    if (!authenticated) {
+                        throw std::runtime_error(
+                            "Bulk image callback authentication failed");
+                    }
+                    callback = *authenticated;
+                } else {
+                    const auto resume = hostRegisters[33];
+                    const auto callerAbi = resume >= 4 && resume - 4 <=
+                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+                        ? image.is_arm64e_code(static_cast<std::int64_t>(resume - 4))
+                        : std::nullopt;
+                    if (!callerAbi || *callerAbi) {
+                        throw std::runtime_error(
+                            "Bulk image callback requires an authenticated IA/0 pointer");
+                    }
+                }
+                if (callback > static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int64_t>::max()) ||
+                    !image.is_code(static_cast<std::int64_t>(callback))) {
+                    throw std::runtime_error(
+                        "Bulk image callback target is outside guest text");
+                }
+                std::uint64_t callbackOwner = 0;
+                const auto ownerSegment = std::find_if(
+                    image.mapped_image_segments.begin(), image.mapped_image_segments.end(),
+                    [callback](const MappedImageSegment& segment) {
+                        return segment.executable && segment.start >= 0 &&
+                               segment.end > segment.start &&
+                               static_cast<std::uint64_t>(segment.start) <= callback &&
+                               callback < static_cast<std::uint64_t>(segment.end);
+                    });
+                if (ownerSegment != image.mapped_image_segments.end())
+                    callbackOwner = ownerSegment->guest_header;
+                GuestCallbackFrame frame;
+                prepareBulkImageCallback(frame, hostRegisters, {callback},
+                    0, imageRegistry.size(), true);
+                frame.activeBulkImageCallbackLease = dynamicImageClosure(callbackOwner);
+                for (const auto header : frame.activeBulkImageCallbackLease)
+                    ++dynamicImageOwners[header];
+                frame.nextBulkImageCallback = 1;
+                callbackFrames.push_back(std::move(frame));
+                auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                const auto& pending = callbackFrames.back();
+                std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
+                          callbackRegisters);
+                std::copy(pending.savedVectorAndAuth.begin(),
+                          pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                callbackRegisters[37] = pending.authenticationDepth;
+                std::copy(pending.arguments.front().begin(),
+                          pending.arguments.front().end(), callbackRegisters);
+                callbackRegisters[30] = kNoFault;
+                callbackRegisters[33] = callback;
+                selectKernel(static_cast<std::int64_t>(callback));
                 continue;
             }
             if (service == 201) {
@@ -7780,6 +8008,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 imageTransaction.commit();
                                 auto imageNotifications = collectImageNotifications(
                                     firstNewImage, imageRegistry.size(), 0);
+                                const auto bulkCallbacks = bulkImageCallbacks;
                                 for (const auto& staged : plan.images) {
                                     namedImagePlacementCursor = std::max(
                                         namedImagePlacementCursor, staged.guest_end);
@@ -7835,7 +8064,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     plan.requested_header, mode);
                                 ensureDynamicImageGroup(plan.requested_header);
                                 clearGuestDlerror();
-                                if (!initializers.empty() || !imageNotifications.empty()) {
+                                if (!initializers.empty() || !imageNotifications.empty() ||
+                                    (!bulkCallbacks.empty() &&
+                                     imageRegistry.size() > firstNewImage)) {
                                     GuestCallbackFrame frame;
                                     frame.savedRegisters.assign(hostRegisters.begin(),
                                                                 hostRegisters.begin() + 36);
@@ -7847,12 +8078,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     frame.authenticationDepth = hostRegisters[37];
                                     frame.initializerTargets = std::move(initializers);
                                     frame.imageNotifications = std::move(imageNotifications);
+                                    if (!bulkCallbacks.empty() &&
+                                        imageRegistry.size() > firstNewImage) {
+                                        prepareBulkImageCallback(
+                                            frame, hostRegisters, bulkCallbacks, firstNewImage,
+                                            imageRegistry.size(), false);
+                                    }
                                     const bool hasImageNotifications =
                                         !frame.imageNotifications.empty();
+                                    const bool hasBulkNotifications =
+                                        !frame.bulkImageCallbacks.empty();
                                     if (hasImageNotifications) {
                                         frame.nextImageNotification = 1;
-                                    } else {
+                                    } else if (!hasBulkNotifications) {
                                         frame.nextInitializer = 1;
+                                    } else {
+                                        frame.nextBulkImageCallback = 1;
                                     }
                                     callbackFrames.push_back(std::move(frame));
                                     auto* callbackRegisters =
@@ -7871,6 +8112,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                   notification.arguments.end(),
                                                   callbackRegisters);
                                         callbackRegisters[33] = notification.callback;
+                                    } else if (hasBulkNotifications) {
+                                        std::copy(pending.arguments.front().begin(),
+                                                  pending.arguments.front().end(),
+                                                  callbackRegisters);
+                                        callbackRegisters[33] =
+                                            pending.bulkImageCallbacks.front();
                                     } else {
                                         const auto first =
                                             pending.initializerTargets.front();

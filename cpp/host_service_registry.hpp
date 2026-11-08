@@ -227,6 +227,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"__guest_dyld_get_base_platform", 213, true, true},
     {"__guest_dyld_get_active_platform", 214, true, true},
     {"__guest_dyld_is_simulator_platform", 215, true, true},
+    {"__dyld_register_for_bulk_image_loads", 216, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {
