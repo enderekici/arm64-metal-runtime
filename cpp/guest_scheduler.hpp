@@ -136,6 +136,8 @@ public:
     [[nodiscard]] std::int32_t signal_semaphore(std::uint64_t name);
     [[nodiscard]] bool sleep_current(std::uint64_t deadline,
                                     std::optional<std::uint64_t> remainder = std::nullopt);
+    [[nodiscard]] bool wait_mach_receive(std::uint32_t port,
+                                         std::optional<std::uint64_t> deadline);
     [[nodiscard]] std::size_t expire_waiters(std::uint64_t nowNanoseconds);
     [[nodiscard]] std::optional<std::uint64_t> earliest_deadline() const noexcept;
     [[nodiscard]] std::optional<GuestSleepInterruption> interrupt_sleeping_thread(

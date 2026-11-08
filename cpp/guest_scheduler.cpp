@@ -490,6 +490,14 @@ bool GuestScheduler::sleep_current(std::uint64_t deadline,
     return true;
 }
 
+bool GuestScheduler::wait_mach_receive(std::uint32_t port,
+                                       std::optional<std::uint64_t> deadline) {
+    auto& thread = current();
+    if (thread.wait.has_value()) return false;
+    thread.wait = GuestMachReceiveWait{port, deadline};
+    return true;
+}
+
 std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
     std::size_t expired = 0;
     for (auto& entry : threads_) {
@@ -498,6 +506,14 @@ std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
         if (const auto* sleep = std::get_if<GuestSleepWait>(&*thread.wait);
             sleep != nullptr && sleep->deadline <= nowNanoseconds) {
             wake(thread.id, 0);
+            ++expired;
+            continue;
+        }
+        constexpr std::int32_t machReceiveTimedOut = 0x10004003;
+        const auto* machReceive = std::get_if<GuestMachReceiveWait>(&*thread.wait);
+        if (machReceive != nullptr && machReceive->deadline.has_value() &&
+            *machReceive->deadline <= nowNanoseconds) {
+            wake(thread.id, machReceiveTimedOut);
             ++expired;
             continue;
         }
@@ -541,6 +557,9 @@ std::optional<std::uint64_t> GuestScheduler::earliest_deadline() const noexcept 
             deadline = condition->deadline;
         } else if (const auto* semaphore = std::get_if<GuestSemaphoreWait>(&*entry.second.wait)) {
             deadline = semaphore->deadline;
+        } else if (const auto* machReceive =
+                       std::get_if<GuestMachReceiveWait>(&*entry.second.wait)) {
+            deadline = machReceive->deadline;
         }
         if (deadline.has_value() && (!earliest.has_value() || *deadline < *earliest)) {
             earliest = deadline;

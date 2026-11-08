@@ -53,15 +53,12 @@ xcrun clang -Wall -Wextra -Werror "$src/cache-provider-main.c" -o "$out/cache-pr
 xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typefilter"
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
 xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
-<<<<<<< HEAD
 xcrun clang -Wall -Wextra -Werror "$src/mach-host-info.c" -o "$out/mach-host-info"
 xcrun clang -Wall -Wextra -Werror "$src/raw-sysctl.c" -o "$out/raw-sysctl"
 xcrun clang -Wall -Wextra -Werror "$src/sysctl-usrstack.c" -o "$out/sysctl-usrstack"
 xcrun clang -Wall -Wextra -Werror "$src/pthread-stackaddr.c" -o "$out/pthread-stackaddr"
-=======
 xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
 xcrun clang -Wall -Wextra -Werror "$src/mach-local-message.c" -o "$out/mach-local-message"
->>>>>>> 39a91c1 (feat: model local Mach message queues)
 xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
 xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
@@ -76,14 +73,11 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/kdebug-typefilter"
 "$out/dyld-interposition"
 "$out/mach-reply-port"
-<<<<<<< HEAD
 "$out/mach-host-info"
 "$out/raw-sysctl"
 "$out/sysctl-usrstack"
-=======
 "$out/mach-port-namespace"
 "$out/mach-local-message"
->>>>>>> 39a91c1 (feat: model local Mach message queues)
 "$out/mach-self-pid"
 "$out/mach-port-namespace"
 "$out/commpage-page-shift"
@@ -355,3 +349,20 @@ xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
 
 The process decoder keeps its existing guest-memory lowering for these
 instructions so permission checks and demand-cache retry remain active.
+## Blocking local Mach receive
+
+The native arm64 oracle uses raw `mach_msg2` traps inside a pthread receiver.
+It covers guest-local send wakeup, a finite receive timeout, and destruction
+of a receive right while another thread is blocked. The checked-in source is
+the oracle for exact native return values; the guest runtime comparison is
+performed only when a GPU slot is explicitly assigned.
+
+```sh
+src=fixtures/handoff/mach-local-blocking-receive.c
+out=.build/handoff-probes/mach-local-blocking-receive
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$src" -o "$out"
+"$out"
+```
+
+Native output is `send_woke=1 timeout=268451843 destroy_result=0 destroy_wake=268451846`; status is 0.

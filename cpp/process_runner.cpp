@@ -1940,6 +1940,66 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::uint8_t> body;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
+    struct GuestMachBlockedReceive {
+        std::uint32_t port;
+        std::uint64_t buffer;
+        std::uint32_t capacity;
+    };
+    std::map<std::uint32_t, std::deque<std::uint64_t>> guestMachReceiveWaiters;
+    std::map<std::uint64_t, GuestMachBlockedReceive> guestMachBlockedReceives;
+    constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
+    constexpr std::uint32_t machReceiveInvalidData = 0x1000400e;
+    constexpr std::uint32_t machReceivePortChanged = 0x10004006;
+    constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
+    const auto copyGuestMachMessage = [&](const GuestLocalMessage& message,
+                                          std::uint32_t receiveName,
+                                          std::uint64_t outputAddress,
+                                          std::uint32_t capacity) -> std::uint32_t {
+        const auto outputSize = static_cast<std::uint64_t>(message.size) + machTrailerSize;
+        if (capacity < outputSize) return machReceiveTooLarge;
+        try {
+            auto* output = guestMemory.buffer(outputAddress, outputSize, true);
+            mach_msg_header_t header{};
+            header.msgh_bits = MACH_MSG_TYPE_MOVE_SEND << 8;
+            header.msgh_size = message.size;
+            header.msgh_remote_port = message.remotePort;
+            header.msgh_local_port = receiveName;
+            header.msgh_voucher_port = message.voucherPort;
+            header.msgh_id = message.messageId;
+            std::memcpy(output, &header, sizeof(header));
+            if (!message.body.empty()) {
+                std::memcpy(output + sizeof(header), message.body.data(), message.body.size());
+            }
+            const mach_msg_trailer_t trailer{0, machTrailerSize};
+            std::memcpy(output + message.size, &trailer, sizeof(trailer));
+            return 0;
+        } catch (const std::exception&) {
+            return machReceiveInvalidData;
+        }
+    };
+    const auto deliverGuestMachMessage = [&](std::uint32_t port) {
+        auto waiting = guestMachReceiveWaiters.find(port);
+        auto queue = guestMachMessageQueues.find(port);
+        if (waiting == guestMachReceiveWaiters.end() || queue == guestMachMessageQueues.end() ||
+            queue->second.empty()) return;
+        auto& waiters = waiting->second;
+        while (!waiters.empty() && !queue->second.empty()) {
+            const auto threadId = waiters.front();
+            waiters.pop_front();
+            const auto blocked = guestMachBlockedReceives.find(threadId);
+            auto* thread = guestScheduler.find(threadId);
+            const auto* wait = thread != nullptr && thread->wait.has_value()
+                ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+            if (blocked == guestMachBlockedReceives.end() || wait == nullptr ||
+                wait->port != port || blocked->second.port != port) continue;
+            const auto result = copyGuestMachMessage(queue->second.front(), port,
+                blocked->second.buffer, blocked->second.capacity);
+            guestMachBlockedReceives.erase(blocked);
+            if (result == 0) queue->second.pop_front();
+            guestScheduler.wake(threadId, static_cast<std::int32_t>(result));
+        }
+        if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
+    };
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
     struct GuestBsdthreadRegistration {
@@ -6027,7 +6087,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machReceiveTimedOut = 0x10004003;
                     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
                     constexpr std::uint32_t machMsgTypeCopySend = 19;
-                    constexpr std::uint32_t machMsgTypeMoveSend = 17;
                     constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
                     constexpr std::uint64_t allowedOptions = machSendMessage |
                         machReceiveMessage | machReceiveTimeout | mach64SendAny;
@@ -6062,6 +6121,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     message.body.assign(bytes + sizeof(mach_msg_header_t),
                                                         bytes + sendSize);
                                     guestMachMessageQueues[remote].push_back(std::move(message));
+                                    deliverGuestMachMessage(remote);
                                 } catch (const std::exception&) {
                                     result = machSendInvalidData;
                                 }
@@ -6075,10 +6135,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             auto& queue = guestMachMessageQueues[receiveName];
                             if (queue.empty()) {
                                 if ((options & machReceiveTimeout) != 0) {
-                                    result = machReceiveTimedOut;
+                                    const auto timeoutMilliseconds = registers[7];
+                                    if (timeoutMilliseconds == 0) {
+                                        result = machReceiveTimedOut;
+                                    } else {
+                                        const auto now = monotonicNanoseconds();
+                                        const auto timeoutNanoseconds = timeoutMilliseconds >
+                                                std::numeric_limits<std::uint64_t>::max() /
+                                                    1'000'000ULL
+                                            ? std::numeric_limits<std::uint64_t>::max()
+                                            : timeoutMilliseconds * 1'000'000ULL;
+                                        const auto deadline = now + std::min(
+                                            timeoutNanoseconds,
+                                            std::numeric_limits<std::uint64_t>::max() - now);
+                                        const auto threadId = guestScheduler.current_id();
+                                        const auto receiveSize = static_cast<std::uint32_t>(
+                                            registers[6]);
+                                        if (!guestScheduler.wait_mach_receive(receiveName,
+                                                                              deadline)) {
+                                            result = kernInvalidArgument;
+                                        } else {
+                                            guestMachBlockedReceives[threadId] =
+                                                GuestMachBlockedReceive{receiveName, registers[0],
+                                                                        receiveSize};
+                                            guestMachReceiveWaiters[receiveName].push_back(threadId);
+                                            std::vector<std::uint64_t> liveRegisters(
+                                                registers, registers + stateBuffer.size() /
+                                                    sizeof(std::uint64_t));
+                                            (void)syncThreadSwitch(false, liveRegisters);
+                                            guestMachBlockedReceives.erase(threadId);
+                                            continue;
+                                        }
+                                    }
                                 } else {
-                                    throw std::runtime_error(
-                                        "Blocking guest local Mach receive is unsupported");
+                                    const auto threadId = guestScheduler.current_id();
+                                    const auto receiveSize = static_cast<std::uint32_t>(
+                                        registers[6]);
+                                    if (!guestScheduler.wait_mach_receive(receiveName,
+                                                                          std::nullopt)) {
+                                        result = kernInvalidArgument;
+                                    } else {
+                                        guestMachBlockedReceives[threadId] =
+                                            GuestMachBlockedReceive{receiveName, registers[0],
+                                                                    receiveSize};
+                                        guestMachReceiveWaiters[receiveName].push_back(threadId);
+                                        std::vector<std::uint64_t> liveRegisters(
+                                            registers, registers + stateBuffer.size() /
+                                                sizeof(std::uint64_t));
+                                        (void)syncThreadSwitch(false, liveRegisters);
+                                        guestMachBlockedReceives.erase(threadId);
+                                        continue;
+                                    }
                                 }
                             } else {
                                 const auto messageSize = queue.front().size;
@@ -6088,29 +6195,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 if (receiveSize < outputSize) {
                                     result = machReceiveTooLarge;
                                 } else {
-                                    try {
-                                        auto* output = guestMemory.buffer(registers[0], outputSize,
-                                                                          true);
-                                        const auto& message = queue.front();
-                                        mach_msg_header_t header{};
-                                        header.msgh_bits = machMsgTypeMoveSend << 8;
-                                        header.msgh_size = message.size;
-                                        header.msgh_remote_port = message.remotePort;
-                                        header.msgh_local_port = receiveName;
-                                        header.msgh_voucher_port = message.voucherPort;
-                                        header.msgh_id = message.messageId;
-                                        std::memcpy(output, &header, sizeof(header));
-                                        if (!message.body.empty()) {
-                                            std::memcpy(output + sizeof(header), message.body.data(),
-                                                        message.body.size());
-                                        }
-                                        const mach_msg_trailer_t trailer{0, machTrailerSize};
-                                        std::memcpy(output + message.size, &trailer,
-                                                    sizeof(trailer));
-                                        queue.pop_front();
-                                    } catch (const std::exception&) {
-                                        result = 0x1000400e; // MACH_RCV_INVALID_DATA
-                                    }
+                                    result = copyGuestMachMessage(queue.front(), receiveName,
+                                        registers[0], receiveSize);
+                                    if (result == 0) queue.pop_front();
                                 }
                             }
                         }
@@ -6552,6 +6639,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 right->second.context != registers[3])) {
                         result = machSendInvalidRight;
                     } else {
+                        const auto waiting = guestMachReceiveWaiters.find(name);
+                        if (waiting != guestMachReceiveWaiters.end()) {
+                            for (const auto threadId : waiting->second) {
+                                const auto blocked = guestMachBlockedReceives.find(threadId);
+                                auto* thread = guestScheduler.find(threadId);
+                                const auto* receiveWait = thread != nullptr &&
+                                        thread->wait.has_value()
+                                    ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+                                if (blocked != guestMachBlockedReceives.end() &&
+                                    receiveWait != nullptr && receiveWait->port == name) {
+                                    guestMachBlockedReceives.erase(blocked);
+                                    guestScheduler.wake(threadId,
+                                        static_cast<std::int32_t>(machReceivePortChanged));
+                                }
+                            }
+                            guestMachReceiveWaiters.erase(waiting);
+                        }
                         guestReceiveRights.erase(right);
                         guestMachMessageQueues.erase(name);
                     }
