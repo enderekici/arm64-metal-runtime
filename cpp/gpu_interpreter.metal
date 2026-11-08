@@ -590,6 +590,13 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     state[34] = 7;
                     return;
                 }
+                for (ulong authIndex = state[37]; authIndex > 0ul; --authIndex) {
+                    const ulong authSlot = 38ul + 3ul * (authIndex - 1ul);
+                    if (state[authSlot + 2] >= 0xffffffff00000000ul) {
+                        --state[authSlot + 2];
+                        break;
+                    }
+                }
                 state[30] = instruction.successor1;
                 pc = instruction.successor0;
                 leftBlock = true;
@@ -608,7 +615,16 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     return;
                 }
                 const ulong target = rn == 31u ? 0ul : state[rn];
-                if (link != 0u) state[30] = instruction.pc + 4ul;
+                if (link != 0u) {
+                    for (ulong authIndex = state[37]; authIndex > 0ul; --authIndex) {
+                        const ulong authSlot = 38ul + 3ul * (authIndex - 1ul);
+                        if (state[authSlot + 2] >= 0xffffffff00000000ul) {
+                            --state[authSlot + 2];
+                            break;
+                        }
+                    }
+                    state[30] = instruction.pc + 4ul;
+                }
                 if (target == 0ul || target >= (1ul << 48) ||
                     (target & 3ul) != 0ul) {
                     state[874] = target;
@@ -1052,6 +1068,25 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     state[34] = 7;
                     return;
                 }
+                for (ulong authIndex = state[37]; authIndex > 0ul; --authIndex) {
+                    const ulong authSlot = 38ul + 3ul * (authIndex - 1ul);
+                    if (state[authSlot + 2] >= 0xffffffff00000000ul) {
+                        if (state[authSlot + 2] != ~0ul) {
+                            ++state[authSlot + 2];
+                        } else {
+                            if (authIndex != state[37]) {
+                                state[33] = pc;
+                                state[34] = 6;
+                                return;
+                            }
+                            --state[37];
+                            state[33] = pc;
+                            state[34] = 16;
+                            return;
+                        }
+                        break;
+                    }
+                }
                 const ulong target = state[source];
                 if (target == ~0ul) {
                     state[34] = 0;
@@ -1090,10 +1125,35 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                         state[34] = 6;
                         return;
                     }
-                    const ulong slot = 38ul + 3ul * --state[37];
-                    if (state[30] != state[slot] || state[31] != state[slot + 1]) {
-                        state[34] = 6;
+                    const ulong slot = 38ul + 3ul * (state[37] - 1ul);
+                    if (step == 2u && state[slot + 2] >= 0xffffffff00000000ul) {
+                        --state[37];
+                        state[33] = pc;
+                        state[34] = 16;
                         return;
+                    }
+                    if (state[30] != state[slot] || state[31] != state[slot + 1]) {
+                        if (step == 1u) {
+                            state[slot + 2] = ~0ul;
+                        } else {
+                            --state[37];
+                            state[33] = pc;
+                            state[34] = 16;
+                            return;
+                        }
+                    } else {
+                        --state[37];
+                        if (step == 2u) {
+                            for (ulong authIndex = state[37]; authIndex > 0ul; --authIndex) {
+                                const ulong authSlot = 38ul + 3ul * (authIndex - 1ul);
+                                if (state[authSlot + 2] >= 0xffffffff00000000ul) {
+                                    if (state[authSlot + 2] != ~0ul) {
+                                        ++state[authSlot + 2];
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
                 if (step == 2u) {

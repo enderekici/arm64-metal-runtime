@@ -58,12 +58,14 @@ int main(int argc, char** argv) {
   assert(autibsp.operation->destination == static_cast<std::uint32_t>(
                                               AuthenticatedReturnStep::AuthenticateLinkRegister));
   assert(autibsp.next == std::vector<std::int64_t>{0x1008});
+  assert(autibsp.code[2].find("x[slot + 2] = ~0ul") != std::string::npos);
 
   const auto retab = decode_process(0xd65f0fff, 0x1008, imports, stubs, false);
   assert(retab.operation.has_value());
   assert(retab.operation->destination ==
          static_cast<std::uint32_t>(AuthenticatedReturnStep::Return));
   assert(retab.next.empty());
+  assert(retab.code[2].find("x[34] = 16; return") != std::string::npos);
   assert(!decode_operation(0xd503237f).has_value());
 
   bool keyAStillRejected = false;

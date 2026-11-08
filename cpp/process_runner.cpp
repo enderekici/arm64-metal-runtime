@@ -8540,6 +8540,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                      hexadecimal(static_cast<std::uint64_t>(pc)));
         }
         if (status == 6) throw std::runtime_error("Guest return authentication failed");
+        if (status == 16) {
+            const GuestSynchronousFault fault{
+                SIGBUS, BUS_ADRALN, 0, registers[33], 0x72000001};
+            progressTrace.event("guest-authentication-fault", fault.programCounter,
+                                fault.exceptionSyndrome);
+            std::vector<std::uint64_t> live(
+                registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+            const auto delivery = signalRuntime.deliver_synchronous(
+                hostServiceState.signals, hostServiceState.threadSignalMask,
+                live, guestMemory, fault, live[37],
+                static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
+            if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                return delivery.exitStatus;
+            }
+            if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
+                selectKernel(static_cast<std::int64_t>(delivery.handler));
+                continue;
+            }
+            throw std::runtime_error("Guest authentication fault signal was not delivered");
+        }
         if (status == 9 || status == 10 || status == 12) {
             throw std::runtime_error(pac_failure_message(registers,
                 stateBuffer.size() / sizeof(std::uint64_t), status));

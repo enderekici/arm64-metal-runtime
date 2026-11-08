@@ -31,6 +31,24 @@ _auth_key_b_bad_sp:
     add sp, sp, #16
     ret
 
+.globl _auth_key_b_bad_sp_nested
+.p2align 2
+_auth_key_b_bad_sp_nested:
+    pacibsp
+    sub sp, sp, #16
+    autibsp
+    add sp, sp, #16
+    sub sp, sp, #16
+    str x30, [sp]
+    bl _auth_key_b_leaf
+    ldr x30, [sp]
+    add sp, sp, #16
+    ret
+
+.p2align 2
+_auth_key_b_leaf:
+    ret
+
 .globl _auth_key_b_bad_lr_retab
 .p2align 2
 _auth_key_b_bad_lr_retab:

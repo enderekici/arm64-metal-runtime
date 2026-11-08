@@ -1214,7 +1214,9 @@ int main() {
   const auto returned = make_operation_instruction(
       *returnOperation, {}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(returned.ends_block_at(0x1000));
-  assert(returned.code.size() == 5);
+  assert(returned.code.size() == 6);
+  assert(returned.code[0].find("x[auth_slot + 2] >= 0xffffffff00000000ul") !=
+         std::string::npos);
 
   const auto adrEncoding = [](std::uint32_t base, std::uint32_t imm21,
                               std::uint32_t rd) {
@@ -1297,9 +1299,10 @@ int main() {
                                     AuthenticatedReturnStep::AuthenticateLinkRegister));
   const auto autibspLowered = make_operation_instruction(
       *autibsp, {0x1008}, LoweringMode::Process, std::uint64_t{1} << 48);
-  assert(autibspLowered.code.size() == 3);
+  assert(autibspLowered.code.size() == 4);
   assert(autibspLowered.code[2].find("x[30] != x[slot]") != std::string::npos);
   assert(autibspLowered.code[2].find("x[31] != x[slot + 1]") != std::string::npos);
+  assert(autibspLowered.code[2].find("x[slot + 2] = ~0ul") != std::string::npos);
 
   const auto retab = decode_authenticated_return_operation(0xd65f0fff);
   assert(retab.has_value());
@@ -1308,9 +1311,9 @@ int main() {
   const auto retabLowered = make_operation_instruction(
       *retab, {}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(retabLowered.ends_block_at(0x1008));
-  assert(retabLowered.code.size() == 8);
-  assert(retabLowered.code[2].find("x[30] != x[slot]") != std::string::npos);
-  assert(retabLowered.code[7] == "x[34] = 7; return;");
+  assert(retabLowered.code.size() == 10);
+  assert(retabLowered.code[3].find("x[30] != x[slot]") != std::string::npos);
+  assert(retabLowered.code[9] == "x[34] = 7; return;");
   assert(!decode_authenticated_return_operation(0xd503233f).has_value());
   assert(!decode_authenticated_return_operation(0xd50323bf).has_value());
   assert(!decode_authenticated_return_operation(0xd65f0bff).has_value());
@@ -1329,6 +1332,9 @@ int main() {
       *branchLinkForward, {0x1008, 0x1004}, LoweringMode::Process, 0x10000,
       0x1000);
   assert((branchLinkLowered.code == std::vector<std::string>{
+      "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+      "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+      "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }",
       "x[30] = 4100ul;", "pc = 4104ul; break;"}));
   assert((branchLinkLowered.next == std::vector<std::int64_t>{0x1008, 0x1004}));
   assert(serialize_operation(*branchLinkForward)[0] == 28);
@@ -1338,8 +1344,10 @@ int main() {
   const auto backwardCall = make_operation_instruction(
       *branchLinkBackward, {0x1000, 0x1008}, LoweringMode::Process, 0x10000,
       0x1004);
-  assert(backwardCall.code[0] == "x[30] = 4104ul;");
-  assert(backwardCall.code[1] == "pc = 4096ul; break;");
+  assert(backwardCall.code[0].find("auth_slot + 2] >= 0xffffffff00000000ul") !=
+         std::string::npos);
+  assert(backwardCall.code[1] == "x[30] = 4104ul;");
+  assert(backwardCall.code[2] == "pc = 4096ul; break;");
   bool branchLinkRejected = false;
   try {
     (void)make_operation_instruction(*branchLinkForward, {0x1008},
@@ -1386,8 +1394,10 @@ int main() {
       0x94000002U, 0x1000, {}, {{0x1008, 0x2000}}, false);
   assert(!stubBranchLink.operation);
   assert((stubBranchLink.next == std::vector<std::int64_t>{0x2000, 0x1004}));
-  assert(stubBranchLink.code[0] == "x[30] = 4100ul;");
-  assert(stubBranchLink.code[1] == "pc = 8192ul; break;");
+  assert(stubBranchLink.code[0].find("auth_slot + 2] >= 0xffffffff00000000ul") !=
+         std::string::npos);
+  assert(stubBranchLink.code[1] == "x[30] = 4100ul;");
+  assert(stubBranchLink.code[2] == "pc = 8192ul; break;");
 
   const auto branchRegister = decode_operation(0xd61f0120U);  // BR X9.
   assert(branchRegister && branchRegister->opcode == Opcode::BranchRegister &&
@@ -1414,6 +1424,9 @@ int main() {
       *branchLinkRegister, {}, LoweringMode::Process, 0x10000, 0x2000);
   assert((branchLinkRegisterLowered.code == std::vector<std::string>{
       "x[33] = x[30];",
+      "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+      "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+      "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }",
       "x[30] = 8196ul;",
       "if (x[33] == 0ul || x[33] >= 65536ul || (x[33] & 3ul) != 0ul) { "
       "x[874] = x[33]; x[33] = 8192ul; x[34] = 3; return; }",

@@ -21,6 +21,7 @@ constexpr std::size_t kGuestUcontextSize = 56;
 constexpr std::size_t kGuestMcontextSize = 816;
 constexpr std::size_t kGuestMcontextThreadState = 16;
 constexpr std::size_t kGuestMcontextNeonState = 288;
+constexpr std::size_t kGuestMcontextExceptionSyndrome = 8;
 constexpr std::size_t kGuestSiginfoAddress = 24;
 constexpr std::size_t kGuestUcontextSignalMask = 4;
 constexpr std::size_t kGuestUcontextMcontextPointer = 48;
@@ -36,6 +37,8 @@ static_assert(offsetof(_STRUCT_MCONTEXT, __ss.__pc) ==
               kGuestMcontextThreadState + 256);
 static_assert(offsetof(_STRUCT_MCONTEXT, __ss.__cpsr) ==
               kGuestMcontextThreadState + 264);
+static_assert(offsetof(_STRUCT_MCONTEXT, __es.__esr) ==
+              kGuestMcontextExceptionSyndrome);
 static_assert(offsetof(_STRUCT_MCONTEXT, __ns) == kGuestMcontextNeonState);
 
 std::uint64_t aligned_down(std::uint64_t value, std::uint64_t alignment) {
@@ -209,6 +212,8 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
     write_context_integer(ucontext, 40, &machineContextSize, sizeof(machineContextSize));
     write_context_integer(ucontext, kGuestUcontextMcontextPointer, &mcontextAddress,
                           sizeof(mcontextAddress));
+    write_context_integer(mcontext, kGuestMcontextExceptionSyndrome,
+                          &fault.exceptionSyndrome, sizeof(fault.exceptionSyndrome));
     for (std::size_t index = 0; index < 29; ++index) {
         write_context_integer(mcontext, kGuestMcontextThreadState + index * 8,
                               &registers[index], sizeof(std::uint64_t));

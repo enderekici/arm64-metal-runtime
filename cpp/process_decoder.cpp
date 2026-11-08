@@ -411,6 +411,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         (guestStubs.count(target) ? guestStubs.at(target) : target);
     return make_instruction(
         Strings{
+            linked ? (std::string("for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { ") +
+                      "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); " +
+                      "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }")
+                   : (std::string("")),
             linked ? (std::string("x[30] = ") + str(next) + "ul;")
                    : (std::string("")),
             (std::string("pc = ") + str(destination) + "ul; break;"),

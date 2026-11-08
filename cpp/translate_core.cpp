@@ -503,8 +503,9 @@ Instruction make_operation_instruction(Operation operation,
       }
       code = {
           "if (x[37] == 0) { x[34] = 6; return; }",
-          "{ ulong slot = 38ul + 3ul * --x[37];",
-          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[34] = 6; return; } }"};
+          "{ ulong slot = 38ul + 3ul * (x[37] - 1ul);",
+          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[slot + 2] = ~0ul; }",
+          "else { --x[37]; } }"};
     } else {
       if (!next.empty() || guest_code_limit == 0) {
         throw std::invalid_argument("Typed RETAB cannot have successors");
@@ -512,7 +513,14 @@ Instruction make_operation_instruction(Operation operation,
       code = {
           "if (x[37] == 0) { x[34] = 6; return; }",
           "{ ulong slot = 38ul + 3ul * --x[37];",
-          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[34] = 6; return; } }",
+          "if (x[slot + 2] >= 0xffffffff00000000ul) { x[33] = " +
+              std::to_string(guest_pc) + "ul; x[34] = 16; return; }",
+          "if (x[30] != x[slot] || x[31] != x[slot + 1]) { x[33] = " +
+              std::to_string(guest_pc) + "ul; x[34] = 16; return; } }",
+          "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+          "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+          "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { "
+          "if (x[auth_slot + 2] != ~0ul) { ++x[auth_slot + 2]; } break; } }",
           "if (x[30] == ~0ul) { x[34] = 0; return; }",
           "if (x[30] >= " + std::to_string(guest_code_limit) +
               "ul) { x[34] = 3; return; }",
@@ -939,6 +947,12 @@ Instruction make_operation_instruction(Operation operation,
         throw std::invalid_argument("Process return lowering needs a code limit");
       }
       code = {
+          "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+          "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+          "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { "
+          "if (x[auth_slot + 2] != ~0ul) { ++x[auth_slot + 2]; } else { "
+          "if (auth_index != x[37]) { x[34] = 6; return; } --x[37]; "
+          "x[33] = " + std::to_string(guest_pc) + "ul; x[34] = 16; return; } break; } }",
           "if (x[30] == ~0ul) { x[34] = 0; return; }",
           "if (x[30] >= " + std::to_string(guest_code_limit) +
               "ul) { x[34] = 3; return; }",
@@ -965,6 +979,10 @@ Instruction make_operation_instruction(Operation operation,
         next[1] != static_cast<std::int64_t>(guest_pc) + 4) {
       throw std::invalid_argument("Typed BL needs a valid target and return PC");
     }
+    code.push_back(
+        "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+        "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+        "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }");
     code.push_back("x[30] = " + std::to_string(next[1]) + "ul;");
     code.push_back("pc = " + std::to_string(next[0]) + "ul; break;");
   } else if (operation.opcode == Opcode::BranchRegister) {
@@ -976,6 +994,10 @@ Instruction make_operation_instruction(Operation operation,
     }
     code.push_back("x[33] = " + reg(operation.source, true) + ";");
     if (operation.immediate == 1) {
+      code.push_back(
+          "for (ulong auth_index = x[37]; auth_index > 0ul; --auth_index) { "
+          "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
+          "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }");
       code.push_back("x[30] = " + std::to_string(guest_pc + 4) + "ul;");
     }
     code.push_back("if (x[33] == 0ul || x[33] >= " +

@@ -91,6 +91,7 @@ AUTH_RETURN_BAD_LR_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-main
 AUTH_RETURN_BAD_SP_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-main
 AUTH_RETURN_BAD_LR_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-retab-main
 AUTH_RETURN_BAD_SP_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-retab-main
+AUTH_RETURN_BAD_SP_NESTED_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-nested-main
 INTERPRETER_ADDP_2D_MAIN := $(BUILD_DIR)/interpreter-addp-2d-main
 ADDP_2D_PROCESS_TEST := $(BUILD_DIR)/addp-2d-process-decode-test
 XTN_PROCESS_TEST := $(BUILD_DIR)/xtn-process-decode-test
@@ -363,22 +364,27 @@ $(AUTH_RETURN_BAD_SP_RETAB_MAIN): ../fixtures/interpreter/authenticated-return-b
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(AUTH_RETURN_BAD_SP_NESTED_MAIN): ../fixtures/interpreter/authenticated-return-bad-sp-nested-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 verify-authenticated-return-cpu: $(AUTH_RETURN_CPU) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN)
 	"$(AUTH_RETURN_CPU)" "$(AUTH_RETURN_MAIN)" "$(AUTH_RETURN_RETAB_MAIN)"
 
-verify-authenticated-return-native: $(AUTH_RETURN_NATIVE) $(INTERPRETER_TYPED_NATIVE) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN)
+verify-authenticated-return-native: $(AUTH_RETURN_NATIVE) $(INTERPRETER_TYPED_NATIVE) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_NESTED_MAIN)
 	@set -eu; ulimit -c 0; \
 		"$(INTERPRETER_TYPED_NATIVE)"; \
 		"$(AUTH_RETURN_NATIVE)"; \
 		"$(AUTH_RETURN_NATIVE)" retab; \
 		"$(AUTH_RETURN_MAIN)"; \
 		"$(AUTH_RETURN_RETAB_MAIN)"; \
-		for mismatch in bad-lr bad-sp bad-lr-retab bad-sp-retab; do \
+		for mismatch in bad-lr bad-sp bad-lr-retab bad-sp-retab bad-sp-nested; do \
 			if "$(AUTH_RETURN_NATIVE)" "$$mismatch" >/dev/null 2>&1; then exit 1; \
 			else status=$$?; test "$$status" -gt 128 || exit 1; fi; \
 		done; \
 		for mismatch in "$(AUTH_RETURN_BAD_LR_MAIN)" "$(AUTH_RETURN_BAD_SP_MAIN)" \
-			"$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)"; do \
+			"$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" \
+			"$(AUTH_RETURN_BAD_SP_NESTED_MAIN)"; do \
 			if "$$mismatch" >/dev/null 2>&1; then exit 1; \
 			else status=$$?; test "$$status" -gt 128 || exit 1; fi; \
 		done; \
@@ -386,7 +392,7 @@ verify-authenticated-return-native: $(AUTH_RETURN_NATIVE) $(INTERPRETER_TYPED_NA
 
 verify-authenticated-return: verify-authenticated-return-cpu verify-authenticated-return-native
 
-verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN)
+verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_RETURN_MAIN) $(AUTH_RETURN_RETAB_MAIN) $(AUTH_RETURN_BAD_LR_MAIN) $(AUTH_RETURN_BAD_SP_MAIN) $(AUTH_RETURN_BAD_LR_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_RETAB_MAIN) $(AUTH_RETURN_BAD_SP_NESTED_MAIN)
 	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/auth-return-trace.XXXXXX"); \
 	trap 'rm -rf "$$run_dir"' EXIT; \
 	run_case() { \
@@ -398,14 +404,18 @@ verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_R
 			/event=interpreter-block-ready/ { ready_pc=hexval($$5); ready_count=$$6; sub(/^detail=/,"",ready_count) } \
 			/event=interpreter-packet/ { pcs[++n]=hexval($$5); ops[n]=$$6; sub(/^detail=/,"",ops[n]) } \
 			END { m=split(wanted, expected, ","); start=n-m+1; if(start<1 || ready_count!=m || ready_pc!=pcs[start]) exit 1; for(i=1;i<=m;i++){ if(ops[start+i-1]!=expected[i]) exit 1; if(i>1 && pcs[start+i-1]-pcs[start+i-2]!=4) exit 1 } }' "$$run_dir/$$name.trace"; \
-		if test "$$expected_status" -eq 0; then test ! -s "$$run_dir/$$name.out"; else grep -q 'Guest return authentication failed' "$$run_dir/$$name.trace"; fi; \
+		if test "$$expected_status" -eq 0; then test ! -s "$$run_dir/$$name.out"; else grep -q 'event=guest-authentication-fault' "$$run_dir/$$name.trace"; fi; \
 	}; \
 	run_case autibsp "$(AUTH_RETURN_MAIN)" 0 36,36,1,2; \
 	run_case retab "$(AUTH_RETURN_RETAB_MAIN)" 0 36,1,36; \
-	run_case bad-lr "$(AUTH_RETURN_BAD_LR_MAIN)" 1 36,23,36,1,2; \
-	run_case bad-sp "$(AUTH_RETURN_BAD_SP_MAIN)" 1 36,10,36,9,1,2; \
-	run_case bad-lr-retab "$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" 1 36,23,36; \
-	run_case bad-sp-retab "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" 1 36,10,36; \
+	run_case bad-lr "$(AUTH_RETURN_BAD_LR_MAIN)" 138 36,23,36,1,2; \
+	run_case bad-sp "$(AUTH_RETURN_BAD_SP_MAIN)" 138 36,10,36,9,1,2; \
+	run_case bad-sp-nested "$(AUTH_RETURN_BAD_SP_NESTED_MAIN)" 138 23,2; \
+	awk -v wanted="36,10,36,9,23,28,2,23,2" 'BEGIN { count=split(wanted, expected, ","); next_expected=1 } \
+		/event=interpreter-packet/ { detail=$$6; sub(/^detail=/,"",detail); n=split(detail, actual, ","); for (i=1;i<=n;i++) if (actual[i]==expected[next_expected]) next_expected++ } \
+		END { if (next_expected<=count) exit 1 }' "$$run_dir/bad-sp-nested.trace"; \
+	run_case bad-lr-retab "$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" 138 36,23,36; \
+	run_case bad-sp-retab "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" 138 36,10,36; \
 	echo 'Typed PACIBSP/AUTIBSP/RETAB packet PC traces and guest outcomes passed'
 
 

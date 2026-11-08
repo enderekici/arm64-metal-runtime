@@ -45,6 +45,7 @@ struct GuestSynchronousFault {
     std::int32_t code = 0;
     std::uint64_t address = 0;
     std::uint64_t programCounter = 0;
+    std::uint64_t exceptionSyndrome = 0;
 };
 
 // Owns signal frames keyed by guest thread ID. GuestSignals owns process
