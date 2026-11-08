@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -74,6 +74,7 @@ AF_UNIX_CONNECT_NATIVE := $(BUILD_DIR)/af-unix-connect
 AF_UNIX_DATAGRAM_NATIVE := $(BUILD_DIR)/af-unix-datagram
 AF_UNIX_CONNECT_EFAULT_NATIVE := $(BUILD_DIR)/af-unix-connect-efault
 AF_UNIX_DGRAM_BLOCKING_NATIVE := $(BUILD_DIR)/af-unix-datagram-blocking
+AF_UNIX_CLOSE_BLOCKED_NATIVE := $(BUILD_DIR)/af-unix-close-blocked
 SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
@@ -247,6 +248,17 @@ verify-af-unix-datagram-blocking-native: $(AF_UNIX_DGRAM_BLOCKING_NATIVE)
 	@set -eu; owned_dir=$$(mktemp -d /tmp/arm64-metal-dgram-blocking.XXXXXX); \
 	trap 'rm -f "$$owned_dir/server"; rmdir "$$owned_dir"' EXIT; \
 	"$(AF_UNIX_DGRAM_BLOCKING_NATIVE)" "$$owned_dir/server"
+
+$(AF_UNIX_CLOSE_BLOCKED_NATIVE): ../fixtures/handoff/af-unix-close-blocked.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -fno-stack-protector \
+		-fno-builtin-memset -pthread "$<" -o "$@"
+
+verify-af-unix-close-blocked-native: $(AF_UNIX_CLOSE_BLOCKED_NATIVE)
+	@set -eu; owned_dir=$$(mktemp -d /tmp/arm64-metal-close-blocked.XXXXXX); \
+	trap 'rm -f "$$owned_dir"/socket-*; rmdir "$$owned_dir"' EXIT; \
+	perl -e 'alarm 5; exec @ARGV' "$(AF_UNIX_CLOSE_BLOCKED_NATIVE)" 6 "$$owned_dir/socket-6"; \
+	perl -e 'alarm 5; exec @ARGV' "$(AF_UNIX_CLOSE_BLOCKED_NATIVE)" n "$$owned_dir/socket-399"
 
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }
