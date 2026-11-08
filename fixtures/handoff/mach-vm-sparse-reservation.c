@@ -193,6 +193,31 @@ int main(void) {
         marker_read, retained_marker, hole_read, reused_hole_kr,
         reused_hole == partial + MIB, reused_read == KERN_SUCCESS && reused_zero == 0);
 
+    mach_vm_address_t prefix = base + 28 * MIB;
+    const kern_return_t prefix_map = map_region(&prefix, 2 * MIB, 0,
+        VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE | VM_MAKE_TAG(VM_MEMORY_MALLOC_SMALL),
+        VM_PROT_READ | VM_PROT_WRITE, VM_PROT_READ | VM_PROT_WRITE);
+    if (prefix_map == KERN_SUCCESS) memset((void *)(uintptr_t)prefix, 0x7b, 2 * MIB);
+    const kern_return_t prefix_deallocate = prefix_map == KERN_SUCCESS
+        ? mach_vm_deallocate(mach_task_self(), prefix, MIB) : prefix_map;
+    mach_vm_address_t prefix_reuse = prefix;
+    const kern_return_t prefix_reuse_kr = prefix_deallocate == KERN_SUCCESS
+        ? map_region(&prefix_reuse, MIB, 0, VM_FLAGS_FIXED | VM_MAKE_TAG(VM_MEMORY_MALLOC_SMALL),
+            VM_PROT_READ | VM_PROT_WRITE, VM_PROT_READ | VM_PROT_WRITE)
+        : prefix_deallocate;
+    unsigned char prefix_zero = 0xff, suffix_marker = 0;
+    const kern_return_t prefix_read = prefix_reuse_kr == KERN_SUCCESS
+        ? mach_vm_read_overwrite(mach_task_self(), prefix, 1,
+            (mach_vm_address_t)(uintptr_t)&prefix_zero, &copied)
+        : prefix_reuse_kr;
+    const kern_return_t suffix_read = prefix_map == KERN_SUCCESS
+        ? mach_vm_read_overwrite(mach_task_self(), prefix + MIB, 1,
+            (mach_vm_address_t)(uintptr_t)&suffix_marker, &copied)
+        : prefix_map;
+    printf("prefix_map=%d deallocate=%d reuse=%d exact=%d zero=%d suffix=%d:%x\n",
+        prefix_map, prefix_deallocate, prefix_reuse_kr, prefix_reuse == prefix,
+        prefix_read == KERN_SUCCESS && prefix_zero == 0, suffix_read, suffix_marker);
+
     kern_return_t release_kr = mach_vm_deallocate(mach_task_self(), base, RESERVE_SIZE);
     mach_vm_address_t reuse = base;
     kern_return_t reuse_kr = release_kr == KERN_SUCCESS
@@ -201,6 +226,27 @@ int main(void) {
     printf("deallocate=%d fixed_reuse=%d reuse_exact=%d\n", release_kr, reuse_kr,
         reuse_kr == KERN_SUCCESS && reuse == base);
     if (reuse_kr == KERN_SUCCESS) (void)mach_vm_deallocate(mach_task_self(), reuse, RESERVE_SIZE);
+
+    mach_vm_address_t protect_commit = 0;
+    const kern_return_t protect_commit_map = map_region(&protect_commit, SEGMENT_SIZE, 0,
+        VM_FLAGS_ANYWHERE | VM_MAKE_TAG(VM_MEMORY_MALLOC_SMALL),
+        VM_PROT_NONE, VM_PROT_READ | VM_PROT_WRITE);
+    const kern_return_t protect_commit_kr = protect_commit_map == KERN_SUCCESS
+        ? mach_vm_protect(mach_task_self(), protect_commit, SEGMENT_SIZE, FALSE,
+            VM_PROT_READ | VM_PROT_WRITE)
+        : protect_commit_map;
+    int protect_commit_write = 0;
+    if (protect_commit_kr == KERN_SUCCESS) {
+        unsigned char *p = (unsigned char *)(uintptr_t)protect_commit;
+        p[0] = 0x36;
+        p[4095] = 0x63;
+        protect_commit_write = p[0] == 0x36 && p[4095] == 0x63;
+    }
+    const kern_return_t protect_commit_release = protect_commit_map == KERN_SUCCESS
+        ? mach_vm_deallocate(mach_task_self(), protect_commit, SEGMENT_SIZE)
+        : protect_commit_map;
+    printf("protect_commit_map=%d protect_rw=%d write_read=%d deallocate=%d\n",
+        protect_commit_map, protect_commit_kr, protect_commit_write, protect_commit_release);
 
     mach_vm_address_t aligned = 0;
     kern_return_t align_kr = map_region(&aligned, SEGMENT_SIZE, SEGMENT_SIZE - 1,
@@ -240,7 +286,13 @@ int main(void) {
         marker_read == KERN_SUCCESS && retained_marker == 0x6c &&
         hole_read == KERN_INVALID_ADDRESS && reused_hole_kr == KERN_SUCCESS &&
         reused_hole == partial + MIB && reused_read == KERN_SUCCESS && reused_zero == 0 &&
+        prefix_map == KERN_SUCCESS && prefix_deallocate == KERN_SUCCESS &&
+        prefix_reuse_kr == KERN_SUCCESS && prefix_reuse == prefix &&
+        prefix_read == KERN_SUCCESS && prefix_zero == 0 &&
+        suffix_read == KERN_SUCCESS && suffix_marker == 0x7b &&
         release_kr == KERN_SUCCESS && reuse_kr == KERN_SUCCESS &&
+        protect_commit_map == KERN_SUCCESS && protect_commit_kr == KERN_SUCCESS &&
+        protect_commit_write && protect_commit_release == KERN_SUCCESS &&
         align_kr == KERN_SUCCESS && (aligned & (SEGMENT_SIZE - 1)) == 0 &&
         mte_kr == KERN_SUCCESS && purgable_kr == KERN_SUCCESS ? 0 : 4;
 }
