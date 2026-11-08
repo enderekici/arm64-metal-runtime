@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -67,6 +67,7 @@ APP_SOURCES := \
 	main.cpp
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
+OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
 SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
@@ -133,6 +134,14 @@ $(SEMAPHORE_SCHEDULER): ../fixtures/handoff/guest-semaphore-scheduler.cpp \
 
 verify-semaphore-scheduler: $(SEMAPHORE_SCHEDULER)
 	"$(SEMAPHORE_SCHEDULER)"
+
+$(OPEN_NOCANCEL_NATIVE): ../fixtures/handoff/open-nocancel.c \
+		../fixtures/handoff/open-nocancel-input.txt
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-open-nocancel-native: $(OPEN_NOCANCEL_NATIVE)
+	"$(OPEN_NOCANCEL_NATIVE)" "$(abspath ../fixtures/handoff/open-nocancel-input.txt)"
 
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }

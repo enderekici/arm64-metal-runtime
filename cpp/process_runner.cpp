@@ -5503,6 +5503,38 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == 398) {
+                constexpr std::uint64_t carryMask = 8U;
+                auto* errnoBytes = guestMemory.buffer(bootstrap.errnoSlot,
+                    sizeof(std::uint32_t), true);
+                std::uint32_t savedErrno = 0;
+                std::memcpy(&savedErrno, errnoBytes, sizeof(savedErrno));
+                auto openRegisters = std::vector<std::uint64_t>(registers, registers + 36);
+                std::uint32_t error = 0;
+                bool failed = false;
+                try {
+                    (void)dispatch_guest_host_service(openRegisters, guestMemory, bootstrap,
+                                                      hostServiceState, 21);
+                    if (openRegisters[0] == std::numeric_limits<std::uint64_t>::max()) {
+                        std::memcpy(&error, errnoBytes, sizeof(error));
+                        if (error == 0) error = EIO;
+                        failed = true;
+                    }
+                } catch (const std::out_of_range&) {
+                    error = EFAULT;
+                    failed = true;
+                }
+                std::memcpy(errnoBytes, &savedErrno, sizeof(savedErrno));
+                if (failed) {
+                    registers[0] = error;
+                    registers[32] |= carryMask;
+                } else {
+                    registers[0] = openRegisters[0];
+                    registers[32] &= ~carryMask;
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 381) {
                 const auto policy = guest_cstring(guestMemory, registers[0]);
                 if (registers[1] != 2 || policy != "Sandbox") {
