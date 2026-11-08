@@ -574,3 +574,25 @@ attempts `mod_refs(RECEIVE, -1)`. The native kernel delivers a Mach port guard
 violation as `SIGKILL`; expected stdout is `guarded_port_ready=1` and status is
 137. The guest path uses the same synchronous signal runtime and must terminate
 instead of returning success.
+
+## Allocator fixed `mach_vm_map` overwrite
+
+`libsystem_malloc`'s `_mfm_initialize` maps a tagged 4 MiB anonymous region over
+an address it already allocated. The installed allocator uses tag
+`VM_MEMORY_MALLOC_TINY` plus `VM_FLAGS_OVERWRITE`, RW current protection and
+all maximum protections. The success path retains the fixed address and clears
+the replaced bytes. Its `BRK #1` cold path is reached only when this map call
+returns an error; it is not a breakpoint to skip.
+
+The guest service supports this overwrite only inside one owned dynamic mapping,
+with a fully covered page range and non-executable, non-JIT regions. It preserves
+the mapping's backing ownership, updates current and maximum permissions, and
+zero-fills only after replacement metadata is staged. Loader/pinned mappings,
+MTE, executable destinations, ranges crossing unmapped pages, and arbitrary
+fixed mappings into free holes remain unsupported. Native control confirms the
+kernel does allow a fixed overwrite into a valid hole; the guest implementation
+does not yet allocate backing at arbitrary guest addresses. A null target is
+rejected with `KERN_INVALID_ADDRESS`. `make -C cpp verify-mach-vm-overwrite-native`
+checks native full and partial overwrites, a valid hole mapping, address
+preservation and zero fill, the null-target error, and rejection of an
+unsupported flag.

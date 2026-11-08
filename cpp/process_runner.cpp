@@ -3408,6 +3408,111 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         guestAddress = address;
         return kernSuccess;
     };
+    hostServiceState.machVmOverwrite = [&](std::uint64_t& guestAddress,
+                                            std::uint64_t size,
+                                            std::uint32_t currentProtection,
+                                            std::uint32_t maximumProtection) {
+        const auto pageSize = bootstrap.pageSize;
+        if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
+            guestAddress > std::numeric_limits<std::uint64_t>::max() - size) {
+            return kernInvalidArgument;
+        }
+        const auto requestedEnd = guestAddress + size;
+        if (requestedEnd > std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+            return kernInvalidArgument;
+        }
+        const auto begin = guestAddress & ~(pageSize - 1);
+        const auto end = (requestedEnd + pageSize - 1) & ~(pageSize - 1);
+        if (image.mapping_backing_end() >
+            std::numeric_limits<std::uint64_t>::max() - guestMappingBase) {
+            return kernInvalidAddress;
+        }
+        const auto arenaEnd = guestMappingBase + image.mapping_backing_end();
+        if (begin < guestMappingBase || end > arenaEnd) return kernInvalidAddress;
+        const auto allocation = std::find_if(vmAllocations.begin(), vmAllocations.end(),
+            [begin, end](const auto& item) {
+                return begin >= item.second.begin && end <= item.second.end;
+            });
+        if (allocation == vmAllocations.end()) return kernInvalidAddress;
+
+        const auto& current = allocation->second;
+        std::uint64_t cursor = begin;
+        for (const auto& region : current.regions) {
+            if (region.end <= cursor || region.begin >= end) continue;
+            if (region.begin > cursor) return kernInvalidAddress;
+            if (region.jit || region.executable) return kernInvalidAddress;
+            cursor = std::min(end, region.end);
+            if (cursor == end) break;
+        }
+        if (cursor != end) return kernInvalidAddress;
+        if ((currentProtection & 4U) != 0) return kernProtectionFailure;
+
+        std::vector<VmRegion> replacement;
+        replacement.reserve(current.regions.size() + 2);
+        for (const auto& region : current.regions) {
+            if (region.end <= begin || region.begin >= end) {
+                replacement.push_back(region);
+                continue;
+            }
+            if (region.begin < begin) {
+                replacement.push_back({region.begin, begin, region.backing,
+                    region.readable, region.writable, region.executable,
+                    region.maximumProtection, region.jit});
+            }
+            if (region.end > end) {
+                replacement.push_back({end, region.end,
+                    region.backing + static_cast<std::size_t>(end - region.begin),
+                    region.readable, region.writable, region.executable,
+                    region.maximumProtection, region.jit});
+            }
+        }
+        const auto backing = current.backing + static_cast<std::size_t>(begin - current.begin);
+        replacement.push_back({begin, end, backing,
+            (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
+            (currentProtection & 4U) != 0, maximumProtection, false});
+        std::sort(replacement.begin(), replacement.end(),
+            [](const VmRegion& left, const VmRegion& right) {
+                return left.begin < right.begin;
+            });
+        if (resident[0] < current.regions.size() ||
+            resident[0] - current.regions.size() + replacement.size() > residentCapacity) {
+            return kernNoSpace;
+        }
+
+        try {
+            auto stagedAllocations = vmAllocations;
+            auto stagedAllocation = stagedAllocations.find(current.begin);
+            if (stagedAllocation == stagedAllocations.end()) return kernInvalidAddress;
+            stagedAllocation->second.regions = replacement;
+            auto stagedResident = resident;
+            std::vector<std::uint64_t> removedBegins;
+            std::vector<GuestMemoryMapping> addedMappings;
+            removedBegins.reserve(current.regions.size());
+            addedMappings.reserve(replacement.size());
+            for (const auto& region : current.regions) {
+                removedBegins.push_back(region.begin);
+                removeVmRegionFromResident(stagedResident, region);
+            }
+            for (const auto& region : replacement) {
+                appendVmRegionToResident(stagedResident, region);
+                addedMappings.push_back({region.begin, region.end, region.backing,
+                                         region.writable, region.readable});
+            }
+            auto stagedCodeRegions = prepareDynamicCodeRegions(
+                current.begin, current.end, replacement);
+            guestMemory.replace_mappings(removedBegins, addedMappings);
+            vmAllocations.swap(stagedAllocations);
+            resident.swap(stagedResident);
+            commitDynamicCodeRegions(std::move(stagedCodeRegions));
+        } catch (...) {
+            return kernNoSpace;
+        }
+        std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
+                    static_cast<std::size_t>(end - begin));
+        syncResidentTable();
+        guestAddress = begin;
+        return kernSuccess;
+    };
     hostServiceState.machVmDeallocate = [&](std::uint64_t address, std::uint64_t size) {
         const auto pageSize = bootstrap.pageSize;
         if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||

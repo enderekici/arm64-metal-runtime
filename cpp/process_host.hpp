@@ -208,6 +208,9 @@ struct HostServiceState {
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
                                 std::uint64_t& guestAddress, bool jitMapping)> machVmAllocate;
+    std::function<std::uint32_t(std::uint64_t& guestAddress, std::uint64_t size,
+                                std::uint32_t currentProtection,
+                                std::uint32_t maximumProtection)> machVmOverwrite;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
