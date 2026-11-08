@@ -190,7 +190,8 @@ std::vector<std::uint64_t> resident_cache_table(const ExecutableImage& image,
         resident[entry] = static_cast<std::uint64_t>(region.logical_start);
         resident[entry + 1] = static_cast<std::uint64_t>(region.logical_end);
         resident[entry + 2] = region.backing;
-        resident[entry + 3] = (region.writable ? 1U : 0U) | (region.readable ? 0U : 2U);
+        resident[entry + 3] = (region.writable ? 1U : 0U) |
+            (region.readable ? 0U : 2U) | (region.tpro ? 4U : 0U);
     }
     return resident;
 }
@@ -763,7 +764,7 @@ void enter_startup_frame(std::vector<std::uint64_t>& registers,
                          const ProcessBootstrapResult& bootstrap,
                          std::uint64_t address) {
     std::fill_n(registers.begin(), 36, 0);
-    for (std::size_t index = 0; index < 4; ++index) registers[index] = bootstrap.registers[index];
+    for (std::size_t index = 0; index < 5; ++index) registers[index] = bootstrap.registers[index];
     registers[30] = kNoFault;
     registers[31] = bootstrap.stack.end;
     registers[33] = address;
@@ -911,6 +912,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                           options.cachedInitializers);
     progressTrace.event("image-load-done", static_cast<std::uint64_t>(image.entry));
     std::map<std::int64_t, std::string> imports(image.imports.begin(), image.imports.end());
+    if (image.cache_reader) {
+        constexpr auto libdyldPath = "/usr/lib/system/libdyld.dylib";
+        constexpr auto tproFunction = "__dyld_call_with_writable_tpro_memory";
+        if (const auto resolved = image.cache_reader->resolveExport(libdyldPath, tproFunction)) {
+            imports.emplace(resolved->guest_address, tproFunction);
+        }
+    }
     if (image.cache_reader &&
         image.cache_reader->newFormatTlvs() == std::optional<bool>{true}) {
         const auto fastEntry = image.cache_reader->tlvGetAddrFastEntry();
@@ -950,6 +958,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
     input.guestTaskPort = guestMachTaskPort;
     auto bootstrap = build_process_bootstrap(std::move(input));
+    constexpr std::uint64_t guestServiceScratchBytes = 4096;
+    const auto programVars = bootstrap.scratchAddress + guestServiceScratchBytes;
+    const auto programNameSlot = programVars + 5 * sizeof(std::uint64_t);
+    store_u64(bootstrap.memory, programVars, static_cast<std::uint64_t>(image.main_header));
+    store_u64(bootstrap.memory, programVars + sizeof(std::uint64_t), bootstrap.argcAddress);
+    store_u64(bootstrap.memory, programVars + 2 * sizeof(std::uint64_t), bootstrap.argvAddress);
+    store_u64(bootstrap.memory, programVars + 3 * sizeof(std::uint64_t), bootstrap.environSlot);
+    store_u64(bootstrap.memory, programVars + 4 * sizeof(std::uint64_t), programNameSlot);
+    store_u64(bootstrap.memory, programNameSlot, bootstrap.programName);
+    bootstrap.registers[4] = programVars;
     GuestThread mainThread;
     mainThread.id = 1;
     mainThread.stack = {static_cast<std::int64_t>(bootstrap.stack.begin),
@@ -974,9 +992,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         image, bootstrap, guestTlvRuntime, std::move(occupiedTlvKeys));
 
     std::vector<std::uint64_t> startup;
+    std::size_t writableTproStartupTargets = 0;
     const bool cacheBootstrap = options.cacheBootstrap || options.cachedInitializers ||
         (std::getenv("ARM64_METAL_CACHE_BOOTSTRAP") != nullptr &&
          std::strcmp(std::getenv("ARM64_METAL_CACHE_BOOTSTRAP"), "1") == 0);
+    if (options.cachedInitializers) {
+        for (const auto& initializer : image.startup_libsystem_initializers) {
+            if (initializer.authentication || initializer.high_byte != 0 ||
+                initializer.target_address > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()) ||
+                !image.is_code(static_cast<std::int64_t>(initializer.target_address))) {
+                throw std::runtime_error(
+                    "libSystem initializer target is not directly callable");
+            }
+            startup.push_back(initializer.target_address);
+        }
+        writableTproStartupTargets += image.startup_libsystem_initializers.size();
+    }
     if (cacheBootstrap) {
         if (image.objc_bootstrap) {
             startup.push_back(static_cast<std::uint64_t>(*image.objc_bootstrap));
@@ -986,7 +1018,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (!image.startup_initializer_metadata_collected) {
             throw std::runtime_error("Cached initializer plan was not collected");
         }
-        for (const auto& initializerImage : image.startup_initializer_images) {
+        for (std::size_t index = 0; index < image.startup_initializer_images.size(); ++index) {
+            const auto& initializerImage = image.startup_initializer_images[index];
             if (!initializerImage.from_shared_cache) {
                 startup.insert(startup.end(), initializerImage.local_targets.begin(),
                                initializerImage.local_targets.end());
@@ -1035,6 +1068,46 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
     auto memoryBuffer = backend.makeSharedBuffer(bootstrap.memory.size());
     auto stateBuffer = backend.makeSharedBuffer(processRegisters.size() * sizeof(std::uint64_t));
+    if (image.cache_reader && !image.cache_reader->tproMappings().empty()) {
+        std::vector<CacheRegion> splitRegions;
+        for (const auto& region : image.cache_regions) {
+            std::vector<std::uint64_t> boundaries{
+                static_cast<std::uint64_t>(region.logical_start),
+                static_cast<std::uint64_t>(region.logical_end)};
+            for (const auto& mapping : image.cache_reader->tproMappings()) {
+                const auto begin = static_cast<std::uint64_t>(mapping.guestAddress);
+                const auto end = begin + mapping.size;
+                if (begin > static_cast<std::uint64_t>(region.logical_start) &&
+                    begin < static_cast<std::uint64_t>(region.logical_end)) {
+                    boundaries.push_back(begin);
+                }
+                if (end > static_cast<std::uint64_t>(region.logical_start) &&
+                    end < static_cast<std::uint64_t>(region.logical_end)) {
+                    boundaries.push_back(end);
+                }
+            }
+            std::sort(boundaries.begin(), boundaries.end());
+            boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                             boundaries.end());
+            for (std::size_t index = 1; index < boundaries.size(); ++index) {
+                const auto begin = boundaries[index - 1];
+                const auto end = boundaries[index];
+                const bool tpro = std::any_of(
+                    image.cache_reader->tproMappings().begin(),
+                    image.cache_reader->tproMappings().end(), [&](const auto& mapping) {
+                        const auto tproBegin = static_cast<std::uint64_t>(mapping.guestAddress);
+                        return begin >= tproBegin && begin - tproBegin < mapping.size &&
+                            end - begin <= mapping.size - (begin - tproBegin);
+                    });
+                splitRegions.push_back({static_cast<std::int64_t>(begin),
+                    static_cast<std::int64_t>(end),
+                    region.backing + static_cast<std::size_t>(begin -
+                        static_cast<std::uint64_t>(region.logical_start)),
+                    tpro ? false : region.writable, region.readable, tpro});
+            }
+        }
+        image.cache_regions = std::move(splitRegions);
+    }
     const auto residentCapacity = image.cache_regions.size() + 4096;
     auto resident = resident_cache_table(image, residentCapacity);
     auto residentBuffer = backend.makeSharedBuffer(resident.size() * sizeof(std::uint64_t));
@@ -1053,6 +1126,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     GuestMemory guestMemory(static_cast<std::uint8_t*>(memoryBuffer.data()), memoryBuffer.size(),
                             bootstrap.readOnlyRanges, guest_memory_mappings(image));
     std::set<std::uint64_t> objcWritableBackings;
+    std::optional<std::uint64_t> tproWritableThread;
     const auto publishCommpage = [&](std::uint64_t address, std::size_t backing,
                                      std::uint64_t value, std::size_t width) {
         if (resident[0] >= residentCapacity || backing > memoryBuffer.size() ||
@@ -1775,6 +1849,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::uint64_t> savedVectorAndAuth;
         std::uint64_t authenticationDepth = 0;
         std::uint64_t mutationBlock = 0;
+        bool tproScope = false;
         std::vector<std::uint64_t> objcHeaders;
         std::uint64_t callback = 0;
         std::vector<std::array<std::uint64_t, 4>> arguments;
@@ -2726,12 +2801,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     const auto syncResidentTable = [&]() {
         std::memcpy(residentBuffer.data(), resident.data(), resident.size() * sizeof(std::uint64_t));
     };
+    const auto setTproWrites = [&](bool enabled) {
+        for (std::size_t index = 0; index < resident[0]; ++index) {
+            const auto row = 1 + 4 * index;
+            if ((resident[row + 3] & 4U) == 0) continue;
+            if (enabled) resident[row + 3] |= 1U;
+            else resident[row + 3] &= ~std::uint64_t{1};
+            guestMemory.set_mapping_permissions(resident[row], true, enabled);
+        }
+        syncResidentTable();
+    };
+    const auto syncTproThreadAccess = [&]() {
+        const auto thread = guestScheduler.current_id();
+        const auto found = callbackFramesByThread.find(thread);
+        const bool enabled = found != callbackFramesByThread.end() &&
+            std::any_of(found->second.begin(), found->second.end(),
+                [](const GuestCallbackFrame& frame) { return frame.tproScope; });
+        const auto desiredThread = enabled ? std::optional<std::uint64_t>{thread} : std::nullopt;
+        if (desiredThread == tproWritableThread) return;
+        setTproWrites(enabled);
+        tproWritableThread = desiredThread;
+    };
     const auto setObjCCacheWrites = [&](bool enabled) {
         if (!image.cache_reader) return;
         if (enabled) {
             for (std::size_t index = 0; index < resident[0]; ++index) {
                 const auto row = 1 + 4 * index;
-                if ((resident[row + 3] & 2U) != 0 || (resident[row + 3] & 1U) != 0) continue;
+                if ((resident[row + 3] & 6U) != 0 || (resident[row + 3] & 1U) != 0) continue;
                 const auto begin = static_cast<std::int64_t>(resident[row]);
                 const auto end = static_cast<std::int64_t>(resident[row + 1]);
                 if (!image.cache_reader->isCacheDataConst(begin, end)) continue;
@@ -3172,6 +3268,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     std::uint64_t dispatchSequence = 0;
     while (true) {
+        syncTproThreadAccess();
         if (!applyJitWriteProtection ||
             !applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
             throw std::runtime_error("Guest thread MAP_JIT mode could not be applied");
@@ -3266,7 +3363,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::copy(pending.savedVectorAndAuth.begin(),
                               pending.savedVectorAndAuth.end(), callbackRegisters + 806);
                     callbackRegisters[37] = pending.authenticationDepth;
-                    std::copy_n(bootstrap.registers.begin(), 4, callbackRegisters);
+                    std::copy_n(bootstrap.registers.begin(), 5, callbackRegisters);
                     callbackRegisters[30] = kNoFault;
                     callbackRegisters[33] = target;
                     selectKernel(static_cast<std::int64_t>(target));
@@ -3416,6 +3513,45 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 // This runtime does not implement DYLD_INSERT_LIBRARIES or
                 // __interpose sections; ordinary guest dlopen is not insertion.
                 registers[0] = 0;
+                continue;
+            }
+            if (service == 178) {
+                if (startupIndex >= writableTproStartupTargets) {
+                    std::fputs("dyld: Illegal TPRO memory access\n", stderr);
+                    std::abort();
+                }
+                auto callback = hostRegisters[0];
+                if ((callback & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
+                    const auto authenticated = decode_guest_ia0_callback(
+                        hostRegisters.data(), hostRegisters.size(), callback);
+                    if (!authenticated) {
+                        throw std::runtime_error(
+                            "Guest writable-TPRO callback authentication failed");
+                    }
+                    callback = *authenticated;
+                }
+                if (callback > static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int64_t>::max()) ||
+                    !image.is_code(static_cast<std::int64_t>(callback))) {
+                    throw std::runtime_error(
+                        "Guest writable-TPRO callback target is not executable");
+                }
+                GuestCallbackFrame frame;
+                frame.savedRegisters.assign(hostRegisters.begin(), hostRegisters.begin() + 36);
+                frame.savedRegisters[33] = hostRegisters[30];
+                frame.savedRegisters[34] = 0;
+                frame.savedVectorAndAuth.assign(hostRegisters.begin() + 806,
+                                                hostRegisters.begin() + guestTokenCount);
+                frame.authenticationDepth = hostRegisters[37];
+                frame.tproScope = true;
+                callbackFrames.push_back(std::move(frame));
+                syncTproThreadAccess();
+                auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                callbackRegisters[0] = hostRegisters[1];
+                callbackRegisters[30] = kNoFault;
+                callbackRegisters[33] = callback;
+                callbackRegisters[34] = 0;
+                selectKernel(static_cast<std::int64_t>(callback));
                 continue;
             }
             if (service == 143) {
@@ -4342,7 +4478,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                               pending.savedVectorAndAuth.end(),
                                               callbackRegisters + 806);
                                     callbackRegisters[37] = pending.authenticationDepth;
-                                    std::copy_n(bootstrap.registers.begin(), 4,
+                                    std::copy_n(bootstrap.registers.begin(), 5,
                                                 callbackRegisters);
                                     callbackRegisters[30] = kNoFault;
                                     callbackRegisters[33] = first;

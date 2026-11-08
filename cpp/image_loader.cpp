@@ -729,6 +729,9 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
       swift_prespecialized_data = cache.swiftPrespecializedAddress();
       if (swift_prespecialized_data) pending.insert(SharedCache::swiftPrespecializedLibrary);
     }
+    if (collect_startup_initializer_metadata) {
+      pending.insert("/usr/lib/libSystem.B.dylib");
+    }
     std::unordered_map<std::string, std::pair<std::string, std::int64_t>> demand_libsystem_exports;
     std::map<std::string, SharedCache::GuestImage> demand_reexport_metadata;
     for (const auto& item : loaded) for (const auto& dependency : item.image.dependencies) {
@@ -1099,6 +1102,9 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
     startup_initializer_upward_links_supported = true;
     constexpr std::size_t maximumStartupImages = 2048;
     constexpr const char* libSystemPath = "/usr/lib/libSystem.B.dylib";
+    if (cache_reader) {
+      startup_libsystem_initializers = cache_reader->initializers(libSystemPath);
+    }
     struct StartupEdge {
       std::uint64_t header;
       bool upward;

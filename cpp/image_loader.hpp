@@ -224,6 +224,7 @@ struct CacheRegion {
   std::size_t backing;
   bool writable;
   bool readable = true;
+  bool tpro = false;
 };
 
 struct DeferredCacheSegment {
@@ -263,6 +264,7 @@ struct ExecutableImage {
   // Alternative ordered plan for an explicit consumer. Do not concatenate this
   // with `initializers`: local constructors are represented in both sequences.
   std::vector<StartupInitializerImage> startup_initializer_images;
+  std::vector<SharedCache::Initializer> startup_libsystem_initializers;
   bool startup_initializer_metadata_collected = false;
   bool startup_initializer_upward_links_supported = false;
   bool startup_initializer_libsystem_is_guest_modeled = true;

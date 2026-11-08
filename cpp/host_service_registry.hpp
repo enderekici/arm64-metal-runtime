@@ -184,6 +184,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"__dyld_has_preoptimized_swift_protocol_conformances", 148, true, true},
     {"__dyld_find_protocol_conformance", 149, true, true},
     {"_dyld_has_inserted_or_interposing_libraries", 176, true, true},
+    {"__dyld_call_with_writable_tpro_memory", 178, true, true},
     {"_err", 150, true, true},
     {"_warn", 151, true, true},
     {"_warnx", 152, true, true},

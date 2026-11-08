@@ -197,7 +197,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
                                      "Guest TSD overflow");
     result.argvAddress = checked_add(result.argcAddress, 8, "Guest stack overflow");
     result.scratchAddress = checked_add(result.argvAddress, 8, "Guest stack overflow");
-    constexpr std::uint64_t scratch_bytes = 4096;
+    constexpr std::uint64_t scratch_bytes = 4096 + 6 * sizeof(std::uint64_t);
     const auto scratch_end = checked_add(result.scratchAddress, scratch_bytes,
                                          "Guest scratch overflow");
     constexpr std::uint64_t reserved_stack = 16 * 1024;
