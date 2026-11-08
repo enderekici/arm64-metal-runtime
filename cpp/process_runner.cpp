@@ -6699,6 +6699,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error("libdyld loader state is not initialized");
                 }
                 dyldBootstrapTrace.event("runtime-ready", initializedDescriptors);
+                // Bootstrap may grow the authentication table and replace
+                // stateBuffer. Refresh this view before writing the result.
+                registers = static_cast<std::uint64_t*>(stateBuffer.data());
                 registers[0] = 0;
                 continue;
             }
