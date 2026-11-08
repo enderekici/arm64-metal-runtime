@@ -279,3 +279,26 @@ interpreter metallib SHA-256 was
 promoted archive SHA-256 is
 `2ae3bb42387bac78ac60d7515334d9180609a2927130f037d2f73bec27c738e6`.
 Release receipts: `/tmp/metal-stack-fortified-release.aYBcnE`.
+
+## CSEL and scalar indexed-memory interpreter release
+
+The release source `e61cf67` adds the AArch64 conditional-select family and
+scalar indexed memory operations to the opt-in GPU interpreter. Regression,
+interpreter, and demand-cache gates exited 0. Extracted-package CSEL and scalar
+indexed-memory fixtures each exited 42 after respectively 81 and 34 interpreter
+packet dispatches, with no translated compile fallback. Two fixture-only
+repairs replaced register-form compares with equivalent CMN/CMP immediate
+forms to keep the cases on the intended typed path; the result is bounded to
+those corrected fixtures and instruction sequences.
+
+The unchanged Java 26/libz startup probe now reaches `_dyld_sdk_at_least` and
+stops there; its isolated fix is pending. Focused semaphore and clock controls
+passed, as did a late Mach GPU control in isolation. These do not establish full
+Java/libz startup, general Mach IPC, or broad semaphore parity. Runtime SHA-256
+before/after was
+`3ecbc57935635857c8b1ad15d9df93c005f232a74480aeefd5f8154c4861c168`;
+metallib SHA-256 was
+`ac7facd7eaebc4b597764f806d4f4cb346dfff6aa122f4b133022a5bc9c5cabf`. The
+promoted archive SHA-256 is
+`6ba7f7e0db14a498107d2476fa6365a0f712ca18d00bc89f069a19644bffd80a`.
+Receipts: `/tmp/metal-csel-scalar-typed-release.JUQhu9`.
