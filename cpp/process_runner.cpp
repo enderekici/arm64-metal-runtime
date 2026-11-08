@@ -2553,6 +2553,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         const auto begin = address & ~(pageSize - 1);
         const auto end = (requestedEnd + pageSize - 1) & ~(pageSize - 1);
+        if (image.mapping_backing_end() >
+            std::numeric_limits<std::uint64_t>::max() - guestMappingBase) {
+            return kernInvalidArgument;
+        }
+        const auto arenaEnd = guestMappingBase + image.mapping_backing_end();
+        if (begin < guestMappingBase || end > arenaEnd) return kernInvalidArgument;
         auto found = vmAllocations.end();
         for (auto allocation = vmAllocations.begin(); allocation != vmAllocations.end(); ++allocation) {
             if (allocation->second.end <= begin || allocation->second.begin >= end) continue;
