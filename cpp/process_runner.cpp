@@ -8926,7 +8926,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == 177) {
+            if (syscall == SYS_kdebug_trace64) {
+                // With kernel tracing disabled, kdebug_trace64 is a successful
+                // no-op. It consumes only register values and leaves guest
+                // errno untouched; do not forward events to host kdebug.
+                registers[0] = 0;
+                registers[32] &= ~std::uint64_t{8};
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == SYS_kdebug_typefilter) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto outputAddress = registers[0];
                 const auto sizeAddress = registers[1];

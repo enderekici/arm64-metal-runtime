@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -77,6 +77,7 @@ AF_UNIX_CONNECT_EFAULT_NATIVE := $(BUILD_DIR)/af-unix-connect-efault
 AF_UNIX_DGRAM_BLOCKING_NATIVE := $(BUILD_DIR)/af-unix-datagram-blocking
 AF_UNIX_CLOSE_BLOCKED_NATIVE := $(BUILD_DIR)/af-unix-close-blocked
 SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
+KDEBUG_TRACE64_NATIVE := $(BUILD_DIR)/kdebug-trace64-disabled
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 SIGNAL_THREAD_FRAMES := $(BUILD_DIR)/guest-signal-thread-frames
 THREADED_RAISE_SIGNALS_NATIVE := $(BUILD_DIR)/threaded-raise-signals
@@ -199,6 +200,13 @@ INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
 app: $(APP)
+
+$(KDEBUG_TRACE64_NATIVE): ../fixtures/handoff/kdebug-trace64-disabled.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-kdebug-trace64-native: $(KDEBUG_TRACE64_NATIVE)
+	"$(KDEBUG_TRACE64_NATIVE)"
 
 $(SEMAPHORE_NATIVE): ../fixtures/handoff/mach-semaphore-lifecycle.c
 	@mkdir -p "$(BUILD_DIR)"
