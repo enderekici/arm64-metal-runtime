@@ -104,6 +104,9 @@ for case_name do
             xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
                 fixtures/handoff/brk-sigtrap.c -o "$probe_dir/brk-sigtrap"
             compare brk-sigtrap 0 "$probe_dir/brk-sigtrap"
+            xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
+                fixtures/handoff/brk-default-termination.c -o "$probe_dir/brk-default"
+            compare brk-default 133 "$probe_dir/brk-default"
             ;;
         dyld-sdk)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }

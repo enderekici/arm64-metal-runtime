@@ -42,22 +42,31 @@ status, sizes, offsets, and nullness; they do not print pointers or payload.
 
 ## Process BRK #1 and SIGTRAP
 
-`brk-sigtrap.c` branches around an adjacent `BRK #1`, then executes it. The
-SIGINFO handler records signal 5, native `si_code` 0, the fault address and PC,
-and advances the saved PC by four bytes so execution resumes. Native output is
-`untaken=0 untaken_resumed=1 taken=1 signal=5 code=0 address_match=1 pc_match=1 resumed=1`.
+`brk-sigtrap.c` first branches around an adjacent `BRK #1`, then executes BRK
+immediates `#0`, `#1`, `#2`, `#0x1000`, `#0xf000`, and `#0xf001`. On native
+macOS each produces SIGTRAP (`si_code=0`) with `si_addr` equal to the saved PC;
+advancing that PC by four bytes resumes. No special behavior was observed for
+the tested `#0xf000` and `#0xf001` values. Native output is
+`untaken=0 variants=6 traps=6 signal=5 code=0 address_pc_mismatches=0 resumed=7`.
+
+`brk-default-termination.c` leaves SIGTRAP at its default disposition. Native
+and process-mode guest both print `before`, omit `after`, and exit with status
+133 (`128 + SIGTRAP`).
 
 ```sh
 xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
   fixtures/handoff/brk-sigtrap.c -o .build/handoff-probes/brk-sigtrap
 .build/handoff-probes/brk-sigtrap
+xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic \
+  fixtures/handoff/brk-default-termination.c -o .build/handoff-probes/brk-default
+.build/handoff-probes/brk-default
 ```
 
 `make verify-apps APP_VERIFY_CASES=brk` compares native and process-mode guest
-stdout, stderr, and exit status. Process mode delivers only the exact BRK #1
-encoding as a synchronous SIGTRAP; `decode_process` and the standalone function
-translator continue to reject raw BRK instructions. PAC decoding and checks are
-unchanged.
+stdout, stderr, and exit status for both controls. Process mode delivers any
+BRK immediate as a synchronous SIGTRAP; `decode_process` and the standalone
+function translator continue to reject raw BRK instructions. PAC decoding and
+checks are unchanged.
 
 ## Loader probes
 

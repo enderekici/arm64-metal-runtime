@@ -216,9 +216,9 @@ void decode_reachable(const ExecutableImage& image,
             }
         } catch (const std::exception& error) {
             const auto word = selectorWord ? *selectorWord : image.instruction(pc);
-            if (word == 0xd4200020U) {
-                // Process execution turns BRK #1 into the guest's synchronous
-                // SIGTRAP path. Keep decode_process unchanged so the raw
+            if ((word & 0xffe0001fU) == 0xd4200000U) {
+                // Process execution turns AArch64 BRK immediates into the
+                // guest's synchronous SIGTRAP path. Keep decode_process unchanged so the raw
                 // function translator continues to reject the instruction.
                 instruction = {{"x[33] = " + std::to_string(pc) +
                                 "ul; x[34] = 15; return;"}, {}};
