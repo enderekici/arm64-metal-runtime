@@ -113,6 +113,8 @@ for mode in default xint c1 c2; do
         "$jdk_home/bin/java" "$@" -cp "$probe_dir/classes" HotWorkload
 done
 
+compare java-version '' "$jdk_home/bin/java" -version
+
 thread_marker='THREAD_OK started=true wait_notify=true joined=true finished=true iterations=500000 checksum=3152561776762913839'
 for mode in default xint c1 c2; do
     set --

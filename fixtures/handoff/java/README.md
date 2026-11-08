@@ -15,9 +15,11 @@ make verify-java JDK_HOME="$JDK_HOME" \
 ```
 
 The gate compares status, stdout, and non-trace stderr for default, `-Xint`,
-C1, C2, the threaded fixture, JNI defaults, and `JNI_CreateJavaVM`. The VM
-creation case calls `JniSmoke.run()` through JNI and destroys the VM. It stores
-the runtime hash and per-process receipts under `.build/java-verification`.
+C1, C2, the threaded fixture, JNI defaults, and `JNI_CreateJavaVM`. It compares
+`java -version` stdout and stderr independently because the JDK writes its
+version text to stderr. The VM creation case calls `JniSmoke.run()` through JNI
+and destroys the VM. It stores the runtime hash and per-process receipts under
+`.build/java-verification`.
 
 The C1/C2 controls use `-Xbatch`, `-XX:+PrintCompilation`, and
 `-XX:+PrintNMethods`. For the native and guest launches, the gate requires
