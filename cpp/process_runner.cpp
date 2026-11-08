@@ -1849,6 +1849,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
+    struct GuestBsdthreadRegistration {
+        std::uint64_t threadStart;
+        std::uint64_t workqueueStart;
+    };
+    std::optional<GuestBsdthreadRegistration> guestBsdthreadRegistration;
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
     struct GuestCallbackFrame {
@@ -5783,6 +5788,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 }
                 registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == 366) {
+                constexpr std::uint64_t carryMask = 8U;
+                constexpr std::uint64_t registrationDataSize = 60;
+                constexpr std::uint64_t dispatchQueueOffset = 0xa0;
+                std::uint64_t error = 0;
+                const auto pageSize = bootstrap.pageSize;
+                const auto minimumThreadSize = std::uint64_t{0x18e0};
+                if (pageSize == 0 || minimumThreadSize >
+                        std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+                    error = EINVAL;
+                } else {
+                    const auto expectedThreadSize =
+                        ((minimumThreadSize + pageSize - 1) / pageSize) * pageSize;
+                    if (registers[2] != expectedThreadSize ||
+                        registers[4] != registrationDataSize ||
+                        registers[5] > registers[2] ||
+                        registers[5] % sizeof(std::uint64_t) != 0) {
+                        error = EINVAL;
+                    } else if (registers[3] < pageSize) {
+                        error = EFAULT;
+                    } else {
+                        try {
+                            const auto* data = guestMemory.buffer(
+                                registers[3], registrationDataSize);
+                            std::uint64_t version = 0;
+                            std::memcpy(&version, data, sizeof(version));
+                            if (version != registrationDataSize) {
+                                error = EINVAL;
+                            } else if (guestBsdthreadRegistration) {
+                                error = EINVAL;
+                            } else if (registers[5] != dispatchQueueOffset) {
+                                error = EINVAL;
+                            } else {
+                                guestBsdthreadRegistration = GuestBsdthreadRegistration{
+                                    registers[0], registers[1]};
+                            }
+                        } catch (const std::out_of_range&) {
+                            error = EFAULT;
+                        }
+                    }
+                }
+                if (error == 0) {
+                    registers[0] = 0;
+                    registers[32] &= ~carryMask;
+                } else {
+                    registers[0] = error;
+                    registers[32] |= carryMask;
+                }
                 registers[34] = 0;
                 continue;
             }
