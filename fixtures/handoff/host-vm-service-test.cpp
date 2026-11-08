@@ -14,12 +14,18 @@
 using namespace arm64metal;
 
 int main() {
-  assert(decoder_host_service_ids().at("_mach_vm_protect") == 196);
+  assert(decoder_host_service_ids().at("_pthread_threadid_np") == 196);
   assert(decoder_host_service_ids().at("_mach_vm_read_overwrite") == 197);
+  assert(decoder_host_service_ids().at("___memset_chk") == 198);
   assert(decoder_host_service_ids().at("_mach_vm_region") == 199);
-  assert(runner_host_service_ids().at("_mach_vm_protect") == 196);
+  assert(decoder_host_service_ids().at("_mach_vm_protect") == 200);
+  assert(decoder_host_service_ids().at("__guest_libdyld_initialize") == 201);
+  assert(runner_host_service_ids().at("_pthread_threadid_np") == 196);
   assert(runner_host_service_ids().at("_mach_vm_read_overwrite") == 197);
+  assert(runner_host_service_ids().at("___memset_chk") == 198);
   assert(runner_host_service_ids().at("_mach_vm_region") == 199);
+  assert(runner_host_service_ids().at("_mach_vm_protect") == 200);
+  assert(runner_host_service_ids().at("__guest_libdyld_initialize") == 201);
 
   std::vector<std::uint8_t> borrowedBytes(256, 0x31);
   std::vector<std::uint8_t> expandedBytes(512, 0x31);
@@ -61,10 +67,10 @@ int main() {
   registers[2] = 8192;
   registers[3] = 1;
   registers[4] = 5;
-  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 196);
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 200);
   assert(registers[0] == 0 && protectCalled);
   registers[0] = 78;
-  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 196);
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 200);
   assert(registers[0] == 0x10000003U);
 
   state.machVmRegion = [](std::uint64_t address) -> std::optional<HostMachVmRegion> {

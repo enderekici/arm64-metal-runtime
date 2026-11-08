@@ -980,6 +980,51 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
                  "] = value[1]; }"));
   };
+  if ((bits & 0xff3ffc00) == 0x5e31b800) {
+    const auto source = vector(rn);
+    return emit((std::string("{ ulong2 source = ") + str(source) +
+                 "; x[" + str(806 + 2 * rd) + "] = source[0] + source[1]; x[" +
+                 str(807 + 2 * rd) + "] = 0ul; }"));
+  }
+  if ((bits & 0xbf3ffc00) == 0x0e212800) {
+    const auto sourceWidth = 16 << field(22, 2);
+    if (sourceWidth >= 128) {
+      throw GuestError((std::string("Invalid XTN arrangement")));
+    }
+    const auto destinationWidth = sourceWidth / 2;
+    const auto sourceLanes = 128 / sourceWidth;
+    const auto top = field(30, 1) != 0;
+    const auto destinationBase = top ? 64 / destinationWidth : 0;
+    const auto initial = top ? (std::string("ulong2(") +
+                                    str(vector(rd)) + "[0], 0ul)")
+                             : std::string("ulong2(0)");
+    return emit((std::string("{ ulong2 source = ") + str(vector(rn)) +
+                 ", value = " + initial + ";\n              for (uint lane = 0; lane < " +
+                 str(sourceLanes) + "; ++lane)\n                  lane_add(value, lane + " +
+                 str(destinationBase) + ", " + str(destinationWidth) +
+                 ", lane_read(source, lane, " + str(sourceWidth) + "));\n              x[" +
+                 str(806 + 2 * rd) + "] = value[0]; x[" +
+                 str(807 + 2 * rd) + "] = value[1]; }"));
+  }
+  if ((bits & 0xbf20fc00) == 0x2e20a400) {
+    const auto width = 8 << field(22, 2);
+    if (width >= 64) {
+      throw GuestError((std::string("Invalid UMAXP arrangement")));
+    }
+    const auto lanes = (field(30, 1) == 0 ? 64 : 128) / width;
+    const auto left = vector(rn);
+    const auto right = vector(field(16, 5));
+    return emit((std::string("{ ulong2 left = ") + str(left) +
+                 ", right = " + right + ", value = ulong2(0);\n              for (uint lane = 0; lane < " +
+                 str(lanes) + "; ++lane) {\n                  ulong2 source = lane < " +
+                 str(lanes / 2) + " ? left : right;\n                  uint pair = (lane % " +
+                 str(lanes / 2) + ") * 2;\n                  ulong a = lane_read(source, pair, " +
+                 str(width) + ");\n                  ulong b = lane_read(source, pair + 1, " +
+                 str(width) + ");\n                  lane_add(value, lane, " +
+                 str(width) + ", a > b ? a : b);\n              }\n              x[" +
+                 str(806 + 2 * rd) + "] = value[0]; x[" +
+                 str(807 + 2 * rd) + "] = value[1]; }"));
+  }
   if (auto lowered = lower_vector_crypto(bits, pc)) {
     return *lowered;
   }

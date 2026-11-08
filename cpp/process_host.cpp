@@ -2261,7 +2261,7 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 196: {  // mach_vm_protect wrapper, matching its raw Mach trap
+        case 200: {  // mach_vm_protect wrapper, matching its raw Mach trap
             constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
             constexpr std::uint32_t kernInvalidArgument = 4;
             if (registers[0] != bootstrap.guestTaskPort) {

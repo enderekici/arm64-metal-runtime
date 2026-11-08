@@ -857,6 +857,108 @@ void initialize_authenticated_pointers(const ExecutableImage& image,
     }
 }
 
+std::uint64_t append_guest_pointer_token(ProcessBootstrapResult& bootstrap,
+                                         std::uint64_t address,
+                                         std::uint64_t key,
+                                         std::uint64_t modifier) {
+    auto& registers = bootstrap.registers;
+    const auto index = static_cast<std::size_t>(registers[guestTokenCount]);
+    const auto capacity = static_cast<std::size_t>(registers[guestTokenCapacity]);
+    if (index >= capacity) throw std::runtime_error("Guest authentication table is full");
+    const auto slot = guestTokenStart + 3 * index;
+    registers[slot] = address;
+    registers[slot + 1] = modifier;
+    registers[slot + 2] = key;
+    registers[guestTokenCount] = index + 1;
+    return encode_guest_pointer(address, key, index);
+}
+
+struct DyldApisFacade {
+    std::uint64_t object = 0;
+    std::uint64_t initializeService = 0;
+    std::int64_t publicationCell = 0;
+    bool publicationSeeded = false;
+};
+
+DyldApisFacade initialize_dyld_apis(
+    const ExecutableImage& image, ProcessBootstrapResult& bootstrap,
+    std::map<std::int64_t, std::string>& imports,
+    const std::map<std::int64_t, std::int64_t>& guestStubs) {
+    if (!image.cache_reader) return {};
+    constexpr std::array<std::uint8_t, 16> supportedCacheUuid{
+        0xc2, 0x84, 0xa2, 0x91, 0xb6, 0x8b, 0x3d, 0x0d,
+        0xa1, 0xa0, 0x3f, 0x86, 0x6f, 0x87, 0xef, 0xdc};
+    if (!std::equal(supportedCacheUuid.begin(), supportedCacheUuid.end(),
+                    image.cache_reader->uuid().begin(), image.cache_reader->uuid().end())) {
+        throw std::runtime_error("Unsupported dyld API ABI for this shared-cache UUID");
+    }
+    const auto cell = image.cache_reader->dyldApisCell();
+    if (!cell) throw std::runtime_error("Cached libdyld has no __dyld_apis publication cell");
+    const auto cellOffset = memory_backing_offset(image,
+        static_cast<std::uint64_t>(cell->address), cell->size, bootstrap.memory.size());
+    const bool deferred = std::any_of(image.deferred_cache.begin(), image.deferred_cache.end(),
+        [&](const DeferredCacheSegment& segment) {
+            if (segment.logical_start < 0 || segment.logical_end < segment.logical_start) return false;
+            const auto begin = static_cast<std::uint64_t>(segment.logical_start);
+            const auto end = static_cast<std::uint64_t>(segment.logical_end);
+            const auto address = static_cast<std::uint64_t>(cell->address);
+            return address >= begin && address <= end && cell->size <= end - address;
+        });
+    if (!cellOffset && !deferred) {
+        throw std::runtime_error("Cached __dyld_apis cell is neither resident nor deferred");
+    }
+    const auto rawCell = image.cache_reader->bytes(
+        image.cache_reader->originalAddress(cell->address), cell->size);
+    if (std::any_of(rawCell.begin(), rawCell.end(), [](std::uint8_t value) { return value != 0; }) ||
+        (cellOffset && load_u64(bootstrap.memory, *cellOffset) != 0)) {
+        throw std::runtime_error("Cached __dyld_apis cell is already populated");
+    }
+    const auto method = image.cache_reader->resolveExport(
+        "/usr/lib/system/libdyld.dylib", "__dyld_call_with_writable_tpro_memory");
+    if (!method || method->guest_address < 0) {
+        throw std::runtime_error("Cached libdyld writable-TPRO method is unavailable");
+    }
+    constexpr std::uint64_t serviceBase = 0x80000000ULL;
+    auto service = serviceBase;
+    while (service <= static_cast<std::uint64_t>(
+               std::numeric_limits<std::int64_t>::max()) - 4 &&
+           (imports.find(static_cast<std::int64_t>(service)) != imports.end() ||
+            guestStubs.find(static_cast<std::int64_t>(service)) != guestStubs.end())) {
+        service += 4;
+    }
+    if (service >= guestCodeLimit) {
+        throw std::runtime_error("Synthetic libdyld service address space exhausted");
+    }
+    imports.emplace(static_cast<std::int64_t>(service), "__guest_libdyld_initialize");
+
+    constexpr std::uint64_t objectBytes = 16;
+    constexpr std::uint64_t vtableBytes = 0x428;
+    constexpr std::uint64_t reservation = objectBytes + vtableBytes;
+    const auto object = bootstrap.heap.begin;
+    if (reservation > bootstrap.heap.end - bootstrap.heap.begin ||
+        object > bootstrap.memory.size() || reservation > bootstrap.memory.size() - object) {
+        throw std::runtime_error("Guest heap cannot hold the libdyld API façade");
+    }
+    const auto vtable = object + objectBytes;
+    constexpr std::uint64_t addressMask = 0x0000ffffffffffffULL;
+    const auto vptrModifier = (object & addressMask) | 0x63fa000000000000ULL;
+    store_u64(bootstrap.memory, object,
+              append_guest_pointer_token(bootstrap, vtable, 2, vptrModifier));
+    const auto methodSlot = vtable + 0x420;
+    const auto methodModifier = (methodSlot & addressMask) | 0x8c7f000000000000ULL;
+    store_u64(bootstrap.memory, methodSlot,
+              append_guest_pointer_token(bootstrap,
+                  static_cast<std::uint64_t>(method->guest_address), 0, methodModifier));
+    const auto initializeSlot = vtable + 0x8;
+    const auto initializeModifier = (initializeSlot & addressMask) | 0x8379000000000000ULL;
+    store_u64(bootstrap.memory, initializeSlot,
+              append_guest_pointer_token(bootstrap, service, 0, initializeModifier));
+    bootstrap.readOnlyRanges.push_back({object, object + reservation});
+    if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
+    bootstrap.heap.begin += reservation;
+    return {object, service, cell->address, cellOffset.has_value()};
+}
+
 void initialize_cached_globals(const ExecutableImage& image,
                                ProcessBootstrapResult& bootstrap) {
     const auto writeCached = [&](std::uint64_t address, std::uint64_t value,
@@ -1343,6 +1445,38 @@ private:
     bool enabled_ = false;
 };
 
+class DyldBootstrapTrace {
+public:
+    DyldBootstrapTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE_DYLD_BOOTSTRAP");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    void event(const char* name, std::uint64_t detail = 0) {
+        if (!enabled_) return;
+        if (events_ == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal dyld-bootstrap event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        ++events_;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::cerr << "arm64-metal dyld-bootstrap +" << elapsed << "ms event=" << name;
+        if (detail != 0) std::cerr << " detail=" << detail;
+        std::cerr << '\n';
+    }
+
+private:
+    static constexpr std::size_t maximumEvents = 16;
+    bool enabled_ = false;
+    bool limitReported_ = false;
+    std::size_t events_ = 0;
+    std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+};
+
 class JitExecutionTrace {
 public:
     JitExecutionTrace() {
@@ -1444,6 +1578,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     ProgressTrace progressTrace;
     SchedulerTrace schedulerTrace;
     WorkqueueTrace workqueueTrace;
+    DyldBootstrapTrace dyldBootstrapTrace;
     JitExecutionTrace jitExecutionTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
         throw std::invalid_argument("Process dispatch block budget must be in [1, 8192]");
@@ -1501,8 +1636,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 3U : 0U;
+    if (image.authentication.size() >
+        std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
+        throw std::length_error("Initial guest authentication table size overflow");
+    }
     input.initialAuthenticationEntries = std::max<std::size_t>(
-        guestInitialTokenCapacity, image.authentication.size());
+        guestInitialTokenCapacity, image.authentication.size() + dyldApiTokenHeadroom);
     const bool usesDefaultRuneLocale = std::any_of(
         image.bindings.begin(), image.bindings.end(),
         [](const auto& binding) { return binding.second == "__DefaultRuneLocale"; });
@@ -1537,6 +1677,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         GuestMemoryRange{bootstrap.stack.begin, bootstrap.stack.end});
     initialize_bindings(image, bootstrap);
     initialize_authenticated_pointers(image, bootstrap);
+    const auto dyldApis = options.cachedInitializers
+        ? initialize_dyld_apis(image, bootstrap, imports, guestStubs)
+        : DyldApisFacade{};
+    bool dyldApisPublicationSeeded = dyldApis.publicationSeeded;
+    if (dyldApisPublicationSeeded) {
+        dyldBootstrapTrace.event("gapis-seeded");
+    }
     initialize_cached_globals(image, bootstrap);
     GuestTlvRuntime guestTlvRuntime;
     std::set<std::uint64_t> registeredCachedTlvImages;
@@ -2901,6 +3048,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t authenticationDepth = 0;
         std::uint64_t mutationBlock = 0;
         bool tproScope = false;
+        bool dyldBootstrapCallback = false;
         std::vector<std::uint64_t> objcHeaders;
         std::uint64_t callback = 0;
         std::vector<std::array<std::uint64_t, 4>> arguments;
@@ -3450,6 +3598,129 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         error->second.pending = false;
         return static_cast<std::uint64_t>(error->second.allocation);
     };
+    bool writableTproCallbackCompleted = false;
+    bool dyldRuntimeInitialized = false;
+    const auto initializeDyldRuntimeState = [&]() {
+        if (!dyldApis.object || !writableTproCallbackCompleted || dyldRuntimeInitialized) {
+            throw std::runtime_error("Invalid _libdyld_initialize lifecycle order");
+        }
+        // Native helper installation maps to the runner's existing pthread
+        // mutex host services backed by GuestScheduler.
+        std::uint64_t initializedDescriptors = 0;
+        const GuestTlvRuntime::Allocate allocateTlv =
+            [&](std::uint64_t size, std::uint64_t alignment)
+            -> std::optional<std::uint64_t> {
+            const auto allocation = allocateGuestHeap(size, alignment);
+            if (!allocation || *allocation < 0) return std::nullopt;
+            return static_cast<std::uint64_t>(*allocation);
+        };
+        const auto initializeDescriptor = [&](std::uint64_t address,
+                                              std::uint32_t expectedKey,
+                                              std::uint64_t templateSize,
+                                              bool diskV1) {
+            const auto* raw = guestMemory.buffer(address, 24);
+            std::uint32_t key = 0;
+            std::uint32_t offset = 0;
+            if (diskV1) {
+                std::memcpy(&key, raw + 8, sizeof(key));
+                if (key != 0) throw std::runtime_error("Invalid disk-v1 initial-image TLV key");
+                std::memcpy(&offset, raw + 16, sizeof(offset));
+                key = expectedKey;
+            } else {
+                std::memcpy(&key, raw + 8, sizeof(key));
+                std::memcpy(&offset, raw + 12, sizeof(offset));
+            }
+            if (key != expectedKey || offset >= templateSize) {
+                throw std::runtime_error("Invalid initial-image TLV descriptor");
+            }
+            if (key >= GuestTlvRuntime::guestTsdSlotCount) {
+                throw std::runtime_error("Initial-image TLV key exceeds guest TSD capacity");
+            }
+            const auto storage = guestTlvRuntime.resolve(
+                bootstrap.mainThreadSpecificData, key, offset, allocateTlv,
+                guestTlvRelease, guestTlvRead, guestTlvWrite);
+            if (!storage) throw std::runtime_error("Unable to initialize initial-image TLV");
+            std::uint64_t published = 0;
+            const auto* slot = guestMemory.buffer(
+                bootstrap.mainThreadSpecificData +
+                    static_cast<std::uint64_t>(key) * sizeof(published), sizeof(published));
+            std::memcpy(&published, slot, sizeof(published));
+            if (published == 0 ||
+                published > std::numeric_limits<std::uint64_t>::max() - offset ||
+                published + offset != *storage) {
+                dyldBootstrapTrace.event("initial-tlv-publication-mismatch",
+                                         initializedDescriptors);
+                throw std::runtime_error(
+                    "Initial-image TLV TSD base disagrees with its resolved descriptor address");
+            }
+            ++initializedDescriptors;
+        };
+        for (const auto& owner : guestTlvDescriptors) {
+            for (auto address = owner.begin; address < owner.end; address += 24) {
+                initializeDescriptor(address, owner.key, owner.templateSize, false);
+            }
+        }
+        for (const auto& [header, metadata] : image.thread_local_images) {
+            if (!metadata.from_shared_cache || metadata.thunk_ranges.empty()) continue;
+            if (!metadata.init_callback_ranges.empty()) {
+                throw std::runtime_error("Cached initial-image TLS callbacks are unsupported");
+            }
+            const bool diskV1 = image.cache_reader->newFormatTlvs() !=
+                std::optional<bool>{true};
+            if (metadata.template_size == 0 || metadata.template_alignment == 0 ||
+                (metadata.template_alignment & (metadata.template_alignment - 1)) != 0) {
+                throw std::runtime_error("Invalid cached initial-image TLV geometry");
+            }
+            std::optional<std::uint32_t> imageKey;
+            for (const auto& [begin, length] : metadata.thunk_ranges) {
+                if (length % 24 != 0) throw std::runtime_error("Malformed cached TLV thunk range");
+                for (std::uint64_t offset = 0; offset < length; offset += 24) {
+                    const auto* raw = guestMemory.buffer(begin + offset, 24);
+                    std::uint32_t key = 0;
+                    std::memcpy(&key, raw + 8, sizeof(key));
+                    if (key == 0 && diskV1) {
+                        const auto assigned = cachedV1TlvKeys.find(header);
+                        if (assigned == cachedV1TlvKeys.end()) {
+                            throw std::runtime_error("Cached initial-image TLV has no key");
+                        }
+                        key = assigned->second;
+                    }
+                    if (key == 0) throw std::runtime_error("Cached initial-image TLV has no key");
+                    if (imageKey && *imageKey != key) {
+                        throw std::runtime_error("Cached initial-image TLV keys disagree");
+                    }
+                    imageKey = key;
+                }
+            }
+            if (!imageKey) continue;
+            if (registeredCachedTlvImages.insert(header).second) {
+                std::vector<std::uint8_t> initial(
+                    static_cast<std::size_t>(metadata.template_size), 0);
+                for (const auto& [address, size] : metadata.template_ranges) {
+                    if (address < metadata.template_address ||
+                        address - metadata.template_address > metadata.template_size ||
+                        size > metadata.template_size - (address - metadata.template_address)) {
+                        throw std::runtime_error("Cached initial-image TLV template is out of bounds");
+                    }
+                    const auto* source = guestMemory.buffer(address, size);
+                    std::copy_n(source, static_cast<std::size_t>(size),
+                        initial.begin() + static_cast<std::ptrdiff_t>(
+                            address - metadata.template_address));
+                }
+                guestTlvRuntime.register_image(*imageKey, std::move(initial), 0,
+                                                metadata.template_alignment);
+            }
+            for (const auto& [begin, length] : metadata.thunk_ranges) {
+                for (std::uint64_t offset = 0; offset < length; offset += 24) {
+                    initializeDescriptor(begin + offset, *imageKey,
+                                          metadata.template_size, diskV1);
+                }
+            }
+        }
+        dlerrorByThread.try_emplace(guestScheduler.current_id());
+        dyldRuntimeInitialized = true;
+        return initializedDescriptors;
+    };
     std::unordered_map<std::string, std::uint64_t> stableGuestStrings;
     const auto stableGuestString = [&](const std::string& value)
         -> std::optional<std::uint64_t> {
@@ -3568,6 +3839,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 memory[offset + byte] = static_cast<std::uint8_t>(value >> (byte * 8U));
             }
         };
+        if (dyldApis.publicationCell != 0) {
+            const bool cellInPlan =
+                dyldApis.publicationCell >= plan->logical_start &&
+                static_cast<std::uint64_t>(dyldApis.publicationCell -
+                    plan->logical_start) <=
+                    static_cast<std::uint64_t>(plan->logical_end - plan->logical_start) &&
+                sizeof(std::uint64_t) <= static_cast<std::uint64_t>(
+                    plan->logical_end - dyldApis.publicationCell);
+            patchWord(static_cast<std::uint64_t>(dyldApis.publicationCell),
+                      dyldApis.object, sizeof(std::uint64_t));
+            if (cellInPlan && !dyldApisPublicationSeeded) {
+                dyldApisPublicationSeeded = true;
+                dyldBootstrapTrace.event("gapis-seeded");
+            }
+        }
         if (image.cached_task_port) patchWord(*image.cached_task_port, guestMachTaskPort, 4);
         if (const auto locale = image.cache_reader->localeKeyAddress()) patchWord(*locale, 10, 8);
         if (image.cached_dispatch_main_queue) {
@@ -5629,6 +5915,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                  callbackFrames.back().exitThread == guestScheduler.current_id())) {
                 auto frame = std::move(callbackFrames.back());
                 callbackFrames.pop_back();
+                if (frame.dyldBootstrapCallback) {
+                    writableTproCallbackCompleted = true;
+                    dyldBootstrapTrace.event("tpro-callback-return");
+                }
                 if (registers[37] != frame.authenticationDepth) {
                     throw std::runtime_error("Guest image callback left authentication stack unbalanced");
                 }
@@ -5830,11 +6120,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             if (service == 178) {
+                const bool cxxMethod = dyldApis.object != 0 &&
+                    hostRegisters[0] == dyldApis.object;
+                if (cxxMethod && !dyldApisPublicationSeeded) {
+                    throw std::runtime_error("dyld API object reached before gAPIs publication");
+                }
                 if (startupIndex >= writableTproStartupTargets) {
                     std::fputs("dyld: Illegal TPRO memory access\n", stderr);
                     std::abort();
                 }
-                auto callback = hostRegisters[0];
+                auto callback = hostRegisters[cxxMethod ? 1U : 0U];
                 if ((callback & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
                     const auto authenticated = decode_guest_ia0_callback(
                         hostRegisters.data(), hostRegisters.size(), callback);
@@ -5858,14 +6153,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                 hostRegisters.begin() + guestTokenCount);
                 frame.authenticationDepth = hostRegisters[37];
                 frame.tproScope = true;
+                frame.dyldBootstrapCallback = cxxMethod;
+                frame.callback = callback;
                 callbackFrames.push_back(std::move(frame));
                 syncTproThreadAccess();
+                if (cxxMethod) {
+                    dyldBootstrapTrace.event("tpro-callback-enter");
+                }
                 auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
-                callbackRegisters[0] = hostRegisters[1];
+                callbackRegisters[0] = hostRegisters[cxxMethod ? 2U : 1U];
                 callbackRegisters[30] = kNoFault;
                 callbackRegisters[33] = callback;
                 callbackRegisters[34] = 0;
                 selectKernel(static_cast<std::int64_t>(callback));
+                continue;
+            }
+            if (service == 201) {
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "_libdyld_initialize dispatch did not use the published guest dyld API object");
+                }
+                dyldBootstrapTrace.event("libdyld-initialize");
+                const auto initializedDescriptors = initializeDyldRuntimeState();
+                if (!dyldRuntimeInitialized) {
+                    throw std::runtime_error("libdyld loader state is not initialized");
+                }
+                dyldBootstrapTrace.event("runtime-ready", initializedDescriptors);
+                registers[0] = 0;
                 continue;
             }
             if (service == 143) {

@@ -149,7 +149,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mach_vm_deallocate", 113, true, true},
     {"_vm_deallocate", 113, true, true},
     {"_mach_vm_map", 114, true, true},
-    {"_mach_vm_protect", 196, true, true},
+    {"_mach_vm_protect", 200, true, true},
     {"_mach_vm_read_overwrite", 197, true, true},
     {"_mach_vm_region", 199, true, true},
     {"__dyld_get_image_slide", 115, true, true},
@@ -222,6 +222,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"___memset_chk", kMemsetChkFailureService, true, true},
     {"_mach_host_self", 193, true, true},
     {"_mach_thread_self", 194, true, true},
+    {"__guest_libdyld_initialize", 201, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {

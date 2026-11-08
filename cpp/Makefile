@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -88,6 +88,10 @@ AUTH_RETURN_BAD_LR_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-main
 AUTH_RETURN_BAD_SP_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-main
 AUTH_RETURN_BAD_LR_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-retab-main
 AUTH_RETURN_BAD_SP_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-retab-main
+INTERPRETER_ADDP_2D_MAIN := $(BUILD_DIR)/interpreter-addp-2d-main
+ADDP_2D_PROCESS_TEST := $(BUILD_DIR)/addp-2d-process-decode-test
+XTN_PROCESS_TEST := $(BUILD_DIR)/xtn-process-decode-test
+UMAXP_PROCESS_TEST := $(BUILD_DIR)/umaxp-process-decode-test
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
 INTERPRETER_ADD_SUB_NATIVE := $(BUILD_DIR)/interpreter-add-sub-native
 INTERPRETER_ADD_SUB_MAIN := $(BUILD_DIR)/interpreter-add-sub-immediate-main
@@ -377,6 +381,47 @@ verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_R
 	run_case bad-lr-retab "$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" 1 36,23,36; \
 	run_case bad-sp-retab "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" 1 36,10,36; \
 	echo 'Typed PACIBSP/AUTIBSP/RETAB packet PC traces and guest outcomes passed'
+
+
+$(INTERPRETER_ADDP_2D_MAIN): ../fixtures/interpreter/addp-2d-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(ADDP_2D_PROCESS_TEST): ../fixtures/handoff/addp-2d-process-decode.cpp $(APP_SOURCES) $(APP_HEADERS)
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -UNDEBUG -I. -fblocks \
+		$(filter-out main.cpp,$(APP_SOURCES)) $< \
+		-framework Foundation -framework Metal -framework Security -o "$@"
+
+verify-addp-2d-native: $(INTERPRETER_ADDP_2D_MAIN) $(ADDP_2D_PROCESS_TEST)
+	@set -eu; \
+		"$(ADDP_2D_PROCESS_TEST)"; \
+		set +e; "$(INTERPRETER_ADDP_2D_MAIN)"; result=$$?; set -e; \
+		test "$$result" -eq 42; \
+		echo "addp.2d native guest exit=$$result"
+
+$(XTN_PROCESS_TEST): ../fixtures/handoff/xtn-process-decode.cpp $(APP_SOURCES) $(APP_HEADERS)
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -UNDEBUG -I. -fblocks \
+		$(filter-out main.cpp,$(APP_SOURCES)) $< \
+		-framework Foundation -framework Metal -framework Security -o "$@"
+
+verify-xtn-native: $(XTN_PROCESS_TEST)
+	"$(XTN_PROCESS_TEST)"
+	"$(XTN_PROCESS_TEST)" "$(BUILD_DIR)/xtn-lowering.metal"
+	xcrun -sdk macosx metal -c "$(BUILD_DIR)/xtn-lowering.metal" -o "$(BUILD_DIR)/xtn-lowering.air"
+
+$(UMAXP_PROCESS_TEST): ../fixtures/handoff/umaxp-process-decode.cpp $(APP_SOURCES) $(APP_HEADERS)
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -UNDEBUG -I. -fblocks \
+		$(filter-out main.cpp,$(APP_SOURCES)) $< \
+		-framework Foundation -framework Metal -framework Security -o "$@"
+
+verify-umaxp-native: $(UMAXP_PROCESS_TEST)
+	"$(UMAXP_PROCESS_TEST)"
+	"$(UMAXP_PROCESS_TEST)" "$(BUILD_DIR)/umaxp-lowering.metal"
+	xcrun -sdk macosx metal -c "$(BUILD_DIR)/umaxp-lowering.metal" -o "$(BUILD_DIR)/umaxp-lowering.air"
+
 
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"

@@ -100,6 +100,11 @@ public:
         std::uint32_t count;
     };
 
+    struct PointerCell {
+        std::int64_t address;
+        std::uint64_t size;
+    };
+
     struct CacheRegion {
         std::int64_t start;
         std::uint64_t size;
@@ -151,6 +156,9 @@ public:
     // Returned guest headers are deduplicated by address, including aliases.
     std::vector<std::int64_t> declaredDependencyHeaders(const std::string& path) const;
     std::optional<TlvMetadata> tlvMetadata(const std::string& path) const;
+    // The libdyld bootstrap API publication slot is a pointer-sized section.
+    // An absent or differently sized section is an unsupported cache ABI.
+    std::optional<PointerCell> dyldApisCell() const;
     std::vector<Initializer> initializers(const std::string& path) const;
     std::vector<Rebase> rebases(const std::string& path) const;
     std::vector<Rebase> rebases(std::uint64_t start, std::uint64_t end,
