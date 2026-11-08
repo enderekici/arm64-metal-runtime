@@ -25,6 +25,8 @@ enum class Opcode : std::uint32_t {
   SubImmediate = 10,
   AddImmediateSetFlags = 11,
   SubImmediateSetFlags = 12,
+  LoadPair = 13,
+  StorePair = 14,
   BranchCondition = 15,
 };
 
@@ -34,6 +36,8 @@ enum class Opcode : std::uint32_t {
 // full-width target and fallthrough PCs are carried in Instruction::next.
 // Add/Sub immediate uses destination/source/immediate/shift/width fields.
 // The set-flags variants use Rd=31 for the CMP/CMN aliases and Rn=31 as SP.
+// Pair memory uses destination=Rt, source=Rn, immediate=signed byte offset,
+// shift=(addressing mode << 5) | Rt2 (1=post, 2=offset, 3=pre), and width=32 or 64.
 // BranchCondition uses source for the condition and immediate for byte offset.
 struct Operation {
   Opcode opcode;

@@ -52,7 +52,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
         }
         const uint firstOpcode = packets[firstIndex].operation[0];
         const bool memoryRetry =
-            (firstOpcode == 6u || firstOpcode == 7u) &&
+            (firstOpcode == 6u || firstOpcode == 7u ||
+             firstOpcode == 13u || firstOpcode == 14u) &&
             state[35] == (pc | 0x8000000000000000ul);
         if ((packets[firstIndex].flags & 1u) == 0u && !memoryRetry) {
             state[33] = pc;
@@ -204,6 +205,72 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     const ulong value = rt < 31u ? state[rt] : 0ul;
                     store_guest_word(memory + offset, value, bytes);
                 }
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
+            if (opcode == 13u || opcode == 14u) {
+                const uint first = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const int displacement = as_type<int>(instruction.operation[3]);
+                const uint modeAndSecond = instruction.operation[4];
+                const uint second = modeAndSecond & 31u;
+                const uint mode = modeAndSecond >> 5u;
+                const uint width = instruction.operation[5];
+                const uint bytes = width / 8u;
+                const bool load = opcode == 13u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (first > 31u || rn > 31u || (width != 32u && width != 64u) ||
+                    (modeAndSecond & ~0x7fu) != 0u || mode < 1u || mode > 3u ||
+                    displacement < -64 * int(bytes) || displacement > 63 * int(bytes) ||
+                    displacement % int(bytes) != 0 || (load && first == second) ||
+                    (rn != 31u && mode != 2u && (rn == first || rn == second)) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong base = state[rn];
+                const ulong address = mode == 1u ? base : base + ulong(displacement);
+                const ulong accessBytes = ulong(bytes) * 2ul;
+                const ulong offset = guest_offset(address, accessBytes, size, writable,
+                                                   !load, state, resident, config);
+                if (offset == ~0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                if (load) {
+                    const ulong firstValue = load_guest_word(memory + offset, bytes);
+                    const ulong secondValue =
+                        load_guest_word(memory + offset + bytes, bytes);
+                    if (first < 31u) {
+                        state[first] = width == 32u ? ulong(uint(firstValue)) : firstValue;
+                    }
+                    if (second < 31u) {
+                        state[second] = width == 32u ? ulong(uint(secondValue)) : secondValue;
+                    }
+                } else {
+                    const ulong firstValue = first < 31u
+                        ? (width == 32u ? ulong(uint(state[first])) : state[first]) : 0ul;
+                    const ulong secondValue = second < 31u
+                        ? (width == 32u ? ulong(uint(state[second])) : state[second]) : 0ul;
+                    store_guest_word(memory + offset, firstValue, bytes);
+                    store_guest_word(memory + offset + bytes, secondValue, bytes);
+                }
+                if (mode != 2u) state[rn] = base + ulong(displacement);
                 if (blockEnd) {
                     pc = instruction.successor0;
                     leftBlock = true;

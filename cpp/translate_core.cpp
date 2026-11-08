@@ -86,6 +86,29 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                        field(bits, 10, 12), width == 64 ? 3U : 2U, width};
     }
   }
+  const auto pairEncoding = (bits & 0xffc00000U) & 0x7fffffffU;
+  const bool integerPair =
+      (pairEncoding == 0x29000000U || pairEncoding == 0x29400000U ||
+       pairEncoding == 0x29800000U || pairEncoding == 0x29c00000U ||
+       pairEncoding == 0x28800000U || pairEncoding == 0x28c00000U) &&
+      field(bits, 30, 1) == 0;
+  if (integerPair) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto elementBytes = width / 8U;
+    const auto first = field(bits, 0, 5);
+    const auto second = field(bits, 10, 5);
+    const auto base = field(bits, 5, 5);
+    const auto mode = field(bits, 23, 2);
+    const bool load = field(bits, 22, 1) == 1;
+    if ((load && first == second) ||
+        (base != 31 && mode != 2 && (base == first || base == second))) {
+      return std::nullopt;
+    }
+    const auto displacement = signed_field(field(bits, 15, 7), 7) * elementBytes;
+    return Operation{load ? Opcode::LoadPair : Opcode::StorePair, first, base,
+                     static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)),
+                     (mode << 5U) | second, width};
+  }
   if ((bits & 0x1f000000) == 0x11000000) {
     const auto destination = field(bits, 0, 5);
     const auto source = field(bits, 5, 5);
@@ -236,7 +259,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
 
   if (const auto operation = decode_operation(bits);
       operation && operation->opcode != Opcode::LoadUnsignedImmediate &&
-      operation->opcode != Opcode::StoreUnsignedImmediate) {
+      operation->opcode != Opcode::StoreUnsignedImmediate &&
+      operation->opcode != Opcode::LoadPair &&
+      operation->opcode != Opcode::StorePair) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

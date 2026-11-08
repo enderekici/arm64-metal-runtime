@@ -3,11 +3,14 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <string_view>
 
-int main() {
+int main(int argc, char** argv) {
+    const bool scalarLoad = argc == 2 && std::string_view(argv[1]) == "scalar";
+    if (argc > 2 || (argc == 2 && !scalarLoad)) return 2;
     arm64metal::SharedCache cache;
     const auto symbol = cache.resolveExport("/usr/lib/libz.1.dylib", "_zlibVersion");
-    if (!symbol || symbol->guest_address <= 0) return 2;
+    if (!symbol || symbol->guest_address <= 0) return 3;
 
     const auto address = static_cast<std::uint64_t>(symbol->guest_address);
     std::cout << ".text\n"
@@ -21,10 +24,10 @@ int main() {
         std::cout << "    movk x0, #0x" << std::hex << part
                   << ", lsl #" << std::dec << shift << "\n";
     }
-    std::cout << "    ldr x0, [x0]\n"
+    std::cout << (scalarLoad ? "    ldr x0, [x0]\n" : "    ldp x0, x1, [x0]\n")
                  "    ret\n"
                  ".section __DATA,__data\n"
                  ".p2align 3\n"
                  ".quad _zlibVersion\n";
-    return std::cout ? 0 : 3;
+    return std::cout ? 0 : 4;
 }

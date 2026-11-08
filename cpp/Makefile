@@ -82,10 +82,14 @@ INTERPRETER_BRANCH_FALLBACK_MAIN := $(BUILD_DIR)/interpreter-branch-fallback-mai
 INTERPRETER_TYPED_MEMORY_MAIN := $(BUILD_DIR)/interpreter-typed-memory-main
 INTERPRETER_TYPED_MEMORY_RO_MAIN := $(BUILD_DIR)/interpreter-typed-memory-ro-main
 INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-typed-memory-unmapped-main
+INTERPRETER_PAIR_MEMORY_MAIN := $(BUILD_DIR)/interpreter-pair-memory-stack-main
 INTERPRETER_DEMAND_CACHE_GENERATOR := $(BUILD_DIR)/interpreter-demand-cache-address
 INTERPRETER_DEMAND_CACHE_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry.s
 INTERPRETER_DEMAND_CACHE_MAIN := $(BUILD_DIR)/interpreter-demand-cache-main
 INTERPRETER_DEMAND_CACHE_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-native
+INTERPRETER_DEMAND_CACHE_SCALAR_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-scalar.s
+INTERPRETER_DEMAND_CACHE_SCALAR_MAIN := $(BUILD_DIR)/interpreter-demand-cache-scalar-main
+INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-scalar-native
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
@@ -167,6 +171,10 @@ $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN): ../fixtures/interpreter/typed-memory-
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_PAIR_MEMORY_MAIN): ../fixtures/interpreter/pair-memory-stack-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 $(INTERPRETER_CBZ_CBNZ_MAIN): ../fixtures/interpreter/cbz-cbnz-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -196,7 +204,17 @@ $(INTERPRETER_DEMAND_CACHE_MAIN): $(INTERPRETER_DEMAND_CACHE_SOURCE)
 	xcrun clang -arch arm64 "$<" -lz -o "$@"
 
 $(INTERPRETER_DEMAND_CACHE_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
-	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -lz -o "$@"
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=1 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SCALAR_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" scalar >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN): $(INTERPRETER_DEMAND_CACHE_SCALAR_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 "$<" -lz -o "$@"
 
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
@@ -216,7 +234,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -385,9 +403,24 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-block-ready' "$$run_dir/bcond.interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/bcond.interpreter.err" && \
 		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit found }' "$$run_dir/bcond.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_PAIR_MEMORY_MAIN)" >"$$run_dir/pair-memory.native.out" 2>"$$run_dir/pair-memory.native.err"; pair_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_PAIR_MEMORY_MAIN)" >"$$run_dir/pair-memory.translated.out" 2>"$$run_dir/pair-memory.translated.err"; pair_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_PAIR_MEMORY_MAIN)" >"$$run_dir/pair-memory.interpreter.out" 2>"$$run_dir/pair-memory.interpreter.err"; pair_interpreter_rc=$$?; \
+		printf '%s\n' "$$pair_native_rc" >"$$run_dir/pair-memory.native.rc"; \
+		printf '%s\n' "$$pair_translated_rc" >"$$run_dir/pair-memory.translated.rc"; \
+		printf '%s\n' "$$pair_interpreter_rc" >"$$run_dir/pair-memory.interpreter.rc"; \
+		set -e; \
+		test "$$pair_native_rc" -eq 42 && test "$$pair_translated_rc" -eq "$$pair_native_rc" && \
+		test "$$pair_interpreter_rc" -eq "$$pair_native_rc" && \
+		cmp "$$run_dir/pair-memory.native.out" "$$run_dir/pair-memory.translated.out" && \
+		cmp "$$run_dir/pair-memory.native.out" "$$run_dir/pair-memory.interpreter.out" && \
+		cmp "$$run_dir/pair-memory.native.err" "$$run_dir/pair-memory.translated.err" && \
+		grep -q 'interpreter-block-ready.*detail=26' "$$run_dir/pair-memory.interpreter.err" && \
+		grep -q 'interpreter-dispatch.*detail=26' "$$run_dir/pair-memory.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
-verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_METALLIB)
+verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache.XXXXXX"); \
 		set +e; \
@@ -412,6 +445,28 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE)" >"$$run_dir/scalar.native.out" 2>"$$run_dir/scalar.native.err"; scalar_native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN)" >"$$run_dir/scalar.translated.out" 2>"$$run_dir/scalar.translated.err"; scalar_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN)" >"$$run_dir/scalar.interpreter.out" 2>"$$run_dir/scalar.interpreter.err"; scalar_interpreter_rc=$$?; \
+		printf '%s\n' "$$scalar_native_rc" >"$$run_dir/scalar.native.rc"; \
+		printf '%s\n' "$$scalar_translated_rc" >"$$run_dir/scalar.translated.rc"; \
+		printf '%s\n' "$$scalar_interpreter_rc" >"$$run_dir/scalar.interpreter.rc"; \
+		set -e; \
+		test "$$scalar_native_rc" -eq 32; \
+		test "$$scalar_translated_rc" -eq "$$scalar_native_rc"; \
+		test "$$scalar_interpreter_rc" -eq "$$scalar_native_rc"; \
+		cmp "$$run_dir/scalar.native.out" "$$run_dir/scalar.translated.out"; \
+		cmp "$$run_dir/scalar.native.out" "$$run_dir/scalar.interpreter.out"; \
+		cmp "$$run_dir/scalar.native.err" "$$run_dir/scalar.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/scalar.interpreter.err" >"$$run_dir/scalar.interpreter.no-trace.err"; \
+		cmp "$$run_dir/scalar.native.err" "$$run_dir/scalar.interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/scalar.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
+		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
+		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
+		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/scalar.interpreter.err"; \
 		echo "verify-interpreter-demand-cache receipts: $$run_dir"
 $(MAP_JIT_POLICY_TEST): \
 	../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp \

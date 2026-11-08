@@ -289,9 +289,13 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::MoveWideZero ||
                 opcode == translate_core::Opcode::MoveWideNot ||
                 opcode == translate_core::Opcode::MoveWideKeep;
-            const bool memoryOpcode =
+            const bool unsignedMemoryOpcode =
                 opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                 opcode == translate_core::Opcode::StoreUnsignedImmediate;
+            const bool pairMemoryOpcode =
+                opcode == translate_core::Opcode::LoadPair ||
+                opcode == translate_core::Opcode::StorePair;
+            const bool memoryOpcode = unsignedMemoryOpcode || pairMemoryOpcode;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
                 opcode == translate_core::Opcode::SubImmediate ||
@@ -299,11 +303,29 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::SubImmediateSetFlags;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
-                !memoryOpcode ||
+                !unsignedMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 0xfff &&
                  (operation.width == 32 || operation.width == 64) &&
                  operation.shift == (operation.width == 32 ? 2U : 3U));
+            const auto elementBytes = operation.width / 8U;
+            const auto pairOffset = static_cast<std::int32_t>(operation.immediate);
+            const auto pairMode = operation.shift >> 5U;
+            const auto pairSecond = operation.shift & 31U;
+            const bool pairLoad = opcode == translate_core::Opcode::LoadPair;
+            const bool validPairMemoryOperation =
+                !pairMemoryOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 (operation.shift & ~0x7fU) == 0 &&
+                 pairMode >= 1 && pairMode <= 3 &&
+                 pairOffset >= -64 * static_cast<std::int32_t>(elementBytes) &&
+                 pairOffset <= 63 * static_cast<std::int32_t>(elementBytes) &&
+                 pairOffset % static_cast<std::int32_t>(elementBytes) == 0 &&
+                 !(pairLoad && operation.destination == pairSecond) &&
+                 (operation.source == 31 || pairMode == 2 ||
+                  (operation.source != operation.destination &&
+                   operation.source != pairSecond)));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
@@ -311,7 +333,8 @@ ProcessKernelPlan plan_process_kernel(
                  (operation.width == 32 || operation.width == 64) &&
                  (operation.shift == 0 || operation.shift == 12));
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode) ||
-                !validMemoryOperation || !validAddSubImmediate ||
+                !validMemoryOperation || !validPairMemoryOperation ||
+                !validAddSubImmediate ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;
@@ -4730,16 +4753,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         activeKernel->interpretedPackets.end(),
                         [faultPc](const auto& packet) { return packet.pc == faultPc; });
                     if (registers[guestFaultAddress] != requested ||
-                        (width != 4 && width != 8) ||
+                        (width != 4 && width != 8 && width != 16) ||
                         faultPacket == activeKernel->interpretedPackets.end()) {
                         throw std::runtime_error(
                             "Interpreter cache retry has invalid fault provenance");
                     }
                     const auto opcode = static_cast<translate_core::Opcode>(
                         faultPacket->operation[0]);
-                    if ((opcode != translate_core::Opcode::LoadUnsignedImmediate &&
-                         opcode != translate_core::Opcode::StoreUnsignedImmediate) ||
-                        faultPacket->operation[5] / 8U != width) {
+                    const bool pairAccess =
+                        opcode == translate_core::Opcode::LoadPair ||
+                        opcode == translate_core::Opcode::StorePair;
+                    const bool scalarAccess =
+                        opcode == translate_core::Opcode::LoadUnsignedImmediate ||
+                        opcode == translate_core::Opcode::StoreUnsignedImmediate;
+                    const auto expectedWidth = faultPacket->operation[5] / 8U *
+                        (pairAccess ? 2U : 1U);
+                    if ((!scalarAccess && !pairAccess) ||
+                        faultPacket->operation[5] % 8U != 0 ||
+                        (faultPacket->operation[5] / 8U != 4 &&
+                         faultPacket->operation[5] / 8U != 8) ||
+                        width != expectedWidth) {
                         throw std::runtime_error(
                             "Interpreter cache retry does not match its memory packet");
                     }

@@ -67,6 +67,43 @@ int main() {
   assert((words == arm64metal::translate_core::OperationPacket{
                        1, 0, 0, 0x1234, 16, 64}));
 
+  const auto storePairXOffset = decode_operation(0xa90107e0);
+  assert(storePairXOffset.has_value());
+  assert(storePairXOffset->opcode == Opcode::StorePair);
+  assert(storePairXOffset->destination == 0);
+  assert(storePairXOffset->source == 31);
+  assert(storePairXOffset->immediate == 16);
+  assert(storePairXOffset->shift == ((2U << 5U) | 1U));
+  assert(storePairXOffset->width == 64);
+  assert((serialize_operation(*storePairXOffset) ==
+          arm64metal::translate_core::OperationPacket{14, 0, 31, 16, 65, 64}));
+
+  const auto loadPairXPost = decode_operation(0xa8c117e4);
+  assert(loadPairXPost.has_value());
+  assert(loadPairXPost->opcode == Opcode::LoadPair);
+  assert(loadPairXPost->destination == 4);
+  assert(loadPairXPost->source == 31);
+  assert(loadPairXPost->immediate == 16);
+  assert(loadPairXPost->shift == ((1U << 5U) | 5U));
+  assert(loadPairXPost->width == 64);
+
+  const auto storePairWPre = decode_operation(0x29be27e8);
+  assert(storePairWPre.has_value());
+  assert(storePairWPre->opcode == Opcode::StorePair);
+  assert(static_cast<std::int32_t>(storePairWPre->immediate) == -16);
+  assert(storePairWPre->shift == ((3U << 5U) | 9U));
+  assert(storePairWPre->width == 32);
+
+  const auto loadPairWOffset = decode_operation(0x294127e8);
+  assert(loadPairWOffset.has_value());
+  assert(loadPairWOffset->opcode == Opcode::LoadPair);
+  assert(loadPairWOffset->immediate == 8);
+  assert(loadPairWOffset->shift == ((2U << 5U) | 9U));
+  assert(loadPairWOffset->width == 32);
+
+  assert(!decode_operation(0xa94103e0).has_value());
+  assert(!decode_operation(0xa9c10821).has_value());
+
   const auto lowered = make_operation_instruction(
       *wide, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(lowered.operation.has_value());
