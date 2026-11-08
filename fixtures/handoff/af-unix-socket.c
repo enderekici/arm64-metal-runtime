@@ -5,7 +5,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#if SYS_socket != 97 || SYS_close != 6
+#if SYS_socket != 97 || SYS_close != 6 || SYS_close_nocancel != 399
 #error "Expected the installed Darwin socket and close syscall numbers"
 #endif
 
@@ -38,9 +38,10 @@ int main(void) {
     const struct raw_result created = raw_call3(SYS_socket, AF_UNIX,
         (uint32_t)types[index], 0);
     if (created.carry != 0 || (int64_t)created.value < 0 || errno != EDOM) return 2;
-    const struct raw_result closed = raw_call3(SYS_close, created.value, 0, 0);
+    const int close_syscall = index == 0 ? SYS_close : SYS_close_nocancel;
+    const struct raw_result closed = raw_call3(close_syscall, created.value, 0, 0);
     if (closed.carry != 0 || closed.value != 0 || errno != EDOM) return 3;
-    const struct raw_result closed_again = raw_call3(SYS_close, created.value, 0, 0);
+    const struct raw_result closed_again = raw_call3(close_syscall, created.value, 0, 0);
     if (!failed(closed_again, EBADF) || errno != EDOM) return 4;
   }
 
@@ -57,7 +58,7 @@ int main(void) {
       !failed(bad_protocol, EPROTONOSUPPORT) ||
       !failed(bad_domain, EAFNOSUPPORT)) return 8;
 
-  static const char output[] = "socket=stream,dgram close=ok errors=43,43,47\n";
+  static const char output[] = "socket=stream,dgram close6/399=ok errors=43,43,47\n";
   return write(STDOUT_FILENO, output, sizeof(output) - 1) ==
       (long)(sizeof(output) - 1) ? 0 : 9;
 }

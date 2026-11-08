@@ -6445,7 +6445,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == 396 || syscall == 397 || syscall == 399) {
+            if (syscall == 6 || syscall == 396 || syscall == 397 || syscall == 399) {
                 constexpr std::uint64_t carryMask = 8U;
                 const std::uint64_t service = syscall == 396 ? 23U
                     : syscall == 397 ? 2U : 22U;
