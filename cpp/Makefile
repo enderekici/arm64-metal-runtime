@@ -39,7 +39,7 @@ $(INTERPRETER_ASSETS_TEST): ../fixtures/handoff/interpreter-assets-selection.cpp
 verify-interpreter-assets: $(INTERPRETER_ASSETS_TEST)
 	"$(INTERPRETER_ASSETS_TEST)"
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-vector-memory-native verify-interpreter-vector-memory verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -127,6 +127,8 @@ INTERPRETER_LITERAL_LOAD_MAIN := $(BUILD_DIR)/interpreter-literal-load-main
 INTERPRETER_LDUMIN_LDUMAX_MAIN := $(BUILD_DIR)/interpreter-ldumin-ldumax-main
 INTERPRETER_CMEQ_ZERO_MAIN := $(BUILD_DIR)/interpreter-cmeq-zero-main
 INTERPRETER_VECTOR_EXTREME_MAIN := $(BUILD_DIR)/interpreter-vector-extreme-main
+INTERPRETER_VECTOR_MEMORY_MAIN := $(BUILD_DIR)/interpreter-vector-memory-main
+INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-vector-memory-unmapped-main
 INTERPRETER_LOGICAL_IMMEDIATE_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-main
 INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-invalid-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
@@ -563,6 +565,14 @@ $(INTERPRETER_VECTOR_EXTREME_MAIN): ../fixtures/interpreter/vector-extreme-main.
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_VECTOR_MEMORY_MAIN): ../fixtures/interpreter/vector-memory-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN): ../fixtures/interpreter/vector-memory-unmapped-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 verify-interpreter-vector-extreme-native: $(INTERPRETER_VECTOR_EXTREME_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_VECTOR_EXTREME_MAIN)"; rc=$$?; set -e; \
 		test "$$rc" -eq 42; echo "Vector min/max native guest exit=$$rc"
@@ -590,6 +600,53 @@ verify-interpreter-vector-extreme: $(APP) $(INTERPRETER_VECTOR_EXTREME_MAIN) $(I
 			"$$run_dir/interpreter.err"; \
 		if grep -q 'event=compile-start' "$$run_dir/interpreter.err"; then exit 1; fi; \
 	echo "Vector min/max native/translated/AOT fixture passed; sha256=$$binary_sha receipts=$$run_dir"
+
+verify-interpreter-vector-memory-native: $(INTERPRETER_VECTOR_MEMORY_MAIN)
+	@set -eu; set +e; "$(INTERPRETER_VECTOR_MEMORY_MAIN)"; rc=$$?; set -e; \
+		test "$$rc" -eq 42; echo "Single-vector memory native guest exit=$$rc"
+
+verify-interpreter-vector-memory: $(APP) $(INTERPRETER_VECTOR_MEMORY_MAIN) $(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/vector-memory.XXXXXX"); \
+	binary_sha=$$(shasum -a 256 "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '{print $$1}'); \
+	entry_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '/^_main:/ {main=1; next} main && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
+	fallback_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '/^_vector_memory_fallback:/ {fallback=1; next} fallback && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
+	guest_entry=0x42d8; fallback_guest=$$(printf '0x%x' $$((0x42d8 + 0x$$fallback_addr - 0x$$entry_addr))); \
+	test -n "$$entry_addr" && test -n "$$fallback_addr"; \
+	set +e; \
+	"$(INTERPRETER_VECTOR_MEMORY_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+	"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+		"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+	set -e; \
+	if test "$$binary_sha" = "$$(shasum -a 256 "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '{print $$1}')" && \
+		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq "$$native_rc" && \
+		test "$$interpreter_rc" -eq "$$native_rc" && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		awk -v entry="$$guest_entry" -v fallback="$$fallback_guest" ' \
+			/event=interpreter-packet/ { if (/detail=43([[:space:]]|$$)/) load++; if (/detail=44([[:space:]]|$$)/) store++ } \
+			/event=interpreter-dispatch/ && index($$0, "pc=" entry " ") { entry_dispatch=NR } \
+			/event=dispatch-done/ && index($$0, "pc=" fallback " ") { fallback_done=NR } \
+			/event=compile-start/ { if (!first_compile) { first_compile=NR; if (index($$0, "pc=" fallback " ")) fallback_compile=NR } } \
+			END { exit !(load == 16 && store == 20 && entry_dispatch > 0 && fallback_done > entry_dispatch && fallback_compile > fallback_done && first_compile == fallback_compile) }' \
+			"$$run_dir/interpreter.err"; then \
+		set +e; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+			"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/unmapped.out" 2>"$$run_dir/unmapped.err"; unmapped_rc=$$?; \
+		set -e; \
+		if test "$$unmapped_rc" -ne 0 && \
+			grep -q 'interpreter-dispatch.*pc=0x42d8' "$$run_dir/unmapped.err" && \
+			grep -q 'interpreter-packet pc=0x42dc detail=43' "$$run_dir/unmapped.err" && \
+			grep -q 'Guest process memory access fault at 0x0' "$$run_dir/unmapped.err"; then \
+			echo "Single-vector memory native/translated/AOT and fault fixtures passed; sha256=$$binary_sha entry=$$guest_entry fallback=$$fallback_guest receipts=$$run_dir"; \
+		else \
+			cat "$$run_dir/unmapped.err" >&2; echo "Unmapped vector-load fault fixture failed: rc=$$unmapped_rc receipts=$$run_dir" >&2; exit 1; \
+		fi; \
+	else \
+		cat "$$run_dir/native.err" "$$run_dir/translated.err" "$$run_dir/interpreter.err" >&2; \
+		echo "Single-vector memory fixture failed: native=$$native_rc translated=$$translated_rc interpreter=$$interpreter_rc entry=0x$$entry_addr fallback=0x$$fallback_addr receipts=$$run_dir" >&2; exit 1; \
+	fi
 
 verify-interpreter-cmeq-zero-native: $(INTERPRETER_CMEQ_ZERO_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_CMEQ_ZERO_MAIN)"; rc=$$?; set -e; \
@@ -1265,7 +1322,7 @@ verify-adc-sbc-carry-interpreter: $(APP) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(INT
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err" && \
 		echo "adc-sbc-carry interpreter dispatch verified: $$run_dir"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_MULTIPLY_ACCUMULATE_MAIN) $(INTERPRETER_BITFIELD_MAIN) $(INTERPRETER_BITFIELD_NATIVE) $(INTERPRETER_INTEGER_BITOPS_MAIN) $(INTERPRETER_INTEGER_DIVIDE_MAIN) $(INTERPRETER_LITERAL_LOAD_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_BRANCH_REGISTER_MAIN) $(INTERPRETER_BRANCH_REGISTER_NATIVE) $(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN) $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_MULTIPLY_ACCUMULATE_MAIN) $(INTERPRETER_BITFIELD_MAIN) $(INTERPRETER_BITFIELD_NATIVE) $(INTERPRETER_INTEGER_BITOPS_MAIN) $(INTERPRETER_INTEGER_DIVIDE_MAIN) $(INTERPRETER_LITERAL_LOAD_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_BRANCH_REGISTER_MAIN) $(INTERPRETER_BRANCH_REGISTER_NATIVE) $(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN) $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB) verify-interpreter-vector-memory
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \

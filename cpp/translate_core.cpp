@@ -76,6 +76,9 @@ bool Instruction::ends_block_at(std::int64_t pc) const {
 }
 
 std::optional<Operation> decode_operation(std::uint32_t bits) {
+  if (const auto vectorMemory = decode_vector_memory_operation(bits)) {
+    return vectorMemory;
+  }
   // Typed unordered LDUMIN/LDUMAX. Keep acquire/release forms on the existing
   // translator path until their memory-order contract is represented.
   if ((bits & 0x3f20ec00U) == 0x38206000U &&
@@ -482,6 +485,74 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   }
   return Operation{opcode, field(bits, 0, 5), 0,
                    field(bits, 5, 16), shift, width};
+}
+
+std::optional<Operation> decode_vector_memory_operation(std::uint32_t bits) {
+  using Mode = VectorMemoryMode;
+  const auto destination = field(bits, 0, 5);
+  const auto base = field(bits, 5, 5);
+  const bool load = field(bits, 22, 1) != 0U;
+  const auto opcode = load ? Opcode::LoadVectorMemory
+                           : Opcode::StoreVectorMemory;
+  const auto make = [destination, base, opcode](std::uint32_t bytes,
+                                                std::uint32_t displacement,
+                                                std::uint32_t packedMode) {
+    return Operation{opcode, destination, base, displacement, packedMode,
+                     bytes * 8U};
+  };
+
+  // SIMD literal LDR (S, D, or Q); PRFM and reserved 256-bit forms stay out.
+  if ((bits & 0x3f000000U) == 0x1c000000U) {
+    const auto bytes = 4U << field(bits, 30, 2);
+    if (bytes > 16U) return std::nullopt;
+    const auto displacement = signed_field(field(bits, 5, 19), 19) * 4;
+    return Operation{Opcode::LoadVectorMemory, destination, 0,
+                     static_cast<std::uint32_t>(
+                         static_cast<std::int32_t>(displacement)),
+                     static_cast<std::uint32_t>(Mode::Literal), bytes * 8U};
+  }
+
+  const auto vectorMemory = bits & 0xff800000U;
+  const auto scaledBytes = vectorMemory == 0x3d800000U ? 16U
+      : vectorMemory == 0xfd000000U ? 8U
+      : vectorMemory == 0xbd000000U ? 4U : 0U;
+  if (scaledBytes != 0U) {
+    const auto displacement = field(bits, 10, 12) * scaledBytes;
+    return make(scaledBytes, displacement,
+                static_cast<std::uint32_t>(Mode::ScaledImmediate));
+  }
+
+  const auto addressingMode = field(bits, 10, 2);
+  const auto unscaledEncoding = bits & 0xffa00000U;
+  const auto unscaledBytes = unscaledEncoding == 0x3c800000U ? 16U
+      : unscaledEncoding == 0xfc000000U ? 8U
+      : unscaledEncoding == 0xbc000000U ? 4U : 0U;
+  if (unscaledBytes != 0U && addressingMode != 2U) {
+    const auto displacement = signed_field(field(bits, 12, 9), 9);
+    const auto mode = addressingMode == 0U ? Mode::Unscaled
+        : addressingMode == 1U ? Mode::PostIndex : Mode::PreIndex;
+    return make(unscaledBytes,
+                static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(displacement)),
+                static_cast<std::uint32_t>(mode));
+  }
+
+  const auto extension = field(bits, 13, 3);
+  if (extension != 2U && extension != 3U && extension != 6U &&
+      extension != 7U) {
+    return std::nullopt;
+  }
+  const auto indexedEncoding = bits & 0xffa00c00U;
+  const auto indexedBytes = indexedEncoding == 0x3ca00800U ? 16U
+      : indexedEncoding == 0xfc200800U ? 8U
+      : indexedEncoding == 0xbc200800U ? 4U
+      : indexedEncoding == 0x7c200800U ? 2U
+      : indexedEncoding == 0x3c200800U ? 1U : 0U;
+  if (indexedBytes == 0U) return std::nullopt;
+  const auto packedMode = static_cast<std::uint32_t>(Mode::RegisterOffset) |
+      (field(bits, 16, 5) << 3U) | (extension << 8U) |
+      (field(bits, 12, 1) << 11U);
+  return make(indexedBytes, 0U, packedMode);
 }
 
 std::optional<Operation> decode_authenticated_return_operation(

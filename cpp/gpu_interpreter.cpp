@@ -436,6 +436,62 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter scalar literal-load packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadVectorMemory ||
+                   opcode == translate_core::Opcode::StoreVectorMemory) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto width = operation[5];
+            const auto bytes = width / 8U;
+            const auto mode = operation[4] & 7U;
+            const auto displacement = static_cast<std::int32_t>(operation[3]);
+            const bool load = opcode == translate_core::Opcode::LoadVectorMemory;
+            const bool registerOffset = mode == static_cast<std::uint32_t>(
+                translate_core::VectorMemoryMode::RegisterOffset);
+            const bool literal = mode == static_cast<std::uint32_t>(
+                translate_core::VectorMemoryMode::Literal);
+            const auto extension = (operation[4] >> 8U) & 7U;
+            const auto literalAddress =
+                static_cast<std::int64_t>(packet.pc) + displacement;
+            const bool validVectorWidth = width == 32U || width == 64U ||
+                                          width == 128U ||
+                                          (registerOffset &&
+                                           (width == 8U || width == 16U));
+            const bool validRegisterOffset = !registerOffset ||
+                ((operation[4] & ~0xfffU) == 0U &&
+                 (extension == 2U || extension == 3U || extension == 6U ||
+                  extension == 7U) &&
+                 ((operation[4] >> 11U) & 1U) <= 1U && operation[3] == 0U);
+            const bool validImmediateOffset = registerOffset || literal ||
+                ((operation[4] & ~7U) == 0U &&
+                 (mode != static_cast<std::uint32_t>(
+                      translate_core::VectorMemoryMode::ScaledImmediate) ||
+                  (width >= 32U && displacement >= 0 &&
+                   static_cast<std::uint32_t>(displacement) <= 0xfffU * bytes &&
+                   static_cast<std::uint32_t>(displacement) % bytes == 0U)) &&
+                 ((mode != static_cast<std::uint32_t>(
+                       translate_core::VectorMemoryMode::Unscaled) &&
+                   mode != static_cast<std::uint32_t>(
+                       translate_core::VectorMemoryMode::PostIndex) &&
+                   mode != static_cast<std::uint32_t>(
+                       translate_core::VectorMemoryMode::PreIndex)) ||
+                  (width >= 32U && displacement >= -256 &&
+                   displacement <= 255)));
+            const bool validLiteral = !literal ||
+                (load && operation[2] == 0U && width >= 32U && bytes <= 16U &&
+                 displacement >= -(1 << 20) &&
+                 displacement <= ((1 << 20) - 4) && (displacement & 3) == 0 &&
+                 literalAddress >= 0 &&
+                 static_cast<std::uint64_t>(literalAddress) < guestCodeLimit &&
+                 bytes <= guestCodeLimit -
+                     static_cast<std::uint64_t>(literalAddress));
+            if (operation[1] > 31U || operation[2] > 31U ||
+                !validVectorWidth || !validRegisterOffset ||
+                !validImmediateOffset || !validLiteral || mode > 5U ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4U)) {
+                throw std::invalid_argument(
+                    "Interpreter vector-memory packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::LoadUnsignedMinMax) {
             hasMemoryAccess = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
@@ -499,6 +555,8 @@ Result Interpreter::dispatch(const Backend& backend,
          initialOpcode == translate_core::Opcode::StoreUnscaledWriteback ||
          initialOpcode == translate_core::Opcode::LoadSignedScalar ||
          initialOpcode == translate_core::Opcode::LoadLiteral ||
+         initialOpcode == translate_core::Opcode::LoadVectorMemory ||
+         initialOpcode == translate_core::Opcode::StoreVectorMemory ||
          initialOpcode == translate_core::Opcode::LoadUnsignedMinMax) &&
         initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {

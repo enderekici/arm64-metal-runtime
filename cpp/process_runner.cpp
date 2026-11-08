@@ -469,13 +469,17 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::LoadSignedScalar;
             const bool scalarLiteralMemoryOpcode =
                 opcode == translate_core::Opcode::LoadLiteral;
+            const bool vectorMemoryOpcode =
+                opcode == translate_core::Opcode::LoadVectorMemory ||
+                opcode == translate_core::Opcode::StoreVectorMemory;
             const bool unsignedMinMaxMemoryOpcode =
                 opcode == translate_core::Opcode::LoadUnsignedMinMax;
             const bool memoryOpcode = unsignedMemoryOpcode || pairMemoryOpcode ||
                                       indexedScalarMemoryOpcode ||
                                       signedScalarMemoryOpcode ||
                                       scalarLiteralMemoryOpcode ||
-                                      unsignedMinMaxMemoryOpcode;
+                                      unsignedMinMaxMemoryOpcode ||
+                                      vectorMemoryOpcode;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
                 opcode == translate_core::Opcode::SubImmediate ||
@@ -585,6 +589,68 @@ ProcessKernelPlan plan_process_kernel(
                  static_cast<std::uint64_t>(literalAddress) < guestCodeLimit &&
                  literalBytes <= guestCodeLimit -
                      static_cast<std::uint64_t>(literalAddress));
+            const auto vectorMode = operation.shift & 7U;
+            const auto vectorDisplacement =
+                static_cast<std::int32_t>(operation.immediate);
+            const auto vectorBytes = operation.width / 8U;
+            const auto vectorExtension = (operation.shift >> 8U) & 7U;
+            const auto vectorScaled = (operation.shift >> 11U) & 1U;
+            const bool vectorLiteral = vectorMode == static_cast<std::uint32_t>(
+                translate_core::VectorMemoryMode::Literal);
+            const bool vectorRegisterOffset = vectorMode == static_cast<std::uint32_t>(
+                translate_core::VectorMemoryMode::RegisterOffset);
+            const auto vectorLiteralAddress = pc + vectorDisplacement;
+            const bool validVectorRegisterOffset =
+                (operation.shift & ~0xfffU) == 0 &&
+                (vectorExtension == 2U || vectorExtension == 3U ||
+                 vectorExtension == 6U || vectorExtension == 7U) &&
+                vectorScaled <= 1U && operation.immediate == 0U;
+            const bool validVectorScaledImmediate =
+                vectorDisplacement >= 0 && vectorBytes != 0 &&
+                static_cast<std::uint32_t>(vectorDisplacement) <=
+                    0xfffU * vectorBytes &&
+                static_cast<std::uint32_t>(vectorDisplacement) %
+                    vectorBytes == 0U;
+            const bool validVectorWritebackDisplacement =
+                vectorDisplacement >= -256 && vectorDisplacement <= 255;
+            const bool validVectorLiteral =
+                vectorBytes <= 16U &&
+                vectorDisplacement >= -(1 << 20) &&
+                vectorDisplacement <= ((1 << 20) - 4) &&
+                (vectorDisplacement & 3) == 0 &&
+                vectorLiteralAddress >= 0 &&
+                static_cast<std::uint64_t>(vectorLiteralAddress) <
+                    guestCodeLimit &&
+                vectorBytes <= guestCodeLimit -
+                    static_cast<std::uint64_t>(vectorLiteralAddress);
+            const bool validVectorPayload = vectorRegisterOffset
+                ? validVectorRegisterOffset
+                : ((operation.shift & ~7U) == 0 &&
+                   (!vectorLiteral ||
+                    (opcode == translate_core::Opcode::LoadVectorMemory &&
+                     operation.source == 0)) &&
+                   (vectorMode != static_cast<std::uint32_t>(
+                        translate_core::VectorMemoryMode::ScaledImmediate) ||
+                    validVectorScaledImmediate) &&
+                   ((vectorMode != static_cast<std::uint32_t>(
+                         translate_core::VectorMemoryMode::Unscaled) &&
+                     vectorMode != static_cast<std::uint32_t>(
+                         translate_core::VectorMemoryMode::PostIndex) &&
+                     vectorMode != static_cast<std::uint32_t>(
+                         translate_core::VectorMemoryMode::PreIndex)) ||
+                    validVectorWritebackDisplacement) &&
+                   (!vectorLiteral || validVectorLiteral));
+            const bool validVectorMemoryOperation =
+                !vectorMemoryOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.width == 8 || operation.width == 16 ||
+                  operation.width == 32 || operation.width == 64 ||
+                  operation.width == 128) &&
+                 validVectorPayload &&
+                 ((operation.width >= 32U && vectorBytes <= 16U) ||
+                  vectorRegisterOffset) &&
+                 (vectorMode <= static_cast<std::uint32_t>(
+                      translate_core::VectorMemoryMode::Literal)));
             const bool validUnsignedMinMaxMemoryOperation =
                 !unsignedMinMaxMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
@@ -718,6 +784,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
                 !validScalarLiteralMemoryOperation ||
+                !validVectorMemoryOperation ||
                 !validUnsignedMinMaxMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||

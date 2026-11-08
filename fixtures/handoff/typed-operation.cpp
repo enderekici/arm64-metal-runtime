@@ -2,8 +2,10 @@
 #include "integer_ops_shared.h"
 #include "process_decoder.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <array>
+#include <cstdio>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -1921,7 +1923,10 @@ int main() {
   assert(literalBackward &&
          static_cast<std::int32_t>(literalBackward->immediate) == -4);
   assert(!decode_operation(0xd8000000U).has_value());  // PRFM.
-  assert(!decode_operation(0x1c000000U).has_value());  // SIMD literal load.
+  const auto vectorLiteralZero = decode_operation(0x1c000000U);
+  assert(vectorLiteralZero &&
+         vectorLiteralZero->opcode == Opcode::LoadVectorMemory &&
+         vectorLiteralZero->width == 32U);
   const auto literalLowered = make_operation_instruction(
       *literalSigned, {0x1004}, LoweringMode::Process,
       std::uint64_t{1} << 48, 0x1000);
@@ -2107,5 +2112,117 @@ int main() {
                       expected_vector_extreme(reductionInput, 32, 128, false,
                                               false));
   assert(!decode_operation(0x2ea0a820U));  // 2S reduction is not encoded.
+
+  using VectorMemoryMode =
+      arm64metal::translate_core::VectorMemoryMode;
+  struct VectorMemoryCase {
+    std::uint32_t bits;
+    Opcode opcode;
+    std::uint32_t destination;
+    std::uint32_t source;
+    std::uint32_t displacement;
+    std::uint32_t packedMode;
+    std::uint32_t width;
+  };
+  const std::array<VectorMemoryCase, 28> vectorMemoryCases{{
+      {0xbd400001U, Opcode::LoadVectorMemory, 1, 0, 0, 0, 32},
+      {0xfd400402U, Opcode::LoadVectorMemory, 2, 0, 8, 0, 64},
+      {0x3dc00403U, Opcode::LoadVectorMemory, 3, 0, 16, 0, 128},
+      {0xbd0003e1U, Opcode::StoreVectorMemory, 1, 31, 0, 0, 32},
+      {0xfd0007e2U, Opcode::StoreVectorMemory, 2, 31, 8, 0, 64},
+      {0x3d8007e3U, Opcode::StoreVectorMemory, 3, 31, 16, 0, 128},
+      {0xbc420004U, Opcode::LoadVectorMemory, 4, 0, 32, 1, 32},
+      {0xfc428005U, Opcode::LoadVectorMemory, 5, 0, 40, 1, 64},
+      {0x3cc30006U, Opcode::LoadVectorMemory, 6, 0, 48, 1, 128},
+      {0x3cc10427U, Opcode::LoadVectorMemory, 7, 1, 16, 2, 128},
+      {0x3cc10c28U, Opcode::LoadVectorMemory, 8, 1, 16, 3, 128},
+      {0x3c624829U, Opcode::LoadVectorMemory, 9, 1, 0, 0x214, 8},
+      {0x7c62d82aU, Opcode::LoadVectorMemory, 10, 1, 0, 0xe14, 16},
+      {0xbc62582bU, Opcode::LoadVectorMemory, 11, 1, 0, 0xa14, 32},
+      {0xfc62782cU, Opcode::LoadVectorMemory, 12, 1, 0, 0xb14, 64},
+      {0x3ce2f82dU, Opcode::LoadVectorMemory, 13, 1, 0, 0xf14, 128},
+      {0xbc0203e4U, Opcode::StoreVectorMemory, 4, 31, 32, 1, 32},
+      {0xfc0283e5U, Opcode::StoreVectorMemory, 5, 31, 40, 1, 64},
+      {0x3c8303e6U, Opcode::StoreVectorMemory, 6, 31, 48, 1, 128},
+      {0x3c810483U, Opcode::StoreVectorMemory, 3, 4, 16, 2, 128},
+      {0x3c9f0c83U, Opcode::StoreVectorMemory, 3, 4,
+       static_cast<std::uint32_t>(-16), 3, 128},
+      {0x3c236be9U, Opcode::StoreVectorMemory, 9, 31, 0, 0x31c, 8},
+      {0x7c236beaU, Opcode::StoreVectorMemory, 10, 31, 0, 0x31c, 16},
+      {0xbc236bebU, Opcode::StoreVectorMemory, 11, 31, 0, 0x31c, 32},
+      {0xfc236becU, Opcode::StoreVectorMemory, 12, 31, 0, 0x31c, 64},
+      {0x3ca36bedU, Opcode::StoreVectorMemory, 13, 31, 0, 0x31c, 128},
+      {0x1c000b8eU, Opcode::LoadVectorMemory, 14, 0, 0x170, 5, 32},
+      {0x5c000b6fU, Opcode::LoadVectorMemory, 15, 0, 0x16c, 5, 64},
+  }};
+  for (std::size_t index = 0; index < vectorMemoryCases.size(); ++index) {
+    const auto& test = vectorMemoryCases[index];
+    const auto decoded =
+        arm64metal::translate_core::decode_vector_memory_operation(test.bits);
+    const auto canonical = decode_operation(test.bits);
+    if (!decoded || decoded->opcode != test.opcode ||
+        decoded->destination != test.destination ||
+        decoded->source != test.source ||
+        decoded->immediate != test.displacement ||
+        decoded->shift != test.packedMode || decoded->width != test.width) {
+      std::fprintf(stderr, "vector memory case %zu bits=%08x", index,
+                   test.bits);
+      if (decoded) {
+        std::fprintf(stderr,
+                     " got=(%u,%u,%u,%u,%u,%u)",
+                     static_cast<unsigned>(decoded->opcode),
+                     decoded->destination, decoded->source,
+                     decoded->immediate, decoded->shift, decoded->width);
+      }
+      std::fprintf(stderr, " expected=(%u,%u,%u,%u,%u,%u)\n",
+                   static_cast<unsigned>(test.opcode), test.destination,
+                   test.source, test.displacement, test.packedMode, test.width);
+    }
+    assert(canonical && decoded && canonical->opcode == decoded->opcode &&
+           canonical->destination == decoded->destination &&
+           canonical->source == decoded->source &&
+           canonical->immediate == decoded->immediate &&
+           canonical->shift == decoded->shift &&
+           canonical->width == decoded->width &&
+           decoded->opcode == test.opcode &&
+           decoded->destination == test.destination &&
+           decoded->source == test.source &&
+           decoded->immediate == test.displacement &&
+           decoded->shift == test.packedMode && decoded->width == test.width);
+    const auto expectedOpcode = static_cast<std::uint32_t>(test.opcode);
+    assert((serialize_operation(*decoded) ==
+            arm64metal::translate_core::OperationPacket{
+                expectedOpcode, test.destination, test.source,
+                test.displacement, test.packedMode, test.width}));
+    const auto process = arm64metal::decode_process(
+        test.bits, 0x1000, {}, {}, false);
+    assert(process.operation && process.operation->opcode == test.opcode &&
+           process.operation->destination == test.destination &&
+           process.operation->source == test.source &&
+           process.operation->immediate == test.displacement &&
+           process.operation->shift == test.packedMode &&
+           process.operation->width == test.width && !process.code.empty());
+    assert(std::any_of(process.code.begin(), process.code.end(),
+                       [](const std::string& line) {
+                         return line.find("guest_offset") != std::string::npos ||
+                                line.find("load_guest_word") != std::string::npos ||
+                                line.find("store_guest_word") != std::string::npos;
+                       }));
+  }
+  assert(!arm64metal::translate_core::decode_vector_memory_operation(
+      0x3c600829U));  // Register-offset extension option 0 is reserved.
+  const auto literalQ =
+      arm64metal::translate_core::decode_vector_memory_operation(0x9c000b70U);
+  assert(literalQ && literalQ->opcode == Opcode::LoadVectorMemory &&
+         literalQ->destination == 16U && literalQ->source == 0U &&
+         literalQ->immediate == 0x16cU && literalQ->shift == 5U &&
+         literalQ->width == 128U);
+  const auto postStore = arm64metal::translate_core::decode_vector_memory_operation(
+      0x3c810427U);  // STR Q7, [X1], #16.
+  assert(postStore && postStore->opcode == Opcode::StoreVectorMemory &&
+         postStore->destination == 7U && postStore->source == 1U &&
+         postStore->immediate == 16U &&
+         postStore->shift == static_cast<std::uint32_t>(
+             VectorMemoryMode::PostIndex) && postStore->width == 128U);
   return 0;
 }

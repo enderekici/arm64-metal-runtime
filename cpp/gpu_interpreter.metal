@@ -1050,6 +1050,130 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 43u || opcode == 44u) {
+                const uint vt = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint immediate = instruction.operation[3];
+                const uint packedMode = instruction.operation[4];
+                const uint mode = packedMode & 7u;
+                const uint width = instruction.operation[5];
+                const uint bytes = width / 8u;
+                const int displacement = as_type<int>(immediate);
+                const uint rm = (packedMode >> 3u) & 31u;
+                const uint option = (packedMode >> 8u) & 7u;
+                const uint scaled = (packedMode >> 11u) & 1u;
+                const bool load = opcode == 43u;
+                const bool literal = mode == 5u;
+                const bool registerOffset = mode == 4u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                const bool validWidth = width == 32u || width == 64u ||
+                    width == 128u || (registerOffset &&
+                    (width == 8u || width == 16u));
+                const bool validRegisterOffset = !registerOffset ||
+                    ((packedMode & ~0xfffu) == 0u &&
+                     (option == 2u || option == 3u || option == 6u ||
+                      option == 7u) && scaled <= 1u && immediate == 0u);
+                const bool validOtherMode = registerOffset || literal ||
+                    ((packedMode & ~7u) == 0u &&
+                     (mode != 0u || (width >= 32u && displacement >= 0 &&
+                      uint(displacement) <= 0xfffu * bytes &&
+                      uint(displacement) % bytes == 0u)) &&
+                     ((mode < 1u || mode > 3u) ||
+                      (width >= 32u && displacement >= -256 &&
+                       displacement <= 255)));
+                if (vt > 31u || rn > 31u || !validWidth || mode > 5u ||
+                    !validRegisterOffset || !validOtherMode ||
+                    (literal && (!load || rn != 0u || width < 32u ||
+                     bytes > 16u || displacement < -(1 << 20) ||
+                     displacement > ((1 << 20) - 4) ||
+                     (uint(displacement) & 3u) != 0u)) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+
+                ulong base = 0ul;
+                ulong address = 0ul;
+                if (literal) {
+                    if ((displacement < 0 &&
+                         instruction.pc < ulong(-displacement)) ||
+                        (displacement >= 0 && instruction.pc >
+                         (~0ul - ulong(displacement)))) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    address = displacement < 0
+                        ? instruction.pc - ulong(-displacement)
+                        : instruction.pc + ulong(displacement);
+                    const ulong guestCodeLimit = 1ul << 48;
+                    if (address >= guestCodeLimit ||
+                        bytes > guestCodeLimit - address) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                } else {
+                    base = state[rn];
+                    ulong offset = ulong(displacement);
+                    if (registerOffset) {
+                        const ulong indexValue = rm == 31u ? 0ul : state[rm];
+                        if (option == 2u) {
+                            offset = ulong(uint(indexValue));
+                        } else if (option == 6u) {
+                            offset = ulong(long(int(uint(indexValue))));
+                        } else {
+                            offset = indexValue;
+                        }
+                        if (scaled != 0u) {
+                            const uint shift = bytes == 16u ? 4u :
+                                (bytes == 8u ? 3u : (bytes == 4u ? 2u :
+                                 (bytes == 2u ? 1u : 0u)));
+                            offset <<= shift;
+                        }
+                    }
+                    address = mode == 2u ? base : base + offset;
+                }
+                const ulong offset = guest_offset(address, bytes, size, writable,
+                                                   !load, state, resident, config);
+                if (offset == ~0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                const uint slot = 806u + 2u * vt;
+                if (load) {
+                    state[slot] = load_guest_word(memory + offset,
+                                                  min(bytes, 8u));
+                    state[slot + 1u] = bytes == 16u
+                        ? load_guest_word(memory + offset + 8ul, 8u) : 0ul;
+                } else {
+                    store_guest_word(memory + offset, state[slot], min(bytes, 8u));
+                    if (bytes == 16u) {
+                        store_guest_word(memory + offset + 8ul,
+                                         state[slot + 1u], 8u);
+                    }
+                }
+                if (!literal && (mode == 2u || mode == 3u)) {
+                    state[rn] = base + ulong(displacement);
+                }
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 39u) {
                 const uint vd = instruction.operation[1];
                 const uint vn = instruction.operation[2];

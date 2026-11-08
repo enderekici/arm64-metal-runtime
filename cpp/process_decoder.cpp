@@ -197,7 +197,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         *operation, successors, translate_core::LoweringMode::Process,
         guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
-  const auto decodedOperation = translate_core::decode_operation(bits);
+  auto decodedOperation = translate_core::decode_operation(bits);
+  if (!decodedOperation) {
+    decodedOperation = translate_core::decode_vector_memory_operation(bits);
+  }
   const bool typedBranch = decodedOperation &&
                            decodedOperation->opcode == translate_core::Opcode::Branch;
   const bool typedBranchLink = decodedOperation &&
@@ -262,7 +265,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       decodedOperation->opcode != translate_core::Opcode::StoreUnscaledWriteback &&
       decodedOperation->opcode != translate_core::Opcode::LoadSignedScalar &&
       decodedOperation->opcode != translate_core::Opcode::LoadLiteral &&
-      decodedOperation->opcode != translate_core::Opcode::LoadUnsignedMinMax) {
+      decodedOperation->opcode != translate_core::Opcode::LoadUnsignedMinMax &&
+      decodedOperation->opcode != translate_core::Opcode::LoadVectorMemory &&
+      decodedOperation->opcode != translate_core::Opcode::StoreVectorMemory) {
     const auto successors =
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
@@ -284,7 +289,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
          decodedOperation->opcode == translate_core::Opcode::LoadUnscaledWriteback ||
          decodedOperation->opcode == translate_core::Opcode::StoreUnscaledWriteback ||
          decodedOperation->opcode == translate_core::Opcode::LoadSignedScalar ||
-         decodedOperation->opcode == translate_core::Opcode::LoadLiteral)) {
+         decodedOperation->opcode == translate_core::Opcode::LoadLiteral ||
+         decodedOperation->opcode == translate_core::Opcode::LoadVectorMemory ||
+         decodedOperation->opcode == translate_core::Opcode::StoreVectorMemory)) {
       instruction.operation = *decodedOperation;
     }
     return instruction;
@@ -1830,9 +1837,14 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                     "; x[34] = 2; return; }",
                 rd == 31 ? "" : reg(rd) + " = " + value + ";");
   }
-  if ((bits & 0x3f000000) == 0x1c000000) {
-    auto width = 4 << field(30, 2);
-    auto address = pc + sign_extend(field(5, 19), 19) * 4;
+  if (decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::LoadVectorMemory &&
+      decodedOperation->shift == static_cast<std::uint32_t>(
+          translate_core::VectorMemoryMode::Literal)) {
+    const auto width = static_cast<std::int64_t>(decodedOperation->width / 8U);
+    const auto displacement =
+        static_cast<std::int32_t>(decodedOperation->immediate);
+    const auto address = pc + displacement;
     if (!(width <= 16 && address >= 0)) {
       throw GuestError((std::string("Invalid SIMD literal load")));
     }
@@ -1841,72 +1853,83 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto upper = width == 16
                      ? (std::string("load_guest_word(memory + offset + 8, 8)"))
                      : (std::string("0ul"));
-    auto slot = 806 + 2 * int64_t(rd);
+    auto slot = 806 + 2 * int64_t(decodedOperation->destination);
     return emit(
         (std::string("{ ulong offset = ") + str(pointer) + ";"),
         (std::string("if (") + str(outside(logical, width, true)) +
-         ") { x[34] = 2; return; }"),
+         ") { x[874] = " + logical + "; x[34] = 2; return; }"),
         (std::string("x[") + str(slot) +
          "] = load_guest_word(memory + offset, " +
          str(std::min<int64_t>(width, 8)) + ");"),
         (std::string("x[") + str(slot + 1) + "] = " + str(upper) + "; }"));
   }
-  auto vectorMemory = bits & 0xff800000;
-  auto vectorWidth =
-      Map<int>{{0x3d800000, 16}, {0xfd000000, 8}, {0xbd000000, 4}};
-  auto unscaledWidths =
-      Map<int>{{0x3c800000, 16}, {0xfc000000, 8}, {0xbc000000, 4}};
-  auto unscaledWidth =
-      field(10, 2) != 2 ? unscaledWidths[bits & 0xffa00000] : nullptr;
-  auto indexedVectorWidths = Map<int>{{0x3ca00800, 16},
-                                      {0xfc200800, 8},
-                                      {0xbc200800, 4},
-                                      {0x7c200800, 2},
-                                      {0x3c200800, 1}};
-  auto indexedVectorWidth = contains({2, 3, 6, 7}, field(13, 3))
-                                ? indexedVectorWidths[bits & 0xffa00c00]
-                                : nullptr;
-  auto vectorUnscaled = unscaledWidth != nullptr;
-  if (auto width =
-          first(indexedVectorWidth, unscaledWidth, vectorWidth[vectorMemory]);
-      width) {
-    auto load = field(22, 1) == 1;
-    auto base = reg(rn, true);
-    auto mode = vectorUnscaled ? field(10, 2) : 0;
-    auto displacement = vectorUnscaled ? sign_extend(field(12, 9), 9)
-                                       : int64_t(field(10, 12)) * width;
-    auto offset = indexedVectorWidth == nullptr
-                      ? (std::string("ulong(") + str(displacement) + ")")
-                      : indexedOffset(width);
-    auto address =
-        mode == 1 ? base : (std::string(str(base)) + " + " + str(offset));
-    auto first = 806 + 2 * rd;
-    auto count = std::min<int64_t>(width, 8);
-    auto pointer = physical((std::string("address")), width, load);
-    auto upper = width == 16 ? (std::string("load_guest_word(memory + ") +
-                                str(pointer) + " + 8, 8)")
-                             : (std::string("0"));
-    auto operation =
-        load
-            ? (std::string("x[") + str(first) +
-               "] = load_guest_word(memory + " + str(pointer) + ", " +
-               str(count) + "); x[" + str(first + 1) + "] = " + str(upper) +
-               ";")
-            : (std::string("store_guest_word(memory + ") + str(pointer) +
-               ", x[" + str(first) + "], " + str(count) + ");") +
-                  (width == 16
-                       ? (std::string(" store_guest_word(memory + ") +
-                          str(pointer) + " + 8, x[" + str(first + 1) + "], 8);")
-                       : (std::string("")));
+  const bool vectorLoad = decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::LoadVectorMemory;
+  const bool vectorStore = decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::StoreVectorMemory;
+  if ((vectorLoad || vectorStore) &&
+      decodedOperation->shift != static_cast<std::uint32_t>(
+          translate_core::VectorMemoryMode::Literal)) {
+    const auto width = static_cast<std::int64_t>(decodedOperation->width / 8U);
+    const auto mode = decodedOperation->shift & 7U;
+    const auto displacement =
+        static_cast<std::int32_t>(decodedOperation->immediate);
+    const auto base = reg(decodedOperation->source, true);
+    std::string offset;
+    if (mode == static_cast<std::uint32_t>(
+                    translate_core::VectorMemoryMode::RegisterOffset)) {
+      const auto index = (decodedOperation->shift >> 3U) & 31U;
+      const auto extension = (decodedOperation->shift >> 8U) & 7U;
+      const auto scaled = (decodedOperation->shift >> 11U) & 1U;
+      const auto source = reg(index);
+      switch (extension) {
+      case 2:
+        offset = "ulong(uint(" + source + "))";
+        break;
+      case 6:
+        offset = "ulong(long(int(" + source + ")))";
+        break;
+      default:
+        offset = source;
+        break;
+      }
+      if (scaled != 0U && width > 1) {
+        offset = "(" + offset + " << " + str(ctz(width)) + ")";
+      }
+    } else {
+      offset = "ulong(" + str(displacement) + ")";
+    }
+    const auto postIndex = mode == static_cast<std::uint32_t>(
+                                      translate_core::VectorMemoryMode::PostIndex);
+    const auto writeback = postIndex || mode == static_cast<std::uint32_t>(
+                                            translate_core::VectorMemoryMode::PreIndex);
+    const auto address = postIndex
+        ? base : (std::string(str(base)) + " + " + str(offset));
+    const auto slot = 806 + 2 * int64_t(decodedOperation->destination);
+    const auto count = std::min<std::int64_t>(width, 8);
+    const auto pointer = physical("address", width, vectorLoad);
+    const auto upper = width == 16
+        ? (std::string("load_guest_word(memory + ") + str(pointer) + " + 8, 8)")
+        : std::string("0ul");
+    const auto transfer = vectorLoad
+        ? (std::string("x[") + str(slot) + "] = load_guest_word(memory + " +
+           str(pointer) + ", " + str(count) + "); x[" + str(slot + 1) +
+           "] = " + str(upper) + ";")
+        : (std::string("store_guest_word(memory + ") + str(pointer) + ", x[" +
+           str(slot) + "], " + str(count) + ");") +
+              (width == 16
+                   ? (std::string(" store_guest_word(memory + ") + str(pointer) +
+                      " + 8, x[" + str(slot + 1) + "], 8);")
+                   : std::string{});
     return emit((std::string("{ ulong address = ") + str(address) + ";"),
                 (std::string("if (") +
-                 str(outside((std::string("address")), width, load)) +
-                 ") { x[34] = 2; return; }"),
-                operation,
-                mode == 0 ? (std::string(""))
-                          : (std::string(str(base)) + " += ulong(" +
-                             str(displacement) + ");"),
-                (std::string("}")));
+                 str(outside("address", width, vectorLoad)) +
+                 ") { x[874] = address; x[34] = 2; return; }"),
+                transfer,
+                writeback ? (std::string(str(base)) + " += ulong(" +
+                                  str(displacement) + ");")
+                          : std::string{},
+                std::string("}"));
   }
   auto pair = bits & 0xffc00000;
   auto pairEncoding = pair & 0x7fffffff;

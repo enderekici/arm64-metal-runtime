@@ -51,7 +51,18 @@ enum class Opcode : std::uint32_t {
   LoadUnsignedMinMax = 37,
   VectorCompareEqualZero = 39,
   VectorReduceExtreme = 40,
+  LoadVectorMemory = 43,
+  StoreVectorMemory = 44,
   AuthenticatedReturn = 36,
+};
+
+enum class VectorMemoryMode : std::uint32_t {
+  ScaledImmediate = 0,
+  Unscaled = 1,
+  PostIndex = 2,
+  PreIndex = 3,
+  RegisterOffset = 4,
+  Literal = 5,
 };
 
 // AuthenticatedReturn uses `destination` as its sub-operation: 0 pushes the
@@ -83,6 +94,11 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // Scalar literal loads use destination=Rt, source=0, immediate=signed byte
 // displacement from the instruction PC, shift=0 (LDR W), 1 (LDR X), or
 // 2 (LDRSW X), and width=32 for W or 64 for X results.
+// Single-vector memory uses destination=Vt, source=Rn (zero for literal),
+// immediate=signed byte displacement (or zero for register offset), width=the
+// transferred bits (8/16/32/64/128), and shift=VectorMemoryMode. Register
+// offset additionally packs Rm at bits 3..7, option at 8..10, and scale at 11.
+// Literal mode uses a signed displacement from the instruction PC.
 // BranchCondition uses source for the condition and immediate for byte offset.
 // TestBitBranch uses destination for bit index, source for Rt, immediate for
 // TBNZ sense, shift for signed byte displacement, and width for W/X form.
@@ -187,6 +203,9 @@ struct Instruction {
 };
 
 std::optional<Operation> decode_operation(std::uint32_t bits);
+// Process-only SIMD memory decoder; its forms mirror the process translator's
+// single-vector literal, immediate, unscaled/writeback and register-offset forms.
+std::optional<Operation> decode_vector_memory_operation(std::uint32_t bits);
 // Process-only key-B authenticated return operations. Kept separate from
 // decode_operation so standalone function translation retains its current
 // unsupported-instruction policy.
