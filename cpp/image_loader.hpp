@@ -40,6 +40,14 @@ struct LoadedImageGraphRecord {
   // Declaration order is preserved because ordinals index this vector.
   std::vector<LoadedImageDependency> dependencies;
   std::map<std::string, MachExport> exports;
+  // Dynamic-image metadata captured for a later unload transaction. Startup
+  // and shared-cache images leave this empty and remain pinned.
+  std::size_t backing_offset = 0;
+  std::size_t image_size = 0;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> mapped_ranges;
+  std::vector<std::uint64_t> initializer_targets;
+  std::vector<std::uint64_t> finalizer_targets;
+  bool dynamic_unload_candidate = false;
 };
 
 struct StagedNamedDependency {
@@ -180,6 +188,7 @@ struct MachImage {
   std::vector<std::string> rpaths;
   std::map<std::string, MachExport> exports;
   std::vector<std::size_t> initializers;
+  std::vector<std::size_t> finalizers;
   std::optional<ThreadLocalImageMetadata> thread_locals;
   GuestCodePolicy code_policy;
 
@@ -196,6 +205,7 @@ struct StagedNamedImage {
   std::vector<std::string> rpaths;
   std::vector<StagedNamedDependency> dependencies;
   std::vector<std::uint64_t> initializer_targets;
+  std::vector<std::uint64_t> finalizer_targets;
   std::vector<StagedNamedBind> binds;
   bool delayed_initialization = false;
 

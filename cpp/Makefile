@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -700,6 +700,34 @@ $(GUEST_IMAGE_REGISTRY_TEST): ../fixtures/handoff/guest-image-registry-test.cpp 
 
 verify-guest-image-registry: $(GUEST_IMAGE_REGISTRY_TEST)
 	"$(GUEST_IMAGE_REGISTRY_TEST)"
+
+DYLD_FINALIZER_FIXTURE := $(BUILD_DIR)/libdyld-finalizer-metadata.dylib
+DYLD_FINALIZER_METADATA_TEST := $(BUILD_DIR)/dyld-finalizer-metadata-test
+$(DYLD_FINALIZER_FIXTURE): ../fixtures/handoff/dyld-finalizer-metadata.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
+		-Wl,-install_name,@rpath/libdyld-finalizer-metadata.dylib \
+		-Wall -Wextra -Werror "$<" -o "$@"
+
+$(DYLD_FINALIZER_METADATA_TEST): ../fixtures/handoff/dyld-finalizer-metadata-test.cpp \
+		image_loader.cpp macho.cpp shared_cache.cpp guest_code_policy.cpp guest_tlv.cpp \
+		guest_state.cpp guest_format.cpp guest_scheduler.cpp guest_strings.cpp \
+		guest_vector_crypto.cpp translate_core.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. "$<" image_loader.cpp macho.cpp \
+		shared_cache.cpp guest_code_policy.cpp guest_tlv.cpp guest_state.cpp guest_format.cpp \
+		guest_scheduler.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp \
+		-framework Foundation -framework Security -framework CoreFoundation -o "$@"
+
+verify-dyld-finalizer-metadata-native: $(DYLD_FINALIZER_FIXTURE) $(DYLD_FINALIZER_METADATA_TEST)
+	"$(DYLD_FINALIZER_METADATA_TEST)" "$(DYLD_FINALIZER_FIXTURE)" \
+		>"$(BUILD_DIR)/dyld-finalizer-metadata.out" \
+		2>"$(BUILD_DIR)/dyld-finalizer-metadata.err"
+	printf '%s\n' 'native-init' 'native-final' \
+		'metadata initializers=2 finalizers=1 finalizer_text=1 native_value=42' \
+		>"$(BUILD_DIR)/dyld-finalizer-metadata.expected"
+	cmp "$(BUILD_DIR)/dyld-finalizer-metadata.expected" \
+		"$(BUILD_DIR)/dyld-finalizer-metadata.out"
+	test ! -s "$(BUILD_DIR)/dyld-finalizer-metadata.err"
 
 $(INTERPRETER_DEMAND_CACHE_GENERATOR): ../fixtures/interpreter/demand-cache-retry-address.cpp shared_cache.cpp macho.cpp shared_cache.hpp macho.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) ../fixtures/interpreter/demand-cache-retry-address.cpp shared_cache.cpp macho.cpp -o "$@"

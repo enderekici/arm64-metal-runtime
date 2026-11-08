@@ -153,6 +153,7 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
   bool sawLegacyDyldInfoCommand = false;
   std::optional<std::pair<std::size_t, std::size_t>> export_trie;
   std::vector<InitializerSection> initializer_sections;
+  std::vector<InitializerSection> finalizer_sections;
   std::vector<TlvSection> tlv_thunk_sections;
   std::vector<TlvSection> tlv_template_sections;
   std::vector<TlvSection> tlv_init_sections;
@@ -196,7 +197,10 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
             if (size != 0) message_stubs.emplace_back(start, size);
           }
           const auto type = file.word(section + 64) & 0xffU;
-          if (type == 10) fail("Guest image finalizers are unsupported");
+          if (type == 10) {
+            const auto [address_value, size] = section_named(bytes, section);
+            finalizer_sections.push_back({address_value, size, true});
+          }
           if (type == 9 || type == 0x16) {
             const auto [address_value, size] = section_named(bytes, section);
             initializer_sections.push_back({address_value, size, type == 9});
@@ -493,27 +497,36 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
     }
   }
 
-  for (const auto& section : initializer_sections) {
-    const auto mapped = region(section.address, section.size);
-    const std::size_t width = section.pointers ? 8 : 4;
-    if ((mapped.second - mapped.first) % width != 0 || mapped.second > memory.size()) {
-      fail("Invalid guest initializer section");
-    }
-    for (std::size_t offset = mapped.first; offset < mapped.second; offset += width) {
-      const auto raw = read_integer(memory, offset, width);
-      std::uint64_t address = raw;
-      if (section.pointers) {
-        if (raw < placement) fail("Guest initializer pointer is not relocated to its placement");
-        address = raw - placement;
-      } else if (raw > std::numeric_limits<std::uint32_t>::max()) {
-        fail("Unsupported guest initializer offset");
+  const auto collectFunctionPointers = [&](const std::vector<InitializerSection>& sections,
+                                           std::vector<std::size_t>& targets,
+                                           const char* kind) {
+    for (const auto& section : sections) {
+      const auto mapped = region(section.address, section.size);
+      const std::size_t width = section.pointers ? 8 : 4;
+      if ((mapped.second - mapped.first) % width != 0 || mapped.second > memory.size()) {
+        fail(std::string("Invalid guest ") + kind + " section");
       }
-      if (address < text.first || address >= text.second || (address & 3) != 0) {
-        fail("Guest initializer outside its image text");
+      for (std::size_t offset = mapped.first; offset < mapped.second; offset += width) {
+        const auto raw = read_integer(memory, offset, width);
+        std::uint64_t address = raw;
+        if (section.pointers) {
+          if (raw < placement) {
+            fail(std::string("Guest ") + kind +
+                 " pointer is not relocated to its placement");
+          }
+          address = raw - placement;
+        } else if (raw > std::numeric_limits<std::uint32_t>::max()) {
+          fail(std::string("Unsupported guest ") + kind + " offset");
+        }
+        if (address < text.first || address >= text.second || (address & 3) != 0) {
+          fail(std::string("Guest ") + kind + " outside its image text");
+        }
+        targets.push_back(static_cast<std::size_t>(address));
       }
-      initializers.push_back(static_cast<std::size_t>(address));
     }
-  }
+  };
+  collectFunctionPointers(initializer_sections, initializers, "initializer");
+  collectFunctionPointers(finalizer_sections, finalizers, "finalizer");
   if (!tlv_thunk_sections.empty() || !tlv_template_sections.empty() || !tlv_init_sections.empty()) {
     if (tlv_thunk_sections.empty() || tlv_template_sections.empty())
       fail("Incomplete guest thread-local metadata");
@@ -1778,6 +1791,11 @@ StagedNamedLoad ExecutableImage::stage_named_load(const std::string& requested_p
       if (offset > std::numeric_limits<std::uint64_t>::max() - image.guest_header)
         fail("Staged initializer target overflows");
       image.initializer_targets.push_back(image.guest_header + offset);
+    }
+    for (const auto offset : image.image.finalizers) {
+      if (offset > std::numeric_limits<std::uint64_t>::max() - image.guest_header)
+        fail("Staged finalizer target overflows");
+      image.finalizer_targets.push_back(image.guest_header + offset);
     }
     const auto append_binds = [&](const auto& imports, bool isStub) {
       for (const auto& entry : imports) {

@@ -3433,12 +3433,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         std::memcpy(residentBuffer.data(), resident.data(),
                     resident.size() * sizeof(std::uint64_t));
-        for (const auto& staged : plan.images) {
+        for (std::size_t index = 0; index < plan.images.size(); ++index) {
+            const auto& staged = plan.images[index];
             LoadedImageGraphRecord record;
             record.guest_header = staged.guest_header;
             record.canonical_path = staged.canonical_path;
             record.rpaths = staged.rpaths;
             record.exports = staged.image.exports;
+            record.backing_offset = static_cast<std::size_t>(allocations[index]);
+            record.image_size = staged.image_bytes;
+            record.initializer_targets = staged.initializer_targets;
+            record.finalizer_targets = staged.finalizer_targets;
+            record.dynamic_unload_candidate = true;
             record.dependencies.reserve(staged.dependencies.size());
             for (const auto& dependency : staged.dependencies) {
                 LoadedImageDependency loaded{dependency.declaration, dependency.existing_header};
@@ -3449,6 +3455,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     loaded.resolved_header = plan.images[*dependency.staged_image_index].guest_header;
                 }
                 record.dependencies.push_back(std::move(loaded));
+            }
+            for (const auto& segment : staged.image.mapped_segments) {
+                if (segment.size == 0) continue;
+                const auto begin = staged.guest_header + segment.offset;
+                record.mapped_ranges.emplace_back(begin, begin + segment.size);
             }
             image.loaded_image_graph.push_back(std::move(record));
         }
