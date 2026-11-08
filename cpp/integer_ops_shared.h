@@ -100,6 +100,39 @@ inline AddSubImmediateResult add_sub_shifted_apply(
         : previousFlags;
     return AddSubImmediateResult{value, flags};
 }
+inline ulong add_sub_extend_register(ulong source, uint option) {
+    if (option == 0u) return source & 0xfful;
+    if (option == 1u) return source & 0xfffful;
+    if (option == 2u) return source & 0xfffffffful;
+    if (option == 4u) {
+        const ulong value = source & 0xfful;
+        return (value & 0x80ul) != 0ul ? value | ~0xfful : value;
+    }
+    if (option == 5u) {
+        const ulong value = source & 0xfffful;
+        return (value & 0x8000ul) != 0ul ? value | ~0xfffful : value;
+    }
+    if (option == 6u) {
+        const ulong value = source & 0xfffffffful;
+        return (value & 0x80000000ul) != 0ul
+            ? value | ~0xfffffffful : value;
+    }
+    return source;
+}
+inline AddSubImmediateResult add_sub_extended_apply(
+    uint subtract, ulong lhs, ulong rhs, uint option, uint amount,
+    uint width, uint setFlags, uint previousFlags) {
+    const ulong left = width == 32u ? ulong(uint(lhs)) : lhs;
+    const ulong source = width == 32u ? ulong(uint(rhs)) : rhs;
+    ulong right = add_sub_extend_register(source, option) << amount;
+    if (width == 32u) right = ulong(uint(right));
+    const ulong value = ARM64METAL_ADD_SUB_VALUE(subtract, left, right, width);
+    const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+    const uint flags = setFlags != 0u
+        ? ARM64METAL_ADD_SUB_IMM_NZCV(subtract, left, right, value, width, signBit)
+        : previousFlags;
+    return AddSubImmediateResult{value, flags};
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -142,6 +175,30 @@ inline constexpr char typed_integer_msl_source[] =
     "uint immediate, uint shift, uint width, uint setFlags, uint previousFlags) { "
     "ulong left = width == 32u ? ulong(uint(lhs)) : lhs; "
     "ulong right = ulong(immediate) << shift; "
+    "ulong value = "
+    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_VALUE(subtract, left, right, width))
+    "; ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
+    "uint flags = setFlags != 0u ? "
+    ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
+        subtract, left, right, value, width, signBit))
+    " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
+    "inline ulong add_sub_extend_register(ulong source, uint option) { "
+    "if (option == 0u) return source & 0xfful; "
+    "if (option == 1u) return source & 0xfffful; "
+    "if (option == 2u) return source & 0xfffffffful; "
+    "if (option == 4u) { ulong value = source & 0xfful; "
+    "return (value & 0x80ul) != 0ul ? value | ~0xfful : value; } "
+    "if (option == 5u) { ulong value = source & 0xfffful; "
+    "return (value & 0x8000ul) != 0ul ? value | ~0xfffful : value; } "
+    "if (option == 6u) { ulong value = source & 0xfffffffful; "
+    "return (value & 0x80000000ul) != 0ul ? value | ~0xfffffffful : value; } "
+    "return source; }\n"
+    "inline AddSubImmediateResult add_sub_extended_apply(uint subtract, ulong lhs, "
+    "ulong rhs, uint option, uint amount, uint width, uint setFlags, "
+    "uint previousFlags) { ulong left = width == 32u ? ulong(uint(lhs)) : lhs; "
+    "ulong source = width == 32u ? ulong(uint(rhs)) : rhs; "
+    "ulong right = add_sub_extend_register(source, option) << amount; "
+    "if (width == 32u) right = ulong(uint(right)); "
     "ulong value = "
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_VALUE(subtract, left, right, width))
     "; ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul; "

@@ -384,6 +384,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::SubImmediateSetFlags;
             const bool addSubShiftedRegisterOpcode =
                 opcode == translate_core::Opcode::AddSubShiftedRegister;
+            const bool addSubExtendedRegisterOpcode =
+                opcode == translate_core::Opcode::AddSubExtendedRegister;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const auto& operation = *instruction.operation;
@@ -464,13 +466,21 @@ ProcessKernelPlan plan_process_kernel(
                  (operation.width == 32 || operation.width == 64) &&
                  shiftedType <= 2 && shiftedAmount < operation.width &&
                  (operation.shift & ~0x3ffU) == 0);
+            const auto extendedAmount = operation.shift & 7U;
+            const bool validAddSubExtendedRegister =
+                !addSubExtendedRegisterOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 extendedAmount <= 4 && (operation.shift & ~0xffU) == 0);
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
-                 !conditionalSelectOpcode && !addSubShiftedRegisterOpcode) ||
+                 !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
+                 !addSubExtendedRegisterOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
-                !validAddSubShiftedRegister ||
+                !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

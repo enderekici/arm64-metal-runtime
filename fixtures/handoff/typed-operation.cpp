@@ -54,7 +54,7 @@ int main() {
                                     std::uint64_t{1} << 48)
              .code[1]
              .find("x[31]") == std::string::npos);
-  assert(!decode_operation(0x8be20c20U).has_value());  // ROR is reserved.
+  assert(!decode_operation(0x8bc20c20U).has_value());  // ROR is reserved.
   assert(!decode_operation(0x0b028020U).has_value());  // W shift amount 32.
   const auto shiftedDiscard = decode_operation(0x8b02003fU);
   assert(shiftedDiscard.has_value() && shiftedDiscard->destination == 31);
@@ -64,6 +64,63 @@ int main() {
              .code.size() == 8);
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "add_sub_shifted_apply") != std::string_view::npos);
+
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
+      for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
+        for (std::uint32_t option = 0; option < 8; ++option) {
+          for (std::uint32_t amount = 0; amount <= 4; ++amount) {
+            const auto bits = 0x0b200000U | (width == 64 ? 0x80000000U : 0U) |
+                              (subtract << 30U) | (setFlags << 29U) |
+                              (option << 13U) | (2U << 16U) | (amount << 10U) |
+                              (1U << 5U) | 3U;
+            const auto extended = decode_operation(bits);
+            const auto packed = (setFlags << 7U) | (subtract << 6U) |
+                                (option << 3U) | amount;
+            assert(extended.has_value() &&
+                   extended->opcode == Opcode::AddSubExtendedRegister &&
+                   extended->destination == 3 && extended->source == 1 &&
+                   extended->immediate == 2 && extended->shift == packed &&
+                   extended->width == width);
+            assert((serialize_operation(*extended) ==
+                    arm64metal::translate_core::OperationPacket{
+                        22, 3, 1, 2, packed, width}));
+            const auto lowered = make_operation_instruction(
+                *extended, {0x1004}, LoweringMode::Process,
+                std::uint64_t{1} << 48);
+            assert(lowered.code.size() == 9 &&
+                   lowered.code[1].find("add_sub_extended_apply(") !=
+                       std::string::npos &&
+                   lowered.code[7] == "x[32] = add_sub_result.flags;");
+          }
+        }
+      }
+    }
+  }
+  const auto extendedCmp = decode_operation(0xeb22003fU);
+  assert(extendedCmp.has_value() && extendedCmp->destination == 31 &&
+         extendedCmp->shift == 0xc0U);
+  const auto extendedCmpLowered = make_operation_instruction(
+      *extendedCmp, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(extendedCmpLowered.code.size() == 8);
+  const auto extendedSp = decode_operation(0x0b22003fU);
+  assert(extendedSp.has_value() && extendedSp->destination == 31);
+  assert(make_operation_instruction(*extendedSp, {0x1004},
+                                    LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code[2] == "x[31] = add_sub_result.value;");
+  const auto extendedSpSource = decode_operation(0x0b3f03e0U);
+  assert(extendedSpSource.has_value() && extendedSpSource->source == 31 &&
+         extendedSpSource->immediate == 31);
+  assert(make_operation_instruction(*extendedSpSource, {0x1004},
+                                    LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code[1]
+             .find(", x[31], 0u,") != std::string::npos);
+  assert(!decode_operation(0x0b22143fU).has_value());  // Shift amount exceeds 4.
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "add_sub_extended_apply") != std::string_view::npos);
 
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};

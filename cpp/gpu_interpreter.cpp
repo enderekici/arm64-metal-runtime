@@ -171,6 +171,18 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter add/sub shifted-register packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::AddSubExtendedRegister) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto packed = operation[4];
+            const auto amount = packed & 7U;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                (operation[5] != 32 && operation[5] != 64) || amount > 4 ||
+                (packed & ~0xffU) != 0 ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter add/sub extended-register packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                    opcode == translate_core::Opcode::StoreUnsignedImmediate) {
             hasMemoryAccess = true;
