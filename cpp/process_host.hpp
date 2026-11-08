@@ -208,10 +208,16 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t size, std::uint64_t alignment,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
-                                std::uint64_t& guestAddress, bool jitMapping)> machVmAllocate;
+                                std::uint64_t& guestAddress, bool jitMapping,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmAllocate;
+    std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
+                                std::uint32_t currentProtection,
+                                std::uint32_t maximumProtection,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmReserve;
     std::function<std::uint32_t(std::uint64_t& guestAddress, std::uint64_t size,
                                 std::uint32_t currentProtection,
-                                std::uint32_t maximumProtection)> machVmOverwrite;
+                                std::uint32_t maximumProtection,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmOverwrite;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,

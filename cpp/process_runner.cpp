@@ -2221,14 +2221,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bool executable;
         std::uint32_t maximumProtection = 0;
         bool jit = false;
+        std::uint32_t inheritance = 1;
+        std::uint32_t tag = 0;
     };
     struct VmAllocation {
         std::uint64_t begin;
         std::uint64_t end;
         std::size_t backing;
         std::vector<VmRegion> regions;
+        bool sparseAddressSpace = false;
+        std::vector<std::int64_t> ownedBackings;
+    };
+    struct VmReservation {
+        std::uint64_t begin;
+        std::uint64_t end;
+        std::uint32_t currentProtection;
+        std::uint32_t maximumProtection;
+        std::uint32_t inheritance;
+        std::uint32_t tag;
     };
     std::map<std::uint64_t, VmAllocation> vmAllocations;
+    std::map<std::uint64_t, VmReservation> vmReservations;
     std::set<std::uint64_t> dynamicCodeRegionStarts;
     std::uint64_t jitTraceGeneration = 0;
     const auto executableJitOwnerFor = [&](std::uint64_t pc)
@@ -3497,14 +3510,75 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::optional<std::size_t> kdebugTypeFilterBacking;
     std::uint64_t kdebugTypeFilterLogicalCursor = guestMappingBase + (std::uint64_t{1} << 32U);
     hostServiceState.guestMapJitEligible = image.main_code_policy.map_jit_eligible;
+    hostServiceState.machVmReserve = [&](std::uint64_t address, std::uint64_t size,
+                                          std::uint32_t currentProtection,
+                                          std::uint32_t maximumProtection,
+                                          std::uint32_t inheritance, std::uint32_t tag) {
+        const auto pageSize = bootstrap.pageSize;
+        if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
+            address % pageSize != 0 || size == 0 ||
+            address > guestCodeLimit || size > guestCodeLimit - address ||
+            (currentProtection & ~maximumProtection) != 0 ||
+            inheritance > 2U) return kernInvalidArgument;
+        // Reservations are metadata-only. A non-NONE current protection needs
+        // page backing and must not be reported as committed without it.
+        if (currentProtection != 0) return kernProtectionFailure;
+        const auto end = address + size;
+        for (const auto& [unused, reservation] : vmReservations) {
+            (void)unused;
+            if (address < reservation.end && reservation.begin < end) return kernNoSpace;
+        }
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            for (const auto& region : allocation.regions) {
+                if (address < region.end && region.begin < end) return kernNoSpace;
+            }
+        }
+        for (std::size_t index = 0; index < resident[0]; ++index) {
+            const auto row = 1 + 4 * index;
+            if (address < resident[row + 1] && resident[row] < end) return kernNoSpace;
+        }
+        try {
+            const auto [unused, inserted] = vmReservations.emplace(address,
+                VmReservation{address, end, currentProtection, maximumProtection,
+                              inheritance, tag});
+            (void)unused;
+            return inserted ? kernSuccess : kernNoSpace;
+        } catch (...) {
+            return kernNoSpace;
+        }
+    };
     hostServiceState.machVmAllocate = [&](std::uint64_t size, std::uint64_t alignment,
                                            std::uint32_t currentProtection,
                                            std::uint32_t maximumProtection,
-                                           std::uint64_t& guestAddress, bool jitMapping) {
+                                           std::uint64_t& guestAddress, bool jitMapping,
+                                           std::uint32_t inheritance, std::uint32_t tag) {
         if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 ||
-            alignment > 16U * 1024U * 1024U ||
             size > std::numeric_limits<std::uint64_t>::max() - guestMappingBase) {
             return kernInvalidArgument;
+        }
+        if (!jitMapping && currentProtection == 0) {
+            auto candidate = std::uint64_t{0x7180000000};
+            if (candidate > std::numeric_limits<std::uint64_t>::max() - (alignment - 1)) {
+                return kernNoSpace;
+            }
+            candidate = (candidate + alignment - 1) & ~(alignment - 1);
+            for (std::size_t attempt = 0; attempt < 4096; ++attempt) {
+                if (candidate > guestCodeLimit || size > guestCodeLimit - candidate) {
+                    return kernNoSpace;
+                }
+                const auto result = hostServiceState.machVmReserve(
+                    candidate, size, currentProtection, maximumProtection, inheritance, tag);
+                if (result == kernSuccess) {
+                    guestAddress = candidate;
+                    return kernSuccess;
+                }
+                if (result != kernNoSpace || candidate > guestCodeLimit - alignment) {
+                    return result;
+                }
+                candidate += alignment;
+            }
+            return kernNoSpace;
         }
         const auto allocated = mappingHeap.allocate(size, static_cast<std::int64_t>(alignment));
         if (!allocated || resident[0] >= residentCapacity) {
@@ -3514,9 +3588,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto backing = static_cast<std::size_t>(*allocated);
         const auto address = guestMappingBase + static_cast<std::uint64_t>(backing);
         if (size > image.mapping_backing_end() - backing ||
-            address > std::numeric_limits<std::uint64_t>::max() - size) {
+            address > std::numeric_limits<std::uint64_t>::max() - size ||
+            (address & (alignment - 1)) != 0) {
             mappingHeap.release(*allocated);
             return kernNoSpace;
+        }
+        for (const auto& [unused, reservation] : vmReservations) {
+            (void)unused;
+            if (address < reservation.end && reservation.begin < address + size) {
+                mappingHeap.release(*allocated);
+                return kernNoSpace;
+            }
+        }
+        for (std::size_t index = 0; index < resident[0]; ++index) {
+            const auto row = 1 + 4 * index;
+            if (address < resident[row + 1] && resident[row] < address + size) {
+                mappingHeap.release(*allocated);
+                return kernNoSpace;
+            }
         }
         std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
                     static_cast<std::size_t>(size));
@@ -3524,8 +3613,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (currentProtection & 1U) != 0,
                         (currentProtection & 2U) != 0,
                         (currentProtection & 4U) != 0,
-                        maximumProtection, jitMapping};
-        VmAllocation allocation{address, address + size, backing, {region}};
+                        maximumProtection, jitMapping, inheritance, tag};
+        VmAllocation allocation{address, address + size, backing, {region}, false, {*allocated}};
         try {
             auto stagedAllocations = vmAllocations;
             const auto [position, inserted] = stagedAllocations.emplace(
@@ -3551,7 +3640,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     hostServiceState.machVmOverwrite = [&](std::uint64_t& guestAddress,
                                             std::uint64_t size,
                                             std::uint32_t currentProtection,
-                                            std::uint32_t maximumProtection) {
+                                            std::uint32_t maximumProtection,
+                                            std::uint32_t inheritance,
+                                            std::uint32_t tag) {
         const auto pageSize = bootstrap.pageSize;
         if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
             guestAddress > std::numeric_limits<std::uint64_t>::max() - size) {
@@ -3568,14 +3659,189 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return kernInvalidAddress;
         }
         const auto arenaEnd = guestMappingBase + image.mapping_backing_end();
-        if (begin < guestMappingBase || end > arenaEnd) return kernInvalidAddress;
+        if (begin < guestMappingBase || end > arenaEnd) {
+            if (begin >= guestCodeLimit || end > guestCodeLimit ||
+                (currentProtection & ~maximumProtection) != 0 ||
+                (currentProtection & 6U) == 6U || (currentProtection & 4U) != 0) {
+                return kernInvalidAddress;
+            }
+            const auto sparseAllocation = std::find_if(vmAllocations.begin(), vmAllocations.end(),
+                [begin, end](const auto& item) {
+                    return item.second.sparseAddressSpace && begin >= item.second.begin &&
+                        end <= item.second.end;
+                });
+            if (sparseAllocation != vmAllocations.end()) {
+                auto cursor = begin;
+                for (const auto& region : sparseAllocation->second.regions) {
+                    if (region.end <= cursor || region.begin >= end) continue;
+                    if (region.begin > cursor || region.jit || region.executable) {
+                        return kernInvalidAddress;
+                    }
+                    cursor = std::min(end, region.end);
+                    if (cursor == end) break;
+                }
+                if (cursor != end) return kernInvalidAddress;
+                if (resident[0] < sparseAllocation->second.regions.size() ||
+                    resident[0] - sparseAllocation->second.regions.size() +
+                        sparseAllocation->second.regions.size() + 1 > residentCapacity ||
+                    pageSize > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
+                const auto allocated = mappingHeap.allocate(
+                    static_cast<std::int64_t>(end - begin), static_cast<std::int64_t>(pageSize));
+                if (!allocated) return kernNoSpace;
+                const auto backing = static_cast<std::size_t>(*allocated);
+                if (backing > memoryBuffer.size() || end - begin > memoryBuffer.size() - backing) {
+                    mappingHeap.release(*allocated);
+                    return kernNoSpace;
+                }
+                try {
+                    auto replacement = sparseAllocation->second.regions;
+                    std::vector<VmRegion> carved;
+                    for (const auto& region : replacement) {
+                        if (region.end <= begin || region.begin >= end) {
+                            carved.push_back(region);
+                            continue;
+                        }
+                        if (region.begin < begin) {
+                            carved.push_back({region.begin, begin, region.backing,
+                                region.readable, region.writable, region.executable,
+                                region.maximumProtection, region.jit,
+                                region.inheritance, region.tag});
+                        }
+                        if (region.end > end) {
+                            carved.push_back({end, region.end,
+                                region.backing + static_cast<std::size_t>(end - region.begin),
+                                region.readable, region.writable, region.executable,
+                                region.maximumProtection, region.jit,
+                                region.inheritance, region.tag});
+                        }
+                    }
+                    carved.push_back({begin, end, backing,
+                        (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
+                        (currentProtection & 4U) != 0, maximumProtection, false,
+                        inheritance, tag});
+                    std::sort(carved.begin(), carved.end(),
+                        [](const VmRegion& left, const VmRegion& right) {
+                            return left.begin < right.begin;
+                        });
+                    auto stagedAllocations = vmAllocations;
+                    auto stagedAllocation = stagedAllocations.find(sparseAllocation->first);
+                    stagedAllocation->second.regions = carved;
+                    stagedAllocation->second.ownedBackings.push_back(*allocated);
+                    auto stagedResident = resident;
+                    std::vector<std::uint64_t> removedBegins;
+                    std::vector<GuestMemoryMapping> addedMappings;
+                    for (const auto& region : replacement) {
+                        removedBegins.push_back(region.begin);
+                        removeVmRegionFromResident(stagedResident, region);
+                    }
+                    for (const auto& region : carved) {
+                        appendVmRegionToResident(stagedResident, region);
+                        addedMappings.push_back({region.begin, region.end, region.backing,
+                                                 region.writable, region.readable});
+                    }
+                    auto stagedCodeRegions = prepareDynamicCodeRegions(
+                        sparseAllocation->second.begin, sparseAllocation->second.end, carved);
+                    guestMemory.replace_mappings(removedBegins, addedMappings);
+                    vmAllocations.swap(stagedAllocations);
+                    resident.swap(stagedResident);
+                    commitDynamicCodeRegions(std::move(stagedCodeRegions));
+                } catch (...) {
+                    mappingHeap.release(*allocated);
+                    return kernNoSpace;
+                }
+                std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
+                            static_cast<std::size_t>(end - begin));
+                syncResidentTable();
+                guestAddress = begin;
+                return kernSuccess;
+            }
+            auto cursor = begin;
+            std::vector<VmReservation> touchedReservations;
+            while (cursor < end) {
+                auto reservation = vmReservations.upper_bound(cursor);
+                if (reservation == vmReservations.begin()) return kernInvalidAddress;
+                --reservation;
+                if (reservation->second.begin > cursor || reservation->second.end <= cursor) {
+                    return kernInvalidAddress;
+                }
+                touchedReservations.push_back(reservation->second);
+                cursor = std::min(end, reservation->second.end);
+            }
+            for (const auto& [unused, allocation] : vmAllocations) {
+                (void)unused;
+                for (const auto& region : allocation.regions) {
+                    if (begin < region.end && region.begin < end) return kernInvalidAddress;
+                }
+            }
+            for (std::size_t index = 0; index < resident[0]; ++index) {
+                const auto row = 1 + 4 * index;
+                if (begin < resident[row + 1] && resident[row] < end) {
+                    return kernInvalidAddress;
+                }
+            }
+            if (resident[0] >= residentCapacity || pageSize > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
+            const auto allocated = mappingHeap.allocate(
+                static_cast<std::int64_t>(end - begin), static_cast<std::int64_t>(pageSize));
+            if (!allocated) return kernNoSpace;
+            const auto backing = static_cast<std::size_t>(*allocated);
+            if (backing > memoryBuffer.size() || end - begin > memoryBuffer.size() - backing) {
+                mappingHeap.release(*allocated);
+                return kernNoSpace;
+            }
+            const VmRegion region{begin, end, backing,
+                (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
+                (currentProtection & 4U) != 0, maximumProtection, false,
+                inheritance, tag};
+            auto stagedReservations = vmReservations;
+            for (const auto& old : touchedReservations) {
+                stagedReservations.erase(old.begin);
+                const auto carvedBegin = std::max(old.begin, begin);
+                const auto carvedEnd = std::min(old.end, end);
+                if (old.begin < carvedBegin) {
+                    auto left = old;
+                    left.end = carvedBegin;
+                    stagedReservations.emplace(left.begin, left);
+                }
+                if (old.end > carvedEnd) {
+                    auto right = old;
+                    right.begin = carvedEnd;
+                    stagedReservations.emplace(right.begin, right);
+                }
+            }
+            try {
+                auto stagedAllocations = vmAllocations;
+                const auto [unused, inserted] = stagedAllocations.emplace(
+                    begin, VmAllocation{begin, end, backing, {region}, true, {*allocated}});
+                (void)unused;
+                if (!inserted) throw std::runtime_error("Duplicate sparse VM mapping");
+                auto stagedResident = resident;
+                appendVmRegionToResident(stagedResident, region);
+                auto stagedCodeRegions = prepareDynamicCodeRegions(begin, end, {region});
+                guestMemory.replace_mappings({}, {{region.begin, region.end, region.backing,
+                                                   region.writable, region.readable}});
+                vmAllocations.swap(stagedAllocations);
+                vmReservations.swap(stagedReservations);
+                resident.swap(stagedResident);
+                commitDynamicCodeRegions(std::move(stagedCodeRegions));
+            } catch (...) {
+                mappingHeap.release(*allocated);
+                return kernNoSpace;
+            }
+            std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
+                        static_cast<std::size_t>(end - begin));
+            syncResidentTable();
+            guestAddress = begin;
+            return kernSuccess;
+        }
         const auto allocation = std::find_if(vmAllocations.begin(), vmAllocations.end(),
             [begin, end](const auto& item) {
                 return begin >= item.second.begin && end <= item.second.end;
             });
         const bool newAllocation = allocation == vmAllocations.end();
         VmAllocation current = newAllocation
-            ? VmAllocation{begin, end, 0, {}}
+            ? VmAllocation{begin, end, 0, {}, false, {}}
             : allocation->second;
         if (newAllocation) {
             for (const auto& [unused, existing] : vmAllocations) {
@@ -3612,19 +3878,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (region.begin < begin) {
                 replacement.push_back({region.begin, begin, region.backing,
                     region.readable, region.writable, region.executable,
-                    region.maximumProtection, region.jit});
+                    region.maximumProtection, region.jit,
+                    region.inheritance, region.tag});
             }
             if (region.end > end) {
                 replacement.push_back({end, region.end,
                     region.backing + static_cast<std::size_t>(end - region.begin),
                     region.readable, region.writable, region.executable,
-                    region.maximumProtection, region.jit});
+                    region.maximumProtection, region.jit,
+                    region.inheritance, region.tag});
             }
         }
         const auto backing = current.backing + static_cast<std::size_t>(begin - current.begin);
         replacement.push_back({begin, end, backing,
             (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
-            (currentProtection & 4U) != 0, maximumProtection, false});
+            (currentProtection & 4U) != 0, maximumProtection, false,
+            inheritance, tag});
         std::sort(replacement.begin(), replacement.end(),
             [](const VmRegion& left, const VmRegion& right) {
                 return left.begin < right.begin;
@@ -3653,7 +3922,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             auto stagedAllocations = vmAllocations;
             if (newAllocation) {
                 auto [unused, inserted] = stagedAllocations.emplace(
-                    begin, VmAllocation{begin, end, backing, replacement});
+                    begin, VmAllocation{begin, end, backing, replacement, false,
+                        {static_cast<std::int64_t>(*reservedBacking)}});
                 (void)unused;
                 if (!inserted) throw std::runtime_error("Duplicate guest VM allocation address");
             } else {
@@ -3710,8 +3980,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return kernInvalidArgument;
         }
         const auto arenaEnd = guestMappingBase + image.mapping_backing_end();
-        if (begin < guestMappingBase || end > arenaEnd) return kernInvalidArgument;
+        const bool linearRange = begin >= guestMappingBase && end <= arenaEnd;
+        if (!linearRange) {
+            bool managedSparseRange = false;
+            auto reservation = vmReservations.upper_bound(begin);
+            if (reservation != vmReservations.begin()) {
+                --reservation;
+                managedSparseRange = reservation->second.begin < end && begin < reservation->second.end;
+            }
+            for (const auto& [unused, allocation] : vmAllocations) {
+                (void)unused;
+                if (!allocation.sparseAddressSpace) continue;
+                if (begin < allocation.end && allocation.begin < end) managedSparseRange = true;
+            }
+            if (!managedSparseRange) return kernInvalidArgument;
+        }
         std::map<std::uint64_t, VmAllocation> stagedAllocations;
+        std::map<std::uint64_t, VmReservation> stagedReservations;
         std::vector<std::uint64_t> stagedResident;
         std::vector<std::uint64_t> removedBegins;
         std::vector<GuestMemoryMapping> addedMappings;
@@ -3721,7 +4006,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t dynamicEnd = 0;
         try {
             stagedAllocations = vmAllocations;
+            stagedReservations = vmReservations;
             stagedResident = resident;
+            for (const auto& [reservationBegin, reservation] : vmReservations) {
+                if (reservation.end <= begin || reservation.begin >= end) continue;
+                stagedReservations.erase(reservationBegin);
+                if (reservation.begin < begin) {
+                    auto left = reservation;
+                    left.end = begin;
+                    stagedReservations.emplace(left.begin, left);
+                }
+                if (reservation.end > end) {
+                    auto right = reservation;
+                    right.begin = end;
+                    stagedReservations.emplace(right.begin, right);
+                }
+            }
             for (const auto& [allocationBegin, allocation] : vmAllocations) {
                 if (allocation.end <= begin || allocation.begin >= end) continue;
                 const auto mappedBegin = std::max(begin, allocation.begin);
@@ -3735,13 +4035,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (region.begin < mappedBegin) {
                         replacement.push_back({region.begin, mappedBegin, region.backing,
                             region.readable, region.writable, region.executable,
-                            region.maximumProtection, region.jit});
+                            region.maximumProtection, region.jit,
+                            region.inheritance, region.tag});
                     }
                     if (region.end > mappedEnd) {
                         replacement.push_back({mappedEnd, region.end,
                             region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
                             region.readable, region.writable, region.executable,
-                            region.maximumProtection, region.jit});
+                            region.maximumProtection, region.jit,
+                            region.inheritance, region.tag});
                     }
                 }
 
@@ -3760,18 +4062,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 dynamicEnd = std::max(dynamicEnd, allocation.end);
                 auto stagedAllocation = stagedAllocations.find(allocationBegin);
                 if (replacement.empty()) {
-                    releasedBackings.push_back(
-                        static_cast<std::int64_t>(allocation.backing));
+                    if (allocation.ownedBackings.empty()) {
+                        releasedBackings.push_back(
+                            static_cast<std::int64_t>(allocation.backing));
+                    } else {
+                        releasedBackings.insert(releasedBackings.end(),
+                            allocation.ownedBackings.begin(), allocation.ownedBackings.end());
+                    }
                     stagedAllocations.erase(stagedAllocation);
                 } else {
                     stagedAllocation->second.regions = std::move(replacement);
                 }
             }
-            if (removedBegins.empty()) return kernSuccess;
+            if (removedBegins.empty()) {
+                vmReservations.swap(stagedReservations);
+                return kernSuccess;
+            }
             DynamicCodeReplacement stagedCodeRegions = prepareDynamicCodeRegions(
                 dynamicBegin, dynamicEnd, stagedCodeRegionsInput);
             guestMemory.replace_mappings(removedBegins, addedMappings);
             vmAllocations.swap(stagedAllocations);
+            vmReservations.swap(stagedReservations);
             resident.swap(stagedResident);
             commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
@@ -3800,7 +4111,51 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             [begin, end](const auto& item) {
                 return begin >= item.second.begin && end <= item.second.end;
             });
-        if (allocation == vmAllocations.end()) return kernInvalidAddress;
+        if (allocation == vmAllocations.end()) {
+            auto cursor = begin;
+            std::vector<VmReservation> touched;
+            while (cursor < end) {
+                auto reservation = vmReservations.upper_bound(cursor);
+                if (reservation == vmReservations.begin()) return kernInvalidAddress;
+                --reservation;
+                if (reservation->second.begin > cursor || reservation->second.end <= cursor) {
+                    return kernInvalidAddress;
+                }
+                if (protection != 0 || (protection & ~reservation->second.maximumProtection) != 0) {
+                    return kernProtectionFailure;
+                }
+                touched.push_back(reservation->second);
+                cursor = std::min(end, reservation->second.end);
+            }
+            try {
+                auto stagedReservations = vmReservations;
+                for (const auto& old : touched) {
+                    stagedReservations.erase(old.begin);
+                    const auto middleBegin = std::max(begin, old.begin);
+                    const auto middleEnd = std::min(end, old.end);
+                    if (old.begin < middleBegin) {
+                        auto left = old;
+                        left.end = middleBegin;
+                        stagedReservations.emplace(left.begin, left);
+                    }
+                    auto middle = old;
+                    middle.begin = middleBegin;
+                    middle.end = middleEnd;
+                    if (setMaximum) middle.maximumProtection = protection;
+                    middle.currentProtection = 0;
+                    stagedReservations.emplace(middle.begin, middle);
+                    if (middleEnd < old.end) {
+                        auto right = old;
+                        right.begin = middleEnd;
+                        stagedReservations.emplace(right.begin, right);
+                    }
+                }
+                vmReservations.swap(stagedReservations);
+                return kernSuccess;
+            } catch (...) {
+                return kernNoSpace;
+            }
+        }
         auto& current = allocation->second;
         std::uint64_t cursor = begin;
         for (const auto& region : current.regions) {
@@ -3827,7 +4182,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (region.begin < middleBegin) {
                 replacement.push_back({region.begin, middleBegin, region.backing,
                                        region.readable, region.writable, region.executable,
-                            region.maximumProtection, region.jit});
+                            region.maximumProtection, region.jit,
+                            region.inheritance, region.tag});
             }
             const auto maximumProtection = setMaximum ? protection : region.maximumProtection;
             const auto currentProtection = setMaximum
@@ -3837,12 +4193,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             replacement.push_back({middleBegin, middleEnd,
                 region.backing + static_cast<std::size_t>(middleBegin - region.begin),
                 (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
-                (currentProtection & 4U) != 0, maximumProtection, region.jit});
+                (currentProtection & 4U) != 0, maximumProtection, region.jit,
+                region.inheritance, region.tag});
             if (middleEnd < region.end) {
                 replacement.push_back({middleEnd, region.end,
                     region.backing + static_cast<std::size_t>(middleEnd - region.begin),
                     region.readable, region.writable, region.executable,
-                    region.maximumProtection, region.jit});
+                    region.maximumProtection, region.jit,
+                    region.inheritance, region.tag});
             }
         }
         if (resident[0] < current.regions.size() ||

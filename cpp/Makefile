@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -433,6 +433,10 @@ $(MACH_VM_OVERWRITE_NATIVE): ../fixtures/handoff/mach-vm-map-overwrite.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
+$(BUILD_DIR)/mach-vm-sparse-reservation-native: ../fixtures/handoff/mach-vm-sparse-reservation.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
 $(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
@@ -444,6 +448,11 @@ verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
 	printf '%s\n' 'mach_vm_map overwrite full=ok partial=ok hole=ok null=1 bad_flags=4' >"$(BUILD_DIR)/mach-vm-map-overwrite.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-map-overwrite.expected.out" "$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
+
+verify-mach-vm-sparse-reservation-native: $(BUILD_DIR)/mach-vm-sparse-reservation-native
+	"$(BUILD_DIR)/mach-vm-sparse-reservation-native" >"$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
+	printf '%s\n' 'reserve_align32m=1 fixed_24g=0 fixed_exact=1' 'fixed_overlap=3 protect_none_to_rw=2 overwrite_tag2=0 zero_fill=1 write_read=1 left_reserved_read=1 right_reserved_read=1 left_fixed_overlap=3 right_fixed_overlap=3 overwrite_tag2_mte=0 repeated_overwrite=0 repeated_zero=1' 'deallocate=0 fixed_reuse=0 reuse_exact=1' 'anywhere_4m=0 aligned4m=1' 'anywhere_mte=0' 'anywhere_purgable=0' >"$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out"
+	cmp "$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out" "$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
 
 verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIVE)
 	"$(MACH_VM_DEFERRED_RECLAMATION_NATIVE)" >"$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
