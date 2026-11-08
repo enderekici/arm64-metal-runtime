@@ -220,6 +220,16 @@ int main() {
   const auto addToSp = decode_operation(0x9100003f);
   assert(addToSp.has_value() && addToSp->destination == 31 &&
          addToSp->source == 1);
+  const auto addWsp = decode_operation(0x1100015f);
+  assert(addWsp.has_value() && addWsp->opcode == Opcode::AddImmediate);
+  assert(addWsp->destination == 31 && addWsp->source == 10 &&
+         addWsp->width == 32);
+  const auto addFromWsp = decode_operation(0x910007e0);
+  assert(addFromWsp.has_value() &&
+         addFromWsp->opcode == Opcode::AddImmediate);
+  assert(addFromWsp->destination == 0 && addFromWsp->source == 31 &&
+         addFromWsp->immediate == 1 && addFromWsp->shift == 0 &&
+         addFromWsp->width == 64);
   const auto cmn = decode_operation(0xb100043f);
   assert(cmn.has_value() && cmn->opcode == Opcode::AddImmediateSetFlags);
   assert(cmn->destination == 31 && cmn->source == 1);

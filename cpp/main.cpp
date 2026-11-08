@@ -19,6 +19,68 @@
 
 namespace {
 
+constexpr std::uint32_t encode_add_sub_immediate(bool wide, bool subtract,
+                                                 bool setFlags,
+                                                 std::uint32_t destination,
+                                                 std::uint32_t source,
+                                                 std::uint32_t immediate,
+                                                 bool shift12) {
+  return 0x11000000u | (std::uint32_t(wide) << 31u) |
+         (std::uint32_t(subtract) << 30u) | (std::uint32_t(setFlags) << 29u) |
+         (std::uint32_t(shift12) << 22u) | (immediate << 10u) |
+         (source << 5u) | destination;
+}
+
+constexpr auto addXShiftedEncoding =
+    encode_add_sub_immediate(true, false, false, 0, 0, 0x123, true);
+constexpr auto subXShiftedEncoding =
+    encode_add_sub_immediate(true, true, false, 0, 0, 0x123, true);
+constexpr auto addWWrapEncoding =
+    encode_add_sub_immediate(false, false, false, 0, 0, 1, false);
+constexpr auto subWShiftedEncoding =
+    encode_add_sub_immediate(false, true, false, 0, 0, 0x123, true);
+constexpr auto addsXOverflowEncoding =
+    encode_add_sub_immediate(true, false, true, 31, 1, 1, false);
+constexpr auto subsXUnderflowEncoding =
+    encode_add_sub_immediate(true, true, true, 31, 1, 1, false);
+constexpr auto cmpXShiftedEncoding =
+    encode_add_sub_immediate(true, true, true, 31, 1, 1, true);
+constexpr auto cmnXShiftedEncoding =
+    encode_add_sub_immediate(true, false, true, 31, 1, 1, true);
+constexpr auto addsWCarryEncoding =
+    encode_add_sub_immediate(false, false, true, 31, 1, 1, false);
+constexpr auto subsWUnderflowEncoding =
+    encode_add_sub_immediate(false, true, true, 31, 1, 1, false);
+constexpr auto addXFromSpEncoding =
+    encode_add_sub_immediate(true, false, false, 0, 31, 2, true);
+constexpr auto subSpShiftedEncoding =
+    encode_add_sub_immediate(true, true, false, 31, 31, 1, true);
+constexpr auto addWspFromW10Encoding =
+    encode_add_sub_immediate(false, false, false, 31, 10, 0, false);
+constexpr auto addXFromSpOneEncoding =
+    encode_add_sub_immediate(true, false, false, 0, 31, 1, false);
+constexpr auto addsWResultEncoding =
+    encode_add_sub_immediate(false, false, true, 0, 1, 1, false);
+constexpr auto cmpSpZeroEncoding =
+    encode_add_sub_immediate(true, true, true, 31, 31, 0, false);
+
+static_assert(addXShiftedEncoding == 0x91448c00u);
+static_assert(subXShiftedEncoding == 0xd1448c00u);
+static_assert(addWWrapEncoding == 0x11000400u);
+static_assert(subWShiftedEncoding == 0x51448c00u);
+static_assert(addsXOverflowEncoding == 0xb100043fu);
+static_assert(subsXUnderflowEncoding == 0xf100043fu);
+static_assert(cmpXShiftedEncoding == 0xf140043fu);
+static_assert(cmnXShiftedEncoding == 0xb140043fu);
+static_assert(addsWCarryEncoding == 0x3100043fu);
+static_assert(subsWUnderflowEncoding == 0x7100043fu);
+static_assert(addXFromSpEncoding == 0x91400be0u);
+static_assert(subSpShiftedEncoding == 0xd14007ffu);
+static_assert(addWspFromW10Encoding == 0x1100015fu);
+static_assert(addXFromSpOneEncoding == 0x910007e0u);
+static_assert(addsWResultEncoding == 0x31000420u);
+static_assert(cmpSpZeroEncoding == 0xf10003ffu);
+
 std::string read_input(const std::string& path) {
   if (path == "-") return std::string(std::istreambuf_iterator<char>(std::cin), {});
   std::ifstream input(path, std::ios::binary);
@@ -175,41 +237,41 @@ int run_command(const std::vector<std::string>& args,
         {packet(0xd28acf00u, 0xa000, blockStart), packet(0x72b579bfu, 0xa004),
          packet(0xd65f03c0u, 0xa008, blockEnd)}};
     const std::vector<std::vector<InstructionPacket>> addSubImmediatePrograms{
-        {packet(0xd28000a0u, 0xb000, blockStart), packet(0x91448c00u, 0xb004),
+        {packet(0xd28000a0u, 0xb000, blockStart), packet(addXShiftedEncoding, 0xb004),
          packet(0xd65f03c0u, 0xb008, blockEnd)},
-        {packet(0xd2a468a0u, 0xc000, blockStart), packet(0xd1448c00u, 0xc004),
+        {packet(0xd2a468a0u, 0xc000, blockStart), packet(subXShiftedEncoding, 0xc004),
          packet(0xd65f03c0u, 0xc008, blockEnd)},
-        {packet(0x529fffe0u, 0xd000, blockStart), packet(0x11000400u, 0xd004),
+        {packet(0x529fffe0u, 0xd000, blockStart), packet(addWWrapEncoding, 0xd004),
          packet(0xd65f03c0u, 0xd008, blockEnd)},
-        {packet(0x52a24680u, 0xe000, blockStart), packet(0x51448c00u, 0xe004),
+        {packet(0x52a24680u, 0xe000, blockStart), packet(subWShiftedEncoding, 0xe004),
          packet(0xd65f03c0u, 0xe008, blockEnd)}};
     const std::vector<std::vector<InstructionPacket>> addSubFlagPrograms{
-        {packet(0xb100043fu, 0xf000, blockStart),
+        {packet(addsXOverflowEncoding, 0xf000, blockStart),
          packet(0xd65f03c0u, 0xf004, blockEnd)},
-        {packet(0xf100043fu, 0x10000, blockStart),
+        {packet(subsXUnderflowEncoding, 0x10000, blockStart),
          packet(0xd65f03c0u, 0x10004, blockEnd)},
-        {packet(0xf140043fu, 0x11000, blockStart),
+        {packet(cmpXShiftedEncoding, 0x11000, blockStart),
          packet(0xd65f03c0u, 0x11004, blockEnd)},
-        {packet(0xb140043fu, 0x12000, blockStart),
+        {packet(cmnXShiftedEncoding, 0x12000, blockStart),
          packet(0xd65f03c0u, 0x12004, blockEnd)},
-        {packet(0x3100043fu, 0x13000, blockStart),
+        {packet(addsWCarryEncoding, 0x13000, blockStart),
          packet(0xd65f03c0u, 0x13004, blockEnd)},
-        {packet(0x7100043fu, 0x14000, blockStart),
+        {packet(subsWUnderflowEncoding, 0x14000, blockStart),
          packet(0xd65f03c0u, 0x14004, blockEnd)}};
     const std::vector<InstructionPacket> stackPointerProgram{
-        packet(0x91400be0u, 0x15000, blockStart),
-        packet(0xd14007ffu, 0x15004),
+        packet(addXFromSpEncoding, 0x15000, blockStart),
+        packet(subSpShiftedEncoding, 0x15004),
         packet(0xd65f03c0u, 0x15008, blockEnd)};
     const std::vector<InstructionPacket> wordStackPointerProgram{
         packet(0x52b0000au, 0x16000, blockStart),
-        packet(0x1100015fu, 0x16004),
-        packet(0x910003e0u, 0x16008),
+        packet(addWspFromW10Encoding, 0x16004),
+        packet(addXFromSpOneEncoding, 0x16008),
         packet(0xd65f03c0u, 0x1600c, blockEnd)};
     const std::vector<InstructionPacket> addWordFlagsProgram{
-        packet(0x31000420u, 0x17000, blockStart),
+        packet(addsWResultEncoding, 0x17000, blockStart),
         packet(0xd65f03c0u, 0x17004, blockEnd)};
     const std::vector<InstructionPacket> compareStackPointerProgram{
-        packet(0xf10003ffu, 0x18000, blockStart),
+        packet(cmpSpZeroEncoding, 0x18000, blockStart),
         packet(0xd65f03c0u, 0x18004, blockEnd)};
     const std::vector<InstructionPacket> branchProgram{
         packet(0xd28000e0u, 0x5000, blockStart),
