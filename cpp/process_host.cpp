@@ -188,12 +188,10 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     result.environmentAddress = checked_add(
         result.vectorBase, static_cast<std::uint64_t>((argument_pointers.size() + 1) * 8),
         "Guest argv vector overflow");
-    result.emptyVectorAddress = checked_add(
+    result.appleAddress = checked_add(
         result.environmentAddress,
         static_cast<std::uint64_t>((environment_pointers.size() + 1) * 8),
         "Guest environment vector overflow");
-    result.appleAddress = checked_add(result.emptyVectorAddress, 8,
-                                      "Guest apple vector overflow");
     result.stdoutSlot = checked_add(
         result.appleAddress, static_cast<std::uint64_t>((apple_pointers.size() + 1) * 8),
         "Guest apple vector overflow");
