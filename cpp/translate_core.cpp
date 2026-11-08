@@ -82,29 +82,13 @@ Instruction make_operation_instruction(Operation operation,
       operation.opcode == Opcode::MoveWideNot ||
       operation.opcode == Opcode::MoveWideKeep) {
     if (operation.destination != 31) {
-      const auto type = operation.width == 64 ? "ulong" : "uint";
-      const auto value = std::uint64_t{operation.immediate} << operation.shift;
       const auto destination = "x[" + std::to_string(operation.destination) + "]";
-      if (operation.opcode == Opcode::MoveWideZero) {
-        code.push_back(destination + " = " + type + "(" +
-                       std::to_string(value) + "ul);");
-      } else if (operation.opcode == Opcode::MoveWideNot) {
-        code.push_back(destination + " = " + type + "(~" +
-                       std::to_string(value) + "ul);");
-      } else {
-        const auto mask = std::uint64_t{0xffff} << operation.shift;
-        const auto current = operation.width == 64
-            ? destination
-            : "uint(" + destination + ")";
-        const auto typedMask = operation.width == 64
-            ? std::to_string(mask) + "ul"
-            : "uint(" + std::to_string(mask) + "ul)";
-        const auto typedValue = operation.width == 64
-            ? std::to_string(value) + "ul"
-            : "uint(" + std::to_string(value) + "ul)";
-        code.push_back(destination + " = " + type + "((" + current + " & ~" +
-                       typedMask + ") | " + typedValue + ");");
-      }
+      code.push_back(destination + " = move_wide_apply(" +
+                     std::to_string(static_cast<std::uint32_t>(operation.opcode)) +
+                     "u, " + destination + ", " +
+                     std::to_string(operation.immediate) + "u, " +
+                     std::to_string(operation.shift) + "u, " +
+                     std::to_string(operation.width) + "u);");
     }
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {

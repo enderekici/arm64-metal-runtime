@@ -116,6 +116,17 @@ int run_command(const std::vector<std::string>& args,
         packet(0xd2800540u, 0x1000), packet(0xd65f03c0u, 0x1004)};
     const std::vector<InstructionPacket> secondProgram{
         packet(0x52b7dde0u, 0x2000), packet(0xd65f03c0u, 0x2004)};
+    const std::vector<std::vector<InstructionPacket>> moveWidePrograms{
+        {packet(0x92a24680u, 0x5000), packet(0xd65f03c0u, 0x5004)},
+        {packet(0x12a24680u, 0x6000), packet(0xd65f03c0u, 0x6004)},
+        {packet(0xd28acf00u, 0x7000), packet(0xf2d579a0u, 0x7004),
+         packet(0xd65f03c0u, 0x7008)},
+        {packet(0xd2eeeee0u, 0x8000), packet(0x72b579a0u, 0x8004),
+         packet(0xd65f03c0u, 0x8008)},
+        {packet(0xd28acf00u, 0x9000), packet(0xf2d579bfu, 0x9004),
+         packet(0xd65f03c0u, 0x9008)},
+        {packet(0xd28acf00u, 0xa000), packet(0x72b579bfu, 0xa004),
+         packet(0xd65f03c0u, 0xa008)}};
 
     auto backend = arm64metal::Backend::createDefault();
     const auto initialCompiles = backend.compiledPipelineCount();
@@ -138,6 +149,11 @@ int run_command(const std::vector<std::string>& args,
     };
     const auto first = execute(firstProgram);
     const auto second = execute(secondProgram);
+    std::vector<arm64metal::gpu_interpreter::Result> moveWideResults;
+    moveWideResults.reserve(moveWidePrograms.size());
+    for (const auto& program : moveWidePrograms) {
+      moveWideResults.push_back(execute(program));
+    }
     ProcessState continuationState{};
     continuationState[arm64metal::gpu_interpreter::returnRegisterIndex] = 0x3004;
     continuationState[33] = 0x3000;
@@ -154,17 +170,33 @@ int run_command(const std::vector<std::string>& args,
         backend, {packet(0xd2800540u, 0x4000), packet(0xd65f03c0u, 0x4004)},
         zeroBudgetState);
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 4 ||
+    if (compiled != 1 || dispatches != 10 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
+        moveWideResults[0].state[34] != 0 ||
+        moveWideResults[0].state[0] != 0xffffffffedcbffffull ||
+        moveWideResults[1].state[34] != 0 ||
+        moveWideResults[1].state[0] != 0xedcbffffu ||
+        moveWideResults[2].state[34] != 0 ||
+        moveWideResults[2].state[0] != 0xabcd00005678ull ||
+        moveWideResults[3].state[34] != 0 ||
+        moveWideResults[3].state[0] != 0xabcd0000u ||
+        moveWideResults[4].state[34] != 0 ||
+        moveWideResults[4].state[0] != 0x5678u ||
+        moveWideResults[5].state[34] != 0 ||
+        moveWideResults[5].state[0] != 0x5678u ||
         continuation.state[34] != 7 || continuation.state[33] != 0x3004 ||
         zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99) {
-      throw std::runtime_error("Fixed GPU interpreter MOVZ/RET probe mismatch");
+      throw std::runtime_error("Fixed GPU interpreter move-wide/RET probe mismatch");
     }
     std::cerr << "pipeline_compiles=" << compiled
               << " runtime_source_compiles=" << sourceCompiles
               << " completed_dispatches=" << dispatches << '\n';
-    std::cout << "wide=" << first.state[0] << " narrow=" << second.state[0] << '\n';
+    std::cout << "movn=" << std::hex << moveWideResults[0].state[0] << ','
+              << moveWideResults[1].state[0] << " movk="
+              << moveWideResults[2].state[0] << ',' << moveWideResults[3].state[0]
+              << " discard=" << moveWideResults[4].state[0] << ','
+              << moveWideResults[5].state[0] << '\n';
     return 0;
   }
 

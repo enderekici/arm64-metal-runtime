@@ -72,7 +72,9 @@ Result Interpreter::dispatch(const Backend& backend,
                 operation[5] != 64) {
                 throw std::invalid_argument("Interpreter basic block must end with plain RET X30");
             }
-        } else if (opcode != translate_core::Opcode::MoveWideZero ||
+        } else if ((opcode != translate_core::Opcode::MoveWideZero &&
+                    opcode != translate_core::Opcode::MoveWideNot &&
+                    opcode != translate_core::Opcode::MoveWideKeep) ||
                    operation[1] > 31 || operation[2] != 0 ||
                    operation[3] > 0xffff || (operation[5] != 32 && operation[5] != 64) ||
                    operation[4] >= operation[5] || (operation[4] & 15U) != 0 ||

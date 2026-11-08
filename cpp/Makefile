@@ -63,7 +63,7 @@ APP_SOURCES := \
 	translate_core.cpp \
 	function_runner.cpp \
 	main.cpp
-APP_HEADERS := $(wildcard *.hpp)
+APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
@@ -92,7 +92,7 @@ $(INTERPRETER_MINIMAL_MAIN): ../fixtures/interpreter/minimal-main.s
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
 
-$(INTERPRETER_AIR): gpu_interpreter.metal
+$(INTERPRETER_AIR): gpu_interpreter.metal move_wide_shared.h
 	@mkdir -p "$(dir $@)"
 	xcrun -sdk macosx metal -c "$<" -o "$@"
 

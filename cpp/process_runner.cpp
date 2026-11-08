@@ -306,7 +306,9 @@ ProcessKernelPlan plan_process_kernel(
             plan.interpreterEligible = true;
             return plan;
         }
-        if (operation.opcode != translate_core::Opcode::MoveWideZero ||
+        if ((operation.opcode != translate_core::Opcode::MoveWideZero &&
+             operation.opcode != translate_core::Opcode::MoveWideNot &&
+             operation.opcode != translate_core::Opcode::MoveWideKeep) ||
             pc > std::numeric_limits<std::int64_t>::max() - 4) {
             plan.interpretedPackets.clear();
             break;

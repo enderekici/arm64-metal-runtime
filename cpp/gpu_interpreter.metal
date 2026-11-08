@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include "move_wide_shared.h"
 using namespace metal;
 
 struct InstructionPacket {
@@ -23,7 +24,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             return;
         }
         const uint opcode = instruction.operation[0];
-        if (opcode == 1u) {
+        if (opcode == 1u || opcode == 3u || opcode == 4u) {
             const uint rd = instruction.operation[1];
             const uint immediate = instruction.operation[3];
             const uint shift = instruction.operation[4];
@@ -35,9 +36,10 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 state[34] = 7;
                 return;
             }
-            ulong value = ulong(immediate) << shift;
-            if (width == 32u) value = uint(value);
-            if (rd < 31u) state[rd] = value;
+            if (rd < 31u) {
+                state[rd] = move_wide_apply(opcode, state[rd], immediate,
+                                            shift, width);
+            }
             pc = instruction.pc + 4ul;
             continue;
         }

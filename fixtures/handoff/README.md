@@ -107,5 +107,8 @@ xcrun clang -arch arm64 fixtures/handoff/typed-move-wide-main.c \
 .build/handoff-probes/typed-move-wide
 ```
 
-The existing host-side typed-operation check also verifies MOVN/MOVK packet
-fields and translator statements.
+The host-side typed-operation check verifies MOVN/MOVK packet fields and that
+the translator emits calls to the shared move-wide MSL helper. The helper's
+value expression lives in `cpp/move_wide_shared.h`; the same header supplies
+the runtime-generated translator/function shader source and the AOT
+interpreter implementation.

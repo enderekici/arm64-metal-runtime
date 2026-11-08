@@ -1,6 +1,7 @@
 #include "process_msl.hpp"
 
 #include "guest_vector_crypto.hpp"
+#include "move_wide_shared.h"
 #include "process_host.hpp"
 
 #include <array>
@@ -20,6 +21,7 @@ inline constexpr std::uint64_t guestTokenIndexShift = 3;
 constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     #include <metal_stdlib>
     using namespace metal;
+    @MOVE_WIDE_MSL_SOURCE@
     // Build IEEE-754 scalar bits with integers, including binary64 on Metal.
     ulong integer_to_float(ulong raw, bool negative, uint fraction, device ulong *state) {
         ulong magnitude = negative ? 0ul - raw : raw;
@@ -650,7 +652,7 @@ std::string render_source(std::string_view rendered_cases, const Config& config)
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 21> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 22> values = {{
       {"@MINIMUM_IMAGE_ADDRESS@", decimal(config.minimum_image_address)},
       {"@SHARED_GUEST_BASE@", decimal(config.shared_guest_base)},
       {"@RENDERED_CASES@", std::string(rendered_cases)},
@@ -669,6 +671,7 @@ std::string render_source(std::string_view rendered_cases, const Config& config)
       {"@GUEST_TOKEN_START@", decimal(guestTokenStart)},
       {"@GUEST_TOKEN_TAG@", decimal(guestTokenTag)},
       {"@GUEST_VECTOR_CRYPTO_SOURCE@", std::string(vector_crypto_metal_source())},
+      {"@MOVE_WIDE_MSL_SOURCE@", std::string(move_wide_msl_source)},
       {"@LINEAR_IMAGE_END@", decimal(config.linear_image_end)},
       {"@MAPPING_BACKING_END@", decimal(config.mapping_backing_end)},
       {"@WRITABLE_REGION_CHECKS@", render_writable_checks(config)},

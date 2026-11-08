@@ -29,7 +29,8 @@ int main() {
   assert(lowered.operation.has_value());
   assert(lowered.next == std::vector<std::int64_t>{0x1004});
   assert(lowered.code ==
-         std::vector<std::string>{"x[0] = ulong(305397760ul);"});
+         std::vector<std::string>{
+             "x[0] = move_wide_apply(1u, x[0], 4660u, 16u, 64u);"});
 
   const auto zeroRegister = decode_operation(0xd2c2469f);
   assert(zeroRegister.has_value());
@@ -48,7 +49,8 @@ int main() {
       *moveNot, {0x1004}, LoweringMode::Process,
       std::uint64_t{1} << 48);
   assert(moveNotLowered.code ==
-         std::vector<std::string>{"x[0] = ulong(~305397760ul);"});
+         std::vector<std::string>{
+             "x[0] = move_wide_apply(3u, x[0], 4660u, 16u, 64u);"});
   assert((serialize_operation(*moveNot) ==
           arm64metal::translate_core::OperationPacket{
               3, 0, 0, 0x1234, 16, 64}));
@@ -60,7 +62,7 @@ int main() {
       *moveKeepWide, {0x1004}, LoweringMode::Process,
       std::uint64_t{1} << 48);
   assert(moveKeepWideLowered.code == std::vector<std::string>{
-      "x[0] = ulong((x[0] & ~281470681743360ul) | 188896956645376ul);"});
+      "x[0] = move_wide_apply(4u, x[0], 43981u, 32u, 64u);"});
 
   const auto moveKeepWord = decode_operation(0x72b579a0);
   assert(moveKeepWord.has_value());
@@ -69,7 +71,7 @@ int main() {
       *moveKeepWord, {0x1004}, LoweringMode::Process,
       std::uint64_t{1} << 48);
   assert(moveKeepWordLowered.code == std::vector<std::string>{
-      "x[0] = uint((uint(x[0]) & ~uint(4294901760ul)) | uint(2882338816ul));"});
+      "x[0] = move_wide_apply(4u, x[0], 43981u, 16u, 32u);"});
 
   const auto discardedMoveKeep = decode_operation(0xf2d579bf);
   assert(discardedMoveKeep.has_value());
