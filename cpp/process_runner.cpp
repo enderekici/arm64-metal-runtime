@@ -9693,6 +9693,136 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                if (messageId == 3409) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x10000002;
+                    constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
+                    constexpr kern_return_t kernInvalidArgument = 4;
+                    constexpr kern_return_t kernDenied = 53;
+                    constexpr std::uint32_t taskKernelPort = 1;
+                    constexpr std::uint32_t taskBootstrapPort = 4;
+                    constexpr std::uint32_t machMessageComplex = 0x80000000;
+                    constexpr std::uint32_t requestSize = 36;
+                    constexpr std::uint32_t successReplySize = 40;
+                    constexpr std::uint32_t errorReplySize = 36;
+                    constexpr std::uint32_t minimumTrailerSize = 8;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto taskSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachTaskPort || taskSendRight == guestSendRightUrefs.end() ||
+                        taskSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
+                    const auto message = static_cast<std::uint32_t>(registers[4] >> 32);
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        (registers[2] >> 32) != requestSize ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 || message != 3409 ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        receiveName != reply || registers[6] >
+                            std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    const auto* requestBytes = guestMemory.buffer(registers[0], requestSize);
+                    mach_msg_header_t requestHeader{};
+                    NDR_record_t requestNdr{};
+                    std::int32_t whichPort = 0;
+                    std::memcpy(&requestHeader, requestBytes, sizeof(requestHeader));
+                    std::memcpy(&requestNdr, requestBytes + sizeof(requestHeader),
+                                sizeof(requestNdr));
+                    std::memcpy(&whichPort, requestBytes + sizeof(requestHeader) +
+                                sizeof(requestNdr), sizeof(whichPort));
+                    if (requestHeader.msgh_bits != 0x1513 ||
+                        requestHeader.msgh_size != requestSize ||
+                        requestHeader.msgh_remote_port != remote ||
+                        requestHeader.msgh_local_port != reply ||
+                        requestHeader.msgh_voucher_port != MACH_PORT_NULL ||
+                        requestHeader.msgh_id != 3409 ||
+                        std::memcmp(&requestNdr, &NDR_record, sizeof(requestNdr)) != 0) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    kern_return_t result = KERN_SUCCESS;
+                    if (whichPort == static_cast<std::int32_t>(taskKernelPort) ||
+                        whichPort == -1) {
+                        result = kernDenied;
+                    } else if (whichPort == 0 || whichPort == 7) {
+                        result = kernInvalidArgument;
+                    } else if (whichPort != static_cast<std::int32_t>(taskBootstrapPort)) {
+                        throw std::runtime_error(
+                            "Unsupported guest task_get_special_port selector");
+                    }
+
+                    const auto responseSize = result == KERN_SUCCESS
+                        ? successReplySize : errorReplySize;
+                    if (registers[6] < responseSize + minimumTrailerSize) {
+                        registers[0] = machReceiveTooLarge;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    auto* replyBuffer = guestMemory.buffer(
+                        registers[0], responseSize + minimumTrailerSize, true);
+                    struct TaskGetSpecialPortErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct TaskGetSpecialPortReply {
+                        mach_msg_header_t header;
+                        mach_msg_body_t body;
+                        mach_msg_port_descriptor_t specialPort;
+                    };
+                    struct TaskGetSpecialPortMinimumTrailer {
+                        mach_msg_trailer_type_t type;
+                        mach_msg_trailer_size_t size;
+                    };
+                    static_assert(sizeof(TaskGetSpecialPortErrorReply) == errorReplySize);
+                    static_assert(sizeof(TaskGetSpecialPortReply) == successReplySize);
+                    static_assert(sizeof(TaskGetSpecialPortMinimumTrailer) ==
+                                  minimumTrailerSize);
+                    const auto prepareHeader = [reply](mach_msg_header_t& header,
+                                                       std::uint32_t size,
+                                                       std::uint32_t bits) {
+                        header.msgh_bits = bits;
+                        header.msgh_size = size;
+                        header.msgh_remote_port = MACH_PORT_NULL;
+                        header.msgh_local_port = reply;
+                        header.msgh_voucher_port = MACH_PORT_NULL;
+                        header.msgh_id = 3509;
+                    };
+                    if (result == KERN_SUCCESS) {
+                        TaskGetSpecialPortReply response{};
+                        prepareHeader(response.header, sizeof(response),
+                                      machMessageComplex | 0x1200);
+                        response.body.msgh_descriptor_count = 1;
+                        response.specialPort.name = acquireGuestFixedSendRight(
+                            static_cast<std::uint32_t>(guestMachBootstrapPort));
+                        response.specialPort.disposition = MACH_MSG_TYPE_MOVE_SEND;
+                        response.specialPort.type = MACH_MSG_PORT_DESCRIPTOR;
+                        std::memcpy(replyBuffer, &response, sizeof(response));
+                    } else {
+                        TaskGetSpecialPortErrorReply response{};
+                        prepareHeader(response.header, sizeof(response), 0x1200);
+                        response.ndr = NDR_record;
+                        response.returnCode = result;
+                        std::memcpy(replyBuffer, &response, sizeof(response));
+                    }
+                    const TaskGetSpecialPortMinimumTrailer trailer{
+                        MACH_MSG_TRAILER_FORMAT_0, minimumTrailerSize};
+                    std::memcpy(replyBuffer + responseSize, &trailer, sizeof(trailer));
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 206) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;

@@ -175,6 +175,39 @@ right/name cases. It uses `MACH64_SEND_ANY` on raw sends, matching the generic
 send classification selected by libSystem. Native normalized output is
 `task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
+`task-special-port.c` sends raw task MIG request 3409 to the guest task name
+with selector 4 (`TASK_BOOTSTRAP_PORT`). It verifies the 40-byte complex reply,
+one `MOVE_SEND` port descriptor, send-right type, and the 8-byte minimum trailer.
+The returned name is normalized and deallocated. Native error controls confirm
+selector 1 and -1 return `KERN_DENIED` (53), while selectors 0 and 7 return
+`KERN_INVALID_ARGUMENT` (4); those replies are 36 bytes plus the minimum
+trailer. The guest models only selector 4 and these observed errors. Other
+selectors remain unsupported. No host bootstrap port or external service right
+is copied into the guest namespace.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/task-special-port.c -o /tmp/task-special-port
+/tmp/task-special-port
+```
+
+Native normalized output is status 0:
+
+```text
+selector=4 valid=1 status=0 bits=0x80001200 size=40 reply=3509 descriptor=0x10011 right_type=0x10000 type_status=0 trailer=0/8 error=0
+selector=1 valid=1 status=0 bits=0x1200 size=36 reply=3509 descriptor=0x0 right_type=0x0 type_status=0 trailer=0/8 error=53
+selector=0 valid=1 status=0 bits=0x1200 size=36 reply=3509 descriptor=0x0 right_type=0x0 type_status=0 trailer=0/8 error=4
+selector=7 valid=1 status=0 bits=0x1200 size=36 reply=3509 descriptor=0x0 right_type=0x0 type_status=0 trailer=0/8 error=4
+selector=-1 valid=1 status=0 bits=0x1200 size=36 reply=3509 descriptor=0x0 right_type=0x0 type_status=0 trailer=0/8 error=53
+```
+
+The same raw fixture is suitable for the guest launcher:
+
+```sh
+env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  /tmp/arm64-task-special-port-build/arm64-metal launch /tmp/task-special-port
+```
+
 `mach-local-move-send.c` uses raw traps `-16`, `-21`, `-18`, `-19`, `-76`, and
 `-47` to cover one-, two-, and three-port complex messages using `MOVE_SEND` and
 `COPY_SEND`. It checks MOVE_SEND leaves only the source receive right while
