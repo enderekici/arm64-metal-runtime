@@ -151,6 +151,8 @@ public:
     [[nodiscard]] bool is_readonly(std::uint64_t address, std::uint64_t length) const;
     [[nodiscard]] bool is_protection_fault(std::uint64_t address) const;
     void rebind(std::uint8_t* bytes, std::size_t size);
+    void rebind_with_mapping(std::uint8_t* bytes, std::size_t size,
+                             GuestMemoryMapping mapping);
     void add_mapping(GuestMemoryMapping mapping);
     void replace_mappings(const std::vector<std::uint64_t>& logicalBegins,
                           const std::vector<GuestMemoryMapping>& replacements);
@@ -178,6 +180,16 @@ private:
 struct HostServiceResult {
     bool exited = false;
     std::int32_t exitStatus = 0;
+};
+
+struct HostMachVmRegion {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+    std::uint64_t offset = 0;
+    std::uint32_t protection = 0;
+    std::uint32_t maximumProtection = 0;
+    std::uint32_t inheritance = 0;
+    std::uint32_t tag = 0;
 };
 
 // Host resources with guest-process lifetime. Guest FILE* values are opaque
@@ -232,14 +244,21 @@ struct HostServiceState {
     std::function<std::uint32_t(std::uint64_t size, std::uint64_t alignment,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
-                                std::uint64_t& guestAddress, bool jitMapping)> machVmAllocate;
+                                std::uint64_t& guestAddress, bool jitMapping,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmAllocate;
+    std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
+                                std::uint32_t currentProtection,
+                                std::uint32_t maximumProtection,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmReserve;
     std::function<std::uint32_t(std::uint64_t& guestAddress, std::uint64_t size,
                                 std::uint32_t currentProtection,
-                                std::uint32_t maximumProtection)> machVmOverwrite;
+                                std::uint32_t maximumProtection,
+                                std::uint32_t inheritance, std::uint32_t tag)> machVmOverwrite;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
                                 bool setMaximum, std::uint32_t protection)> machVmProtect;
+    std::function<std::optional<HostMachVmRegion>(std::uint64_t guestAddress)> machVmRegion;
     std::uint64_t nextFile = 0x7000000000000000ULL;
     std::size_t optionIndex = 1;
     std::size_t optionOffset = 1;

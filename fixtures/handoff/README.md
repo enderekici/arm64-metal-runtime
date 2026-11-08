@@ -353,6 +353,26 @@ overflow service is wired to deliver the same signal and code through
 libsystem addresses. The successful GPU path remains a GPU byte-copy; only an
 object-size violation crosses to the host failure service.
 
+## Fortified guest memset
+
+`make -C cpp verify-memset-chk` builds a native ARM64 control with an explicit
+`___memset_chk` import. It checks a successful bounded fill, confirms an
+oversized fill terminates through the native checked-failure trap (shell status
+133 on this host), and runs CPU assertions for direct and cached GPU lowering.
+An `SA_SIGINFO` native control captures SIGTRAP's signal number, `si_code`, fault
+PC, and address before exiting from its handler with status 77. The guest
+overflow service delivers SIGTRAP through `GuestSignalRuntime`, matching the
+existing fortified-copy behavior. Successful fills remain guest-side writes.
+
+## Guest append-mode opens
+
+`make -C cpp verify-open-append-native` exercises native `_open` and raw
+`open_nocancel` with owned temporary paths. Each opens with
+`O_WRONLY|O_CREAT|O_APPEND`, writes once, seeks to offset zero, writes again,
+then checks the file is `seedAB` and the descriptor offset is six. The host
+service keeps the OS `O_APPEND` file-description behavior and records newly
+opened writable descriptors; raw `open_nocancel` shares that same open service.
+
 ## SHA-256 crypto instructions
 
 The failing instruction at `libcorecrypto`'s `_AccelerateCrypto_SHA256_compress`
@@ -699,3 +719,41 @@ rejected with `KERN_INVALID_ADDRESS`. `make -C cpp verify-mach-vm-overwrite-nati
 checks native full and partial overwrites, a valid hole mapping, address
 preservation and zero fill, the null-target error, and rejection of an
 unsupported flag.
+
+Sparse replacement now retries with bounded shared-buffer growth when retired
+backing leases still leave no single contiguous block. Growth copies the old
+buffer, reserves the appended range exclusively for VM mappings, advances the
+host heap start past it, and publishes an unreadable resident guard so appended
+backing cannot be reached as a linear guest address. The bound is the minimum
+of Metal's maximum buffer length, the guest linear-address limit, and the
+allocator's signed-offset limit. Guest regions remain individually contiguous,
+so existing CPU/GPU memory access rules do not span physical backing extents.
+Ordinary `mach_vm_allocate` remains restricted to the original linear backing
+arena; it rejects an appended sparse tail instead of forming a linear guest
+address that the original deallocation bounds cannot own.
+
+## Named Mach VM read and protect services
+
+`_mach_vm_protect` uses the same allocation and sparse-reservation callback as
+the raw `mach_vm_protect` trap. `_mach_vm_read_overwrite` reads from guest VM
+through `GuestMemory`, snapshots source bytes before writing to handle aliases,
+and writes the output size only after a complete successful copy. An invalid
+source leaves destination and output size unchanged. A destination that reaches
+an inaccessible page can receive the writable prefix before returning
+`KERN_INVALID_ADDRESS`, matching the native task-self probe.
+
+Run the native differential fixture and CPU-only dispatch checks with
+`make -C cpp verify-mach-vm-named-services METAL_CPP=/path/to/metal-cpp`.
+The native fixture covers overlapping source/destination, invalid source and
+destination ranges, preserved output size on failure, invalid task handling,
+and the named protect wrapper. The CPU test calls the registered host services
+directly and checks copyout behavior without dispatching a Metal kernel.
+
+## Named Mach VM region query
+
+`mach-vm-region.c` queries the logical VM map through `_mach_vm_region`. Its
+native oracle checks a reserved interval, two mapped owners, the next region
+after a deallocated hole, basic-info count and offset fields, a null object
+name, and atomic error replies for an invalid task, flavor, or info count. Run
+the native oracle with `make -C cpp verify-mach-vm-region-native`. Guest runtime
+parity is a separate replay gate.

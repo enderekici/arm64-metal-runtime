@@ -37,6 +37,9 @@ public:
     void extend(GuestRange range);
     [[nodiscard]] std::optional<std::int64_t> allocate(
         std::uint64_t size, std::int64_t alignment = 16);
+    [[nodiscard]] std::optional<std::int64_t> allocate_avoiding(
+        std::uint64_t size, std::int64_t alignment,
+        const std::vector<GuestRange>& excluded);
     [[nodiscard]] std::optional<std::int64_t> allocate_at(
         std::int64_t address, std::uint64_t size, std::int64_t alignment = 16);
     [[nodiscard]] std::optional<std::int64_t> size_of(std::int64_t address) const;

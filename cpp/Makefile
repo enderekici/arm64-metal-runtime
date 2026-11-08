@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -68,6 +68,7 @@ APP_SOURCES := \
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
 OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
+OPEN_APPEND_NATIVE := $(BUILD_DIR)/open-append-native
 PROC_INFO_NATIVE := $(BUILD_DIR)/proc-info-self
 AF_UNIX_SOCKET_NATIVE := $(BUILD_DIR)/af-unix-socket
 AF_UNIX_CONNECT_NATIVE := $(BUILD_DIR)/af-unix-connect
@@ -173,6 +174,9 @@ MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
 MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
 MEMCPY_CHK_DECODE_TEST := $(BUILD_DIR)/memcpy-chk-decode-test
+MEMSET_CHK_NATIVE := $(BUILD_DIR)/memset-chk-native
+MEMSET_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memset-chk-siginfo-native
+MEMSET_CHK_DECODE_TEST := $(BUILD_DIR)/memset-chk-decode-test
 MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
 MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
 GUEST_HEAP_ALLOCATE_AT_TEST := $(BUILD_DIR)/guest-heap-allocate-at-test
@@ -207,6 +211,15 @@ $(OPEN_NOCANCEL_NATIVE): ../fixtures/handoff/open-nocancel.c \
 
 verify-open-nocancel-native: $(OPEN_NOCANCEL_NATIVE)
 	"$(OPEN_NOCANCEL_NATIVE)" "$(abspath ../fixtures/handoff/open-nocancel-input.txt)"
+
+$(OPEN_APPEND_NATIVE): ../fixtures/handoff/open-append.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-open-append-native: $(OPEN_APPEND_NATIVE)
+	"$(OPEN_APPEND_NATIVE)" >"$(BUILD_DIR)/open-append.native.out"
+	printf '%s\n' 'named=seedAB raw=seedAB offset=6 cleanup=ok' >"$(BUILD_DIR)/open-append.expected.out"
+	cmp "$(BUILD_DIR)/open-append.expected.out" "$(BUILD_DIR)/open-append.native.out"
 
 $(PROC_INFO_NATIVE): ../fixtures/handoff/proc-info-self.c
 	@mkdir -p "$(BUILD_DIR)"
@@ -678,7 +691,27 @@ $(MEMCPY_CHK_DECODE_TEST): ../fixtures/handoff/memcpy-chk-decode.cpp process_dec
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/memcpy-chk-decode.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
 
+$(MEMSET_CHK_NATIVE): ../fixtures/handoff/memset-chk.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror "$<" -o "$@"
+
+$(MEMSET_CHK_SIGINFO_NATIVE): ../fixtures/handoff/memset-chk-siginfo.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -O0 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror "$<" -o "$@"
+
+$(MEMSET_CHK_DECODE_TEST): ../fixtures/handoff/memset-chk-decode.cpp process_decoder.cpp process_decoder.hpp host_service_registry.hpp guest_strings.cpp guest_strings.hpp guest_vector_crypto.cpp guest_vector_crypto.hpp translate_core.cpp translate_core.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/memset-chk-decode.cpp process_decoder.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp -o "$@"
+
 $(MACH_VM_OVERWRITE_NATIVE): ../fixtures/handoff/mach-vm-map-overwrite.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+$(BUILD_DIR)/mach-vm-sparse-reservation-native: ../fixtures/handoff/mach-vm-sparse-reservation.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+$(BUILD_DIR)/mach-vm-region-native: ../fixtures/handoff/mach-vm-region.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
@@ -694,6 +727,27 @@ verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	printf '%s\n' 'mach_vm_map overwrite full=ok partial=ok hole=ok null=1 bad_flags=4' >"$(BUILD_DIR)/mach-vm-map-overwrite.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-map-overwrite.expected.out" "$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
 
+verify-mach-vm-sparse-reservation-native: $(BUILD_DIR)/mach-vm-sparse-reservation-native
+	"$(BUILD_DIR)/mach-vm-sparse-reservation-native" >"$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
+	printf '%s\n' 'reserve_align32m=1 fixed_24g=0 fixed_exact=1' 'fixed_overlap=3 protect_none_to_rw=2 overwrite_tag2=0 zero_fill=1 write_read=1 left_reserved_read=1 right_reserved_read=1 left_fixed_overlap=3 right_fixed_overlap=3 overwrite_tag2_mte=0 repeated_overwrite=0 repeated_zero=1' 'multi_owner_overwrite=0 exact=1 protect_mixed_none=0 zero=1/1/1 reads=0/0/0' 'adjacent_owners=0/0 protect_cross=0 query=0/0 current=1/1' 'reserved_fixed=3 partial_deallocate=0 failed_owner_hole=3 marker=0:6c hole=1 reuse=0 exact=1 zero=1' 'prefix_map=0 deallocate=0 reuse=0 exact=1 zero=1 suffix=0:7b' 'deallocate=0 fixed_reuse=0 reuse_exact=1' 'protect_commit_map=0 protect_rw=0 write_read=1 deallocate=0' 'anywhere_4m=0 aligned4m=1' 'anywhere_mte=0' 'anywhere_purgable=0' >"$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out"
+	cmp "$(BUILD_DIR)/mach-vm-sparse-reservation.expected.out" "$(BUILD_DIR)/mach-vm-sparse-reservation.native.out"
+
+verify-mach-vm-region-native: $(BUILD_DIR)/mach-vm-region-native
+	"$(BUILD_DIR)/mach-vm-region-native" >"$(BUILD_DIR)/mach-vm-region.native.out"
+	printf '%s\n' 'reserve=0 owners=0/0 deallocate_hole=0 queries=1/1/1/1' 'errors task=268435459/1 flavor=4/1 count=4/1' >"$(BUILD_DIR)/mach-vm-region.expected.out"
+	cmp "$(BUILD_DIR)/mach-vm-region.expected.out" "$(BUILD_DIR)/mach-vm-region.native.out"
+
+HOST_VM_SERVICE_TEST := $(BUILD_DIR)/host-vm-service-test
+MACH_VM_READ_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-read-overwrite
+
+verify-mach-vm-named-services:
+	xcrun clang -arch arm64 -Wall -Wextra -Werror ../fixtures/handoff/mach-vm-read-overwrite.c -o "$(MACH_VM_READ_OVERWRITE_NATIVE)"
+	"$(MACH_VM_READ_OVERWRITE_NATIVE)"
+	xcrun clang++ $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks \
+		$(filter-out main.cpp,$(APP_SOURCES)) ../fixtures/handoff/host-vm-service-test.cpp \
+		-framework Foundation -framework Metal -framework Security -o "$(HOST_VM_SERVICE_TEST)"
+	"$(HOST_VM_SERVICE_TEST)"
+
 verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIVE)
 	"$(MACH_VM_DEFERRED_RECLAMATION_NATIVE)" >"$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
 	printf '%s\n' 'mach_vm_deferred_reclamation valid=0x20004006 invalid=4 oversized=3 outputs=unchanged' >"$(BUILD_DIR)/mach-vm-deferred-reclamation.expected.out"
@@ -701,7 +755,7 @@ verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIV
 
 verify-guest-heap-allocate-at: $(GUEST_HEAP_ALLOCATE_AT_TEST)
 	"$(GUEST_HEAP_ALLOCATE_AT_TEST)" >"$(BUILD_DIR)/guest-heap-allocate-at.out"
-	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
+	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok avoid=ok extend=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
 	cmp "$(BUILD_DIR)/guest-heap-allocate-at.expected.out" "$(BUILD_DIR)/guest-heap-allocate-at.out"
 
 verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
@@ -713,6 +767,16 @@ verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CH
 		 test "$$result" -eq 133 && test ! -s "$(BUILD_DIR)/memcpy-chk.overflow.out"
 	python3 -c 'import struct, subprocess, sys; result = subprocess.run([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE); assert result.returncode == 77, result.returncode; assert result.stderr == b"", result.stderr; assert len(result.stdout) == 24, len(result.stdout); signum, code, pc, address = struct.unpack("<iiQQ", result.stdout); assert (signum, code) == (5, 0), (signum, code); assert pc != 0 and address != 0, (hex(pc), hex(address)); print("native SA_SIGINFO SIGTRAP: signal=5 code=0 controlled_exit=77 pc/address captured")' "$(MEMCPY_CHK_SIGINFO_NATIVE)"
 	"$(MEMCPY_CHK_DECODE_TEST)"
+
+verify-memset-chk: $(MEMSET_CHK_NATIVE) $(MEMSET_CHK_SIGINFO_NATIVE) $(MEMSET_CHK_DECODE_TEST)
+	nm -u "$(MEMSET_CHK_NATIVE)" | grep -q '___memset_chk'
+	"$(MEMSET_CHK_NATIVE)" >"$(BUILD_DIR)/memset-chk.native.out"
+	printf '%s\n' 'fill=ffff result=1' >"$(BUILD_DIR)/memset-chk.expected.out"
+	cmp "$(BUILD_DIR)/memset-chk.expected.out" "$(BUILD_DIR)/memset-chk.native.out"
+	@ulimit -c 0; set +e; "$(MEMSET_CHK_NATIVE)" overflow >"$(BUILD_DIR)/memset-chk.overflow.out" 2>"$(BUILD_DIR)/memset-chk.overflow.err"; result=$$?; set -e; \
+		 test "$$result" -eq 133 && test ! -s "$(BUILD_DIR)/memset-chk.overflow.out"
+	python3 -c 'import struct, subprocess, sys; result = subprocess.run([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE); assert result.returncode == 77, result.returncode; assert result.stderr == b"", result.stderr; assert len(result.stdout) == 24, len(result.stdout); signum, code, pc, address = struct.unpack("<iiQQ", result.stdout); assert (signum, code) == (5, 0), (signum, code); assert pc != 0 and address != 0, (hex(pc), hex(address)); print("native SA_SIGINFO SIGTRAP: signal=5 code=0 controlled_exit=77 pc/address captured")' "$(MEMSET_CHK_SIGINFO_NATIVE)"
+	"$(MEMSET_CHK_DECODE_TEST)"
 
 $(CHAINED_ADDENDS_TEST): ../fixtures/handoff/chained-addends-test.cpp macho.cpp macho.hpp
 	@mkdir -p "$(BUILD_DIR)"

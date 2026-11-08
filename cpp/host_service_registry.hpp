@@ -8,6 +8,7 @@
 namespace arm64metal {
 
 inline constexpr int kMemcpyChkFailureService = 184;
+inline constexpr int kMemsetChkFailureService = 198;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -148,6 +149,9 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mach_vm_deallocate", 113, true, true},
     {"_vm_deallocate", 113, true, true},
     {"_mach_vm_map", 114, true, true},
+    {"_mach_vm_protect", 196, true, true},
+    {"_mach_vm_read_overwrite", 197, true, true},
+    {"_mach_vm_region", 199, true, true},
     {"__dyld_get_image_slide", 115, true, true},
     {"_mprotect", 116, true, true},
     {"_sys_icache_invalidate", 179, true, true},
@@ -215,6 +219,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_jit_write_protect_np", 182, true, true},
     {"_bootstrap_look_up", 183, true, true},
     {"___memcpy_chk", kMemcpyChkFailureService, true, true},
+    {"___memset_chk", kMemsetChkFailureService, true, true},
     {"_mach_host_self", 193, true, true},
     {"_mach_thread_self", 194, true, true},
 };

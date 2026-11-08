@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <mach/mach_time.h>
 #include <mach/mach.h>
+#include <mach/vm_statistics.h>
 #include <bootstrap.h>
 #include <sys/stat.h>
 #include <sys/attr.h>
@@ -370,6 +371,28 @@ void GuestMemory::rebind(std::uint8_t* bytes, std::size_t size) {
     }
     data_ = bytes;
     size_ = size;
+}
+
+void GuestMemory::rebind_with_mapping(std::uint8_t* bytes, std::size_t size,
+                                      GuestMemoryMapping mapping) {
+    if (!external_ || bytes == nullptr || size == 0) {
+        throw std::invalid_argument("Guest memory rebind requires a nonempty borrowed buffer");
+    }
+    if (mapping.logicalBegin >= mapping.logicalEnd || mapping.backingBegin > size ||
+        mapping.logicalEnd - mapping.logicalBegin > size - mapping.backingBegin) {
+        throw std::invalid_argument("Invalid guest memory mapping for rebind");
+    }
+    for (const auto& current : mappings_) {
+        if (mapping.logicalBegin < current.logicalEnd &&
+            current.logicalBegin < mapping.logicalEnd) {
+            throw std::invalid_argument("Replacement guest memory mapping overlaps");
+        }
+    }
+    auto stagedMappings = mappings_;
+    stagedMappings.push_back(mapping);
+    data_ = bytes;
+    size_ = size;
+    mappings_.swap(stagedMappings);
 }
 
 void GuestMemory::validate_logical_interval(std::uint64_t address,
@@ -2072,10 +2095,13 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             if (map && (flags & 0x4000U) != 0) {
-                constexpr std::uint32_t vmMemoryMallocTinyTag = 7U << 24U;
                 constexpr std::uint32_t vmFlagsOverwrite = 0x4000U;
-                if (rawFlags != (vmMemoryMallocTinyTag | vmFlagsOverwrite) ||
-                    registers[3] != 0 || registers[5] != 0 || registers[6] != 0 ||
+                constexpr std::uint32_t vmFlagsPurgable = 0x2U;
+                constexpr std::uint32_t vmFlagsMte = 0x2000U;
+                if ((flags & ~(vmFlagsOverwrite | vmFlagsPurgable | vmFlagsMte)) != 0 ||
+                    registers[3] >= (1ULL << 62) ||
+                    (registers[3] & (registers[3] + 1)) != 0 ||
+                    registers[5] != 0 || registers[6] != 0 ||
                     registers[7] != 0 || registers[1] == 0 || registers[31] >
                         std::numeric_limits<std::uint64_t>::max() - 8) {
                     registers[0] = kernInvalidArgument;
@@ -2095,7 +2121,7 @@ HostServiceResult dispatch_guest_host_service(
                             memory.buffer(registers[31] + 8, sizeof(inheritance)),
                             sizeof(inheritance));
                 if ((currentProtection & ~7U) != 0 ||
-                    (maximumProtection & ~7U) != 0 || inheritance != 1U) {
+                    (maximumProtection & ~7U) != 0 || inheritance > 2U) {
                     registers[0] = kernInvalidArgument;
                     break;
                 }
@@ -2104,9 +2130,13 @@ HostServiceResult dispatch_guest_host_service(
                     registers[0] = kernProtectionFailure;
                     break;
                 }
-                auto* addressStorage = memory.buffer(registers[1], sizeof(std::uint64_t));
+                auto* addressStorage = memory.buffer(registers[1], sizeof(std::uint64_t), true);
                 std::uint64_t address = 0;
                 std::memcpy(&address, addressStorage, sizeof(address));
+                if ((address & registers[3]) != 0) {
+                    registers[0] = kernInvalidArgument;
+                    break;
+                }
                 if (registers[2] == 0) {
                     registers[0] = kernInvalidArgument;
                     break;
@@ -2116,7 +2146,8 @@ HostServiceResult dispatch_guest_host_service(
                     break;
                 }
                 const auto result = state.machVmOverwrite(
-                    address, registers[2], currentProtection, maximumProtection);
+                    address, registers[2], currentProtection, maximumProtection,
+                    inheritance, rawFlags >> 24U);
                 if (result == kernSuccess) {
                     addressStorage = memory.buffer(registers[1], sizeof(address), true);
                     std::memcpy(addressStorage, &address, sizeof(address));
@@ -2124,13 +2155,18 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = result;
                 break;
             }
-            if ((flags & 1U) == 0 || (flags & ~9U) != 0) {
+            constexpr std::uint32_t vmFlagsAnywhere = 1U;
+            constexpr std::uint32_t vmFlagsPurgable = 2U;
+            constexpr std::uint32_t vmFlagsMte = 0x2000U;
+            if ((flags & ~(vmFlagsAnywhere | vmFlagsPurgable | vmFlagsMte)) != 0 ||
+                (!map && (flags & vmFlagsAnywhere) == 0)) {
                 registers[0] = kernInvalidArgument;
                 break;
             }
             std::uint64_t alignment = bootstrap.pageSize;
             std::uint32_t currentProtection = 3;
             std::uint32_t maximumProtection = 3;
+            std::uint32_t inheritance = 1;
             if (map) {
                 const auto mask = registers[3];
                 if (registers[5] != 0 || registers[6] != 0 || mask >= (1ULL << 62) ||
@@ -2145,11 +2181,14 @@ HostServiceResult dispatch_guest_host_service(
                             memory.buffer(registers[31] + sizeof(currentProtection),
                                           sizeof(maximumProtection)),
                             sizeof(maximumProtection));
+                std::memcpy(&inheritance,
+                            memory.buffer(registers[31] + 8, sizeof(inheritance)),
+                            sizeof(inheritance));
                 const bool currentWriteExecute = (currentProtection & 2U) != 0 &&
                                                  (currentProtection & 4U) != 0;
                 if ((currentProtection & ~7U) != 0 || currentWriteExecute ||
                     (maximumProtection & ~7U) != 0 ||
-                    (currentProtection & ~maximumProtection) != 0) {
+                    (currentProtection & ~maximumProtection) != 0 || inheritance > 2U) {
                     registers[0] = kernInvalidArgument;
                     break;
                 }
@@ -2169,13 +2208,41 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             const auto size = (registers[2] + page - 1) & ~(page - 1);
-            if (alignment > 16U * 1024U * 1024U || !state.machVmAllocate) {
+            if (!map && !state.machVmAllocate) {
                 registers[0] = kernNoSpace;
                 break;
             }
             std::uint64_t address = 0;
+            if (map && (flags & vmFlagsAnywhere) == 0) {
+                std::memcpy(&address, output, sizeof(address));
+                const auto mask = registers[3];
+                std::uint32_t inheritance = 0;
+                std::memcpy(&inheritance,
+                            memory.buffer(registers[31] + 8, sizeof(inheritance)),
+                            sizeof(inheritance));
+                if (mask >= (1ULL << 62) || (mask & (mask + 1)) != 0 ||
+                    (address & mask) != 0 || registers[5] != 0 || registers[6] != 0 ||
+                    registers[7] != 0) {
+                    registers[0] = kernInvalidArgument;
+                    break;
+                }
+                if (!state.machVmReserve) {
+                    registers[0] = kernNoSpace;
+                    break;
+                }
+                const auto result = state.machVmReserve(
+                    address, size, currentProtection, maximumProtection, inheritance,
+                    rawFlags >> 24U);
+                registers[0] = result;
+                break;
+            }
+            if (map && !state.machVmAllocate) {
+                registers[0] = kernNoSpace;
+                break;
+            }
             const auto result = state.machVmAllocate(size, alignment, currentProtection,
-                                                     maximumProtection, address, false);
+                                                     maximumProtection, address, false,
+                                                     inheritance, rawFlags >> 24U);
             if (result == kernSuccess) std::memcpy(output, &address, sizeof(address));
             registers[0] = result;
             break;
@@ -2192,6 +2259,163 @@ HostServiceResult dispatch_guest_host_service(
             } else {
                 registers[0] = state.machVmDeallocate(registers[1], registers[2]);
             }
+            break;
+        }
+        case 196: {  // mach_vm_protect wrapper, matching its raw Mach trap
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+            } else if (!state.machVmProtect) {
+                registers[0] = kernInvalidArgument;
+            } else {
+                registers[0] = state.machVmProtect(registers[1], registers[2],
+                    registers[3] != 0, static_cast<std::uint32_t>(registers[4]));
+            }
+            break;
+        }
+        case 197: {  // mach_vm_read_overwrite from authoritative guest memory
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidAddress = 1;
+            constexpr std::uint32_t kernResourceShortage = 3;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+                break;
+            }
+            if (registers[2] > std::numeric_limits<std::size_t>::max()) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            const auto size = static_cast<std::size_t>(registers[2]);
+            std::uint8_t* copiedSize = nullptr;
+            try {
+                copiedSize = memory.buffer(registers[4], sizeof(std::uint64_t), true);
+            } catch (const std::out_of_range&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            if (size == 0) {
+                const std::uint64_t copied = 0;
+                std::memcpy(copiedSize, &copied, sizeof(copied));
+                registers[0] = 0;
+                break;
+            }
+            if (registers[1] > std::numeric_limits<std::uint64_t>::max() - registers[2] ||
+                registers[3] > std::numeric_limits<std::uint64_t>::max() - registers[2]) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            std::vector<std::uint8_t> snapshot;
+            try {
+                snapshot.resize(size);
+            } catch (const std::bad_alloc&) {
+                registers[0] = kernResourceShortage;
+                break;
+            } catch (const std::length_error&) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            std::uint64_t readOffset = 0;
+            try {
+                while (readOffset < registers[2]) {
+                    const auto address = registers[1] + readOffset;
+                    const auto available = memory.contiguous_readable_size(address);
+                    if (available == 0) throw std::out_of_range("Empty guest source range");
+                    const auto chunk = std::min(available, registers[2] - readOffset);
+                    const auto* source = memory.buffer(address, chunk);
+                    std::memcpy(snapshot.data() + static_cast<std::size_t>(readOffset),
+                                source, static_cast<std::size_t>(chunk));
+                    readOffset += chunk;
+                }
+            } catch (const std::out_of_range&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            std::uint64_t written = 0;
+            while (written < registers[2]) {
+                try {
+                    const auto address = registers[3] + written;
+                    const auto available = memory.contiguous_readable_size(address);
+                    if (available == 0) throw std::out_of_range("Empty guest destination range");
+                    const auto chunk = std::min(available, registers[2] - written);
+                    auto* destination = memory.buffer(address, chunk, true);
+                    std::memmove(destination,
+                        snapshot.data() + static_cast<std::size_t>(written),
+                        static_cast<std::size_t>(chunk));
+                    written += chunk;
+                } catch (const std::out_of_range&) {
+                    registers[0] = kernInvalidAddress;
+                    break;
+                }
+            }
+            if (written == registers[2]) {
+                const auto copied = static_cast<std::uint64_t>(size);
+                std::memcpy(copiedSize, &copied, sizeof(copied));
+                registers[0] = 0;
+            }
+            break;
+        }
+        case 199: {  // mach_vm_region over logical guest map and reservation intervals
+            constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
+            constexpr std::uint32_t kernInvalidAddress = 1;
+            constexpr std::uint32_t kernInvalidArgument = 4;
+            if (registers[0] != bootstrap.guestTaskPort) {
+                registers[0] = machSendInvalidDest;
+                break;
+            }
+            if (registers[3] != VM_REGION_BASIC_INFO_64) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            std::uint32_t count = 0;
+            try {
+                std::memcpy(&count, memory.buffer(registers[5], sizeof(count)), sizeof(count));
+            } catch (const std::exception&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            if (count < VM_REGION_BASIC_INFO_COUNT_64) {
+                registers[0] = kernInvalidArgument;
+                break;
+            }
+            mach_vm_address_t* address = nullptr;
+            mach_vm_size_t* size = nullptr;
+            vm_region_basic_info_data_64_t* info = nullptr;
+            mach_port_t* object = nullptr;
+            try {
+                address = reinterpret_cast<mach_vm_address_t*>(
+                    memory.buffer(registers[1], sizeof(*address), true));
+                size = reinterpret_cast<mach_vm_size_t*>(
+                    memory.buffer(registers[2], sizeof(*size), true));
+                info = reinterpret_cast<vm_region_basic_info_data_64_t*>(
+                    memory.buffer(registers[4], sizeof(*info), true));
+                count = VM_REGION_BASIC_INFO_COUNT_64;
+                object = reinterpret_cast<mach_port_t*>(
+                    memory.buffer(registers[6], sizeof(*object), true));
+            } catch (const std::exception&) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            const auto region = state.machVmRegion
+                ? state.machVmRegion(*address) : std::nullopt;
+            if (!region) {
+                registers[0] = kernInvalidAddress;
+                break;
+            }
+            vm_region_basic_info_data_64_t result{};
+            result.protection = static_cast<vm_prot_t>(region->protection);
+            result.max_protection = static_cast<vm_prot_t>(region->maximumProtection);
+            result.inheritance = static_cast<vm_inherit_t>(region->inheritance);
+            result.offset = region->offset;
+            result.behavior = VM_BEHAVIOR_DEFAULT;
+            result.user_wired_count = 0;
+            *address = region->begin;
+            *size = region->end - region->begin;
+            *info = result;
+            *object = MACH_PORT_NULL;
+            std::memcpy(memory.buffer(registers[5], sizeof(count), true), &count, sizeof(count));
+            registers[0] = 0;
             break;
         }
         case 116: {  // mprotect on anonymous guest VM mappings
@@ -2362,17 +2586,29 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 21: {  // open read-only files
+        case 21: {  // open guest-owned files
             const auto path = string_at(registers[0]);
             const auto flags = static_cast<std::int32_t>(registers[1]);
-            constexpr std::int32_t allowed = O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW |
-                                               O_NOCTTY | O_DIRECTORY;
-            if ((flags & ~allowed) != O_RDONLY) {
-                throw std::runtime_error("Guest open flags unsupported");
+            constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
+                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY;
+            if ((flags & ~allowed) != 0) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
             }
-            const auto descriptor = ::open(path.c_str(), flags | O_CLOEXEC);
-            if (descriptor >= 0) state.openDescriptors.insert(descriptor);
-            else set_errno(errno);
+            const auto needsMode = (flags & O_CREAT) != 0;
+            const auto mode = static_cast<mode_t>(registers[2]);
+            const auto descriptor = needsMode
+                ? ::open(path.c_str(), flags | O_CLOEXEC, mode)
+                : ::open(path.c_str(), flags | O_CLOEXEC);
+            if (descriptor >= 0) {
+                state.openDescriptors.insert(descriptor);
+                if ((flags & O_ACCMODE) != O_RDONLY) {
+                    state.writableDescriptors.insert(descriptor);
+                }
+            } else {
+                set_errno(errno);
+            }
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(descriptor));
             break;
         }
@@ -2732,7 +2968,7 @@ HostServiceResult dispatch_guest_host_service(
                 const std::uint32_t effective_protection = jit_mapping
                     ? (state.jitWriteProtected ? 5U : 3U) : protection;
                 const auto result = state.machVmAllocate(length, page_size,
-                    effective_protection, 7, address, jit_mapping);
+                    effective_protection, 7, address, jit_mapping, 1, 0);
                 if (result != 0) {
                     set_errno(ENOMEM);
                     registers[0] = failure;
