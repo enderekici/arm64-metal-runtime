@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -192,6 +192,7 @@ MEMSET_CHK_DECODE_TEST := $(BUILD_DIR)/memset-chk-decode-test
 MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
 MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
 GUEST_HEAP_ALLOCATE_AT_TEST := $(BUILD_DIR)/guest-heap-allocate-at-test
+CACHE_BACKING_LEASES_TEST := $(BUILD_DIR)/cache-backing-leases-test
 SHA256_NATIVE := $(BUILD_DIR)/sha256-instructions-native
 VECTOR_CRYPTO_LOWER_TEST := $(BUILD_DIR)/vector-crypto-lowering-test
 VECTOR_CRYPTO_MSL := $(BUILD_DIR)/vector-crypto.metal
@@ -964,6 +965,10 @@ $(GUEST_HEAP_ALLOCATE_AT_TEST): ../fixtures/handoff/guest-heap-allocate-at.cpp g
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG "$<" guest_state.cpp -o "$@"
 
+$(CACHE_BACKING_LEASES_TEST): ../fixtures/handoff/cache-backing-leases.cpp cache_backing_leases.hpp guest_state.cpp guest_state.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG "$<" guest_state.cpp -o "$@"
+
 verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
 	printf '%s\n' 'mach_vm_map overwrite full=ok partial=ok hole=ok null=1 bad_flags=4' >"$(BUILD_DIR)/mach-vm-map-overwrite.expected.out"
@@ -999,6 +1004,11 @@ verify-guest-heap-allocate-at: $(GUEST_HEAP_ALLOCATE_AT_TEST)
 	"$(GUEST_HEAP_ALLOCATE_AT_TEST)" >"$(BUILD_DIR)/guest-heap-allocate-at.out"
 	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok avoid=ok extend=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
 	cmp "$(BUILD_DIR)/guest-heap-allocate-at.expected.out" "$(BUILD_DIR)/guest-heap-allocate-at.out"
+
+verify-cache-backing-leases: $(CACHE_BACKING_LEASES_TEST)
+	"$(CACHE_BACKING_LEASES_TEST)" >"$(BUILD_DIR)/cache-backing-leases.out"
+	printf '%s\n' 'cache backing leases repeated=128 alias=retained-until-unmapped active-vm=retained selector=untouched' >"$(BUILD_DIR)/cache-backing-leases.expected.out"
+	cmp "$(BUILD_DIR)/cache-backing-leases.expected.out" "$(BUILD_DIR)/cache-backing-leases.out"
 
 verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
 	nm -u "$(MEMCPY_CHK_NATIVE)" | grep -q '___memcpy_chk'

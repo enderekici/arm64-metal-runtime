@@ -5,6 +5,7 @@
 
 #include "image_loader.hpp"
 #include "cache_residency.hpp"
+#include "cache_backing_leases.hpp"
 #include "darwin_bridge.hpp"
 #include "guest_signal_runtime.hpp"
 #include "guest_scheduler.hpp"
@@ -3280,6 +3281,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::unordered_map<std::uint64_t, std::size_t> activeImageExitCallbacks;
     std::set<std::uint64_t> pendingDynamicUnloads;
     std::set<std::pair<std::int64_t, std::int64_t>> cachedReadWindows;
+    CacheBackingLeases cacheMetadataBackings;
     auto ensureTokenCapacity = [&](std::size_t additional, const char* origin) {
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto count = static_cast<std::size_t>(live[guestTokenCount]);
@@ -4553,6 +4555,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     const auto syncResidentTable = [&]() {
         std::memcpy(residentBuffer.data(), resident.data(), resident.size() * sizeof(std::uint64_t));
     };
+    const auto reclaimRetiredCacheMetadataBackings = [&]() {
+        std::vector<GuestBackingSpan> residentBackings;
+        residentBackings.reserve(static_cast<std::size_t>(resident[0]));
+        for (std::size_t index = 0; index < resident[0]; ++index) {
+            const auto row = 1 + 4 * index;
+            residentBackings.push_back({static_cast<std::int64_t>(resident[row + 2]),
+                                        resident[row + 1] - resident[row]});
+        }
+        std::vector<GuestBackingSpan> activeVmBackings;
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            for (const auto& lease : allocation.ownedBackings) {
+                activeVmBackings.push_back({lease.backing, lease.size});
+            }
+        }
+        const auto retired = cacheMetadataBackings.collect_unreferenced(
+            residentBackings, activeVmBackings);
+        for (const auto backing : retired) mappingHeap.release(backing);
+    };
     const auto setTproWrites = [&](bool enabled) {
         for (std::size_t index = 0; index < resident[0]; ++index) {
             const auto row = 1 + 4 * index;
@@ -4785,12 +4806,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<const std::uint8_t*>(memoryBuffer.data()) + sourceOffset,
                             static_cast<std::size_t>(rowLength));
             }
+            auto stagedCacheMetadataBackings = cacheMetadataBackings;
+            const auto allocatedSize = mappingHeap.size_of(*backingAllocation);
+            if (!allocatedSize || *allocatedSize <= 0) {
+                throw std::runtime_error("Guest cache metadata backing lease is missing");
+            }
+            stagedCacheMetadataBackings.track(
+                *backingAllocation, static_cast<std::uint64_t>(*allocatedSize));
             if (overlaps.empty()) {
                 if (resident[0] >= residentCapacity) {
                     throw std::runtime_error("Guest resident map capacity exceeded by cache metadata");
                 }
                 publishVmRegion({mergedBegin, mergedEnd, backing,
                                  true, mergedWritable, false, 0, false, 1, 0, mergedTpro});
+                cacheMetadataBackings.swap(stagedCacheMetadataBackings);
             } else {
                 std::vector<std::uint64_t> removedBegins;
                 std::vector<GuestMemoryMapping> addedMappings;
@@ -4806,12 +4835,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                          merged.writable, merged.readable});
                 guestMemory.replace_mappings(removedBegins, addedMappings);
                 resident.swap(stagedResident);
+                cacheMetadataBackings.swap(stagedCacheMetadataBackings);
             }
         } catch (...) {
             mappingHeap.release(*backingAllocation);
             throw;
         }
         syncResidentTable();
+        reclaimRetiredCacheMetadataBackings();
     };
     const auto publishGuestImageHeader = [&](std::size_t index) {
         const auto header = imageRegistry.header_at(index);
