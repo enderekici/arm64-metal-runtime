@@ -1209,6 +1209,36 @@ private:
     std::size_t periodicEvents_ = 0;
 };
 
+class SchedulerTrace {
+public:
+    SchedulerTrace() {
+        const char* enabled = std::getenv("ARM64_METAL_TRACE_SCHEDULER");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    void timeslice(std::uint64_t from, std::uint64_t to,
+                   std::uint64_t pc, std::uint64_t dispatches) {
+        if (!enabled_) return;
+        if (events_ == maximumEvents) {
+            if (!limitReported_) {
+                std::cerr << "arm64-metal scheduler-trace event-limit=" << maximumEvents << '\n';
+                limitReported_ = true;
+            }
+            return;
+        }
+        ++events_;
+        std::cerr << "arm64-metal scheduler-trace event=timeslice from=" << from
+                  << " to=" << to << " pc=0x" << hexadecimal(pc)
+                  << " dispatches=" << dispatches << '\n';
+    }
+
+private:
+    static constexpr std::size_t maximumEvents = 64;
+    bool enabled_ = false;
+    bool limitReported_ = false;
+    std::size_t events_ = 0;
+};
+
 class WorkqueueTrace {
 public:
     WorkqueueTrace() {
@@ -1342,6 +1372,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
     ProgressTrace progressTrace;
+    SchedulerTrace schedulerTrace;
     WorkqueueTrace workqueueTrace;
     JitExecutionTrace jitExecutionTrace;
     if (options.dispatchBlocks == 0 || options.dispatchBlocks > kMaximumDispatchBlocks) {
@@ -2280,6 +2311,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             else ++waiters;
         }
     };
+    constexpr std::uint64_t guestDispatchTimeSlice = 32;
+    std::uint64_t dispatchesInTimeSlice = 0;
+    std::uint64_t timeSliceThread = guestScheduler.current_id();
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
         std::vector<std::uint64_t> globalTail;
         if (live.size() >= guestTokenCount) {
@@ -2362,6 +2396,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                   live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount));
         std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
         if (switched) {
+            dispatchesInTimeSlice = 0;
+            timeSliceThread = guestScheduler.current_id();
             if (!applyJitWriteProtection ||
                 !applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
                 throw std::runtime_error("Guest thread MAP_JIT mode could not be applied before resume");
@@ -6274,6 +6310,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (pc > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
                 throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
                                          hexadecimal(pc));
+            }
+            const auto threadId = guestScheduler.current_id();
+            if (timeSliceThread != threadId) {
+                timeSliceThread = threadId;
+                dispatchesInTimeSlice = 0;
+            }
+            if (guestScheduler.ready_queue().empty()) {
+                dispatchesInTimeSlice = 0;
+            } else if (++dispatchesInTimeSlice >= guestDispatchTimeSlice) {
+                std::vector<std::uint64_t> live(
+                    static_cast<const std::uint64_t*>(stateBuffer.data()),
+                    static_cast<const std::uint64_t*>(stateBuffer.data()) +
+                        stateBuffer.size() / sizeof(std::uint64_t));
+                if (syncThreadSwitch(true, live)) {
+                    schedulerTrace.timeslice(threadId, guestScheduler.current_id(),
+                                             pc, guestDispatchTimeSlice);
+                    continue;
+                }
+                dispatchesInTimeSlice = 0;
             }
             const auto entry = static_cast<std::int64_t>(pc);
             selectKernel(entry);
