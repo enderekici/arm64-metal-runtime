@@ -371,6 +371,21 @@ inline ulong integer_bit_operation_apply(uint variant, ulong source,
         ? metal::clz(uint(normalized)) : metal::clz(normalized);
     return leadingZeros - 1u;
 }
+inline ulong integer_divide_apply(uint isSigned, ulong lhs, ulong rhs,
+                                  uint width) {
+    const ulong valueMask = width == 32u ? 0xfffffffful : ~0ul;
+    const ulong left = lhs & valueMask;
+    const ulong right = rhs & valueMask;
+    if (right == 0ul) return 0ul;
+    if (isSigned == 0u) return left / right;
+    const ulong signBit = 1ul << (width - 1u);
+    const bool leftNegative = (left & signBit) != 0ul;
+    const bool rightNegative = (right & signBit) != 0ul;
+    const ulong leftMagnitude = leftNegative ? (0ul - left) & valueMask : left;
+    const ulong rightMagnitude = rightNegative ? (0ul - right) & valueMask : right;
+    const ulong quotient = leftMagnitude / rightMagnitude;
+    return ((leftNegative != rightNegative) ? 0ul - quotient : quotient) & valueMask;
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -663,6 +678,24 @@ inline std::uint64_t integer_bit_operation_apply(
       : __builtin_clzll(normalized);
   return leadingZeros - 1U;
 }
+inline std::uint64_t integer_divide_apply(std::uint32_t isSigned,
+                                          std::uint64_t lhs,
+                                          std::uint64_t rhs,
+                                          std::uint32_t width) {
+  const auto valueMask = width == 32U ? std::uint64_t{0xffffffffU}
+                                      : ~std::uint64_t{0};
+  const auto left = lhs & valueMask;
+  const auto right = rhs & valueMask;
+  if (right == 0U) return 0U;
+  if (isSigned == 0U) return left / right;
+  const auto signBit = std::uint64_t{1} << (width - 1U);
+  const bool leftNegative = (left & signBit) != 0U;
+  const bool rightNegative = (right & signBit) != 0U;
+  const auto leftMagnitude = leftNegative ? (0U - left) & valueMask : left;
+  const auto rightMagnitude = rightNegative ? (0U - right) & valueMask : right;
+  const auto quotient = leftMagnitude / rightMagnitude;
+  return ((leftNegative != rightNegative) ? 0U - quotient : quotient) & valueMask;
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -889,6 +922,15 @@ inline constexpr char typed_integer_msl_source[] =
     "if (normalized == 0ul) return width - 1u; "
     "uint leadingZeros = width == 32u ? metal::clz(uint(normalized)) : metal::clz(normalized); "
     "return leadingZeros - 1u; }\n"
+    "inline ulong integer_divide_apply(uint isSigned, ulong lhs, ulong rhs, uint width) { "
+    "ulong valueMask = width == 32u ? 0xfffffffful : ~0ul; ulong left = lhs & valueMask; "
+    "ulong right = rhs & valueMask; if (right == 0ul) return 0ul; "
+    "if (isSigned == 0u) return left / right; ulong signBit = 1ul << (width - 1u); "
+    "bool leftNegative = (left & signBit) != 0ul; bool rightNegative = (right & signBit) != 0ul; "
+    "ulong leftMagnitude = leftNegative ? (0ul - left) & valueMask : left; "
+    "ulong rightMagnitude = rightNegative ? (0ul - right) & valueMask : right; "
+    "ulong quotient = leftMagnitude / rightMagnitude; "
+    "return ((leftNegative != rightNegative) ? 0ul - quotient : quotient) & valueMask; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

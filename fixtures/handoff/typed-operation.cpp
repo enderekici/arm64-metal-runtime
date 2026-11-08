@@ -47,6 +47,22 @@ static std::uint64_t native_integer_bit_operation(std::uint32_t variant,
   return width == 32U ? std::uint32_t(result) : result;
 }
 
+static std::uint64_t native_integer_divide(bool isSigned, std::uint32_t width,
+                                          std::uint64_t lhs,
+                                          std::uint64_t rhs) {
+  std::uint64_t result;
+  if (isSigned && width == 64U) {
+    asm volatile("sdiv %0, %1, %2" : "=r"(result) : "r"(lhs), "r"(rhs));
+  } else if (isSigned) {
+    asm volatile("sdiv %w0, %w1, %w2" : "=r"(result) : "r"(lhs), "r"(rhs));
+  } else if (width == 64U) {
+    asm volatile("udiv %0, %1, %2" : "=r"(result) : "r"(lhs), "r"(rhs));
+  } else {
+    asm volatile("udiv %w0, %w1, %w2" : "=r"(result) : "r"(lhs), "r"(rhs));
+  }
+  return width == 32U ? std::uint32_t(result) : result;
+}
+
 static std::uint64_t native_sbfm_wrap(std::uint64_t source) {
   std::uint64_t result;
   asm volatile("sbfm %0, %1, #60, #7" : "=r"(result) : "r"(source));
@@ -1465,5 +1481,49 @@ int main() {
   assert(decode_operation(0x5ac01000U)->immediate == 2U);
   assert(decode_operation(0xdac01400U)->immediate == 3U);
   assert(!decode_operation(0xdac01800U).has_value());
+  for (const auto width : {32U, 64U}) {
+    const std::array<std::uint64_t, 8> values{
+        0U, 1U, 3U, 7U, 0x80000000ULL, 0xffffffffU,
+        0x8000000000000000ULL,
+        0xffffffffffffffffULL};
+    for (const auto isSigned : {false, true}) {
+      for (const auto lhs : values) {
+        for (const auto rhs : values) {
+          const auto native = native_integer_divide(isSigned, width, lhs, rhs);
+          const auto shared = arm64metal::integer_divide_apply(
+              isSigned ? 1U : 0U, lhs, rhs, width);
+          assert(native == shared);
+        }
+      }
+    }
+  }
+  const auto udivX = decode_operation(0x9ac00800U);
+  assert(udivX.has_value() && udivX->opcode == Opcode::IntegerDivide &&
+         udivX->destination == 0U && udivX->source == 0U &&
+         udivX->immediate == 0U && udivX->shift == 0U && udivX->width == 64U);
+  assert((serialize_operation(*udivX) ==
+          arm64metal::translate_core::OperationPacket{35, 0, 0, 0, 0, 64}));
+  const auto sdivW = decode_operation(0x1ac00c00U);
+  assert(sdivW.has_value() && sdivW->opcode == Opcode::IntegerDivide &&
+         sdivW->shift == 1U && sdivW->width == 32U);
+  const auto sdivLowered = make_operation_instruction(
+      *sdivW, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(sdivLowered.code[0] ==
+         "x[0] = integer_divide_apply(1u, uint(x[0]), uint(x[0]), 32u);");
+  assert(decode_operation(0x1ac00800U)->shift == 0U);
+  assert(decode_operation(0x9ac00c00U)->width == 64U);
+  const auto sdivX = decode_operation(0x9ac20c24U);
+  assert(sdivX.has_value() && sdivX->destination == 4U &&
+         sdivX->source == 1U && sdivX->immediate == 2U &&
+         sdivX->shift == 1U && sdivX->width == 64U);
+  assert(!decode_operation(0x9ac01000U).has_value());
+  assert(arm64metal::integer_divide_apply(0U, 0x1234U, 0U, 64U) == 0U);
+  assert(arm64metal::integer_divide_apply(
+             1U, 0x8000000000000000ULL, 0xffffffffffffffffULL, 64U) ==
+         0x8000000000000000ULL);
+  assert(arm64metal::integer_divide_apply(
+             1U, 0x80000000ULL, 0xffffffffULL, 32U) == 0x80000000ULL);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "integer_divide_apply") != std::string_view::npos);
   return 0;
 }

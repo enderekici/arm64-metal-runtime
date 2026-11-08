@@ -91,6 +91,7 @@ INTERPRETER_MULTIPLY_ACCUMULATE_MAIN := $(BUILD_DIR)/interpreter-multiply-accumu
 INTERPRETER_BITFIELD_MAIN := $(BUILD_DIR)/interpreter-bitfield-main
 INTERPRETER_BITFIELD_NATIVE := $(BUILD_DIR)/interpreter-bitfield-native
 INTERPRETER_INTEGER_BITOPS_MAIN := $(BUILD_DIR)/interpreter-integer-bitops-main
+INTERPRETER_INTEGER_DIVIDE_MAIN := $(BUILD_DIR)/interpreter-integer-divide-main
 INTERPRETER_LOGICAL_IMMEDIATE_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-main
 INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-invalid-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
@@ -309,6 +310,10 @@ $(INTERPRETER_BITFIELD_NATIVE): ../fixtures/interpreter/bitfield-main.s ../fixtu
 	xcrun clang -arch arm64 -DARM64_GUEST_NATIVE_TEST=1 -Wall -Wextra -Werror -x assembler-with-cpp ../fixtures/interpreter/bitfield-main.s -x none ../fixtures/interpreter/bitfield-native-main.c -o "$@"
 
 $(INTERPRETER_INTEGER_BITOPS_MAIN): ../fixtures/interpreter/integer-bitops-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_INTEGER_DIVIDE_MAIN): ../fixtures/interpreter/integer-divide-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -713,7 +718,7 @@ verify-adc-sbc-carry-interpreter: $(APP) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(INT
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err" && \
 		echo "adc-sbc-carry interpreter dispatch verified: $$run_dir"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_MULTIPLY_ACCUMULATE_MAIN) $(INTERPRETER_BITFIELD_MAIN) $(INTERPRETER_BITFIELD_NATIVE) $(INTERPRETER_INTEGER_BITOPS_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_BRANCH_REGISTER_MAIN) $(INTERPRETER_BRANCH_REGISTER_NATIVE) $(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN) $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_MULTIPLY_ACCUMULATE_MAIN) $(INTERPRETER_BITFIELD_MAIN) $(INTERPRETER_BITFIELD_NATIVE) $(INTERPRETER_INTEGER_BITOPS_MAIN) $(INTERPRETER_INTEGER_DIVIDE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_BRANCH_REGISTER_MAIN) $(INTERPRETER_BRANCH_REGISTER_NATIVE) $(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN) $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -1150,6 +1155,18 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/integer-bitops.native.err" "$$run_dir/integer-bitops.translated.err" && \
 		grep -q 'interpreter-dispatch.*pc=0x42d8' "$$run_dir/integer-bitops.interpreter.err" && \
 		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/integer-bitops.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_INTEGER_DIVIDE_MAIN)" >"$$run_dir/integer-divide.native.out" 2>"$$run_dir/integer-divide.native.err"; divide_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_INTEGER_DIVIDE_MAIN)" >"$$run_dir/integer-divide.translated.out" 2>"$$run_dir/integer-divide.translated.err"; divide_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_INTEGER_DIVIDE_MAIN)" >"$$run_dir/integer-divide.interpreter.out" 2>"$$run_dir/integer-divide.interpreter.err"; divide_interpreter_rc=$$?; \
+		set -e; \
+		test "$$divide_native_rc" -eq 42 && test "$$divide_translated_rc" -eq "$$divide_native_rc" && \
+		test "$$divide_interpreter_rc" -eq "$$divide_native_rc" && \
+		cmp "$$run_dir/integer-divide.native.out" "$$run_dir/integer-divide.translated.out" && \
+		cmp "$$run_dir/integer-divide.native.out" "$$run_dir/integer-divide.interpreter.out" && \
+		cmp "$$run_dir/integer-divide.native.err" "$$run_dir/integer-divide.translated.err" && \
+		grep -q 'interpreter-dispatch.*pc=0x42d8' "$$run_dir/integer-divide.interpreter.err" && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/integer-divide.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)

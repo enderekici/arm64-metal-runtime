@@ -46,6 +46,7 @@ enum class Opcode : std::uint32_t {
   ScalarFloatingPoint = 32,
   Bitfield = 33,
   IntegerBitOperation = 34,
+  IntegerDivide = 35,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -113,6 +114,9 @@ enum class Opcode : std::uint32_t {
 // RBIT/REV/CLZ/CLS use destination=Rd, source=Rn, immediate=(variant
 // 0=RBIT, 1=REV, 2=CLZ, 3=CLS), shift=0, and width=32 or 64. Register 31
 // reads as zero and discards writes.
+// UDIV/SDIV use destination=Rd, source=Rn, immediate=Rm, shift=0 for UDIV
+// or 1 for SDIV, and width=32 or 64. Register 31 reads as zero and discards
+// writes.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
