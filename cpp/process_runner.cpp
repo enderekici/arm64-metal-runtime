@@ -5476,6 +5476,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     static_assert(sizeof(HostClockServiceReply) == 40);
                     static_assert(offsetof(HostClockServiceReply, clockService) == 28);
 
+                    const bool supportedClock = clockId == SYSTEM_CLOCK ||
+                                                clockId == CALENDAR_CLOCK;
+                    const auto clockName = supportedClock
+                        ? static_cast<std::uint32_t>(guestMachHostPort) + 1U +
+                              static_cast<std::uint32_t>(clockId)
+                        : 0U;
+                    const auto references = guestSendRightUrefs.find(clockName);
+                    const bool canAcquire = supportedClock &&
+                        (references == guestSendRightUrefs.end() ||
+                         references->second < std::numeric_limits<std::uint32_t>::max());
+                    const auto responseCapacity = canAcquire ? sizeof(HostClockServiceReply)
+                                                             : sizeof(HostClockServiceErrorReply);
+                    if (responseCapacity > registers[6]) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    auto* replyBuffer = guestMemory.buffer(registers[0], responseCapacity, true);
+
                     const auto prepareHeader = [reply](mach_msg_header_t& header,
                                                        std::uint32_t size,
                                                        std::uint32_t bits) {
@@ -5492,12 +5511,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   0x1200);
                     errorReply.ndr = NDR_record;
                     errorReply.returnCode = KERN_INVALID_ARGUMENT;
-                    std::uint32_t clockName = 0;
                     std::uint32_t result = KERN_INVALID_ARGUMENT;
-                    if (clockId == SYSTEM_CLOCK || clockId == CALENDAR_CLOCK) {
-                        clockName = static_cast<std::uint32_t>(guestMachHostPort) + 1U +
-                            static_cast<std::uint32_t>(clockId);
-                        auto references = guestSendRightUrefs.find(clockName);
+                    if (supportedClock) {
                         if (references == guestSendRightUrefs.end()) {
                             guestSendRightUrefs.emplace(clockName, 1U);
                             guestClockServiceIds.emplace(clockName, clockId);
@@ -5518,22 +5533,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         response.clockService.name = clockName;
                         response.clockService.disposition = MACH_MSG_TYPE_MOVE_SEND;
                         response.clockService.type = MACH_MSG_PORT_DESCRIPTOR;
-                        if (sizeof(response) > registers[6]) {
-                            --guestSendRightUrefs[clockName];
-                            if (guestSendRightUrefs[clockName] == 0) {
-                                guestSendRightUrefs.erase(clockName);
-                                guestClockServiceIds.erase(clockName);
-                            }
-                            registers[0] = machSendInvalidData;
-                            registers[34] = 0;
-                            continue;
-                        }
-                        std::memcpy(guestMemory.buffer(registers[0], sizeof(response), true),
-                                    &response, sizeof(response));
+                        std::memcpy(replyBuffer, &response, sizeof(response));
                     } else {
                         errorReply.returnCode = static_cast<kern_return_t>(result);
-                        std::memcpy(guestMemory.buffer(registers[0], sizeof(errorReply), true),
-                                    &errorReply, sizeof(errorReply));
+                        std::memcpy(replyBuffer, &errorReply, sizeof(errorReply));
                     }
                     registers[0] = 0;
                     registers[34] = 0;
@@ -5567,6 +5570,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[34] = 0;
                         continue;
                     }
+                    auto* replyBuffer = guestMemory.buffer(registers[0], 44, true);
                     const auto* request = guestMemory.buffer(registers[0], sizeof(mach_msg_header_t));
                     mach_msg_header_t requestHeader{};
                     std::memcpy(&requestHeader, request, sizeof(requestHeader));
@@ -5616,11 +5620,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     (void)mach_port_deallocate(mach_task_self(), nativeHost);
                     if (response.returnCode == KERN_SUCCESS) {
                         response.header.msgh_size = sizeof(response);
-                        std::memcpy(guestMemory.buffer(registers[0], sizeof(response), true),
-                                    &response, sizeof(response));
+                        std::memcpy(replyBuffer, &response, sizeof(response));
                     } else {
-                        std::memcpy(guestMemory.buffer(registers[0],
-                                        sizeof(ClockGetTimeErrorReply), true),
+                        std::memcpy(replyBuffer,
                                     &response, sizeof(ClockGetTimeErrorReply));
                     }
                     registers[0] = 0;
