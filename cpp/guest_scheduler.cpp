@@ -407,12 +407,9 @@ std::int32_t GuestScheduler::create_semaphore(std::uint64_t name,
                                               std::int32_t policy,
                                               std::int32_t value) {
     constexpr std::int32_t kernInvalidArgument = 4;
-    constexpr std::int32_t kernNotSupported = 46;
-    if (name == 0 || value < 0 || (policy != 0 && policy != 1 &&
-        policy != 2 && policy != 3)) return kernInvalidArgument;
-    // Fixed-priority queues require per-thread base priorities, which the
-    // cooperative guest scheduler does not currently model.
-    if (policy == 1) return kernNotSupported;
+    if (name == 0 || value < 0 || (policy != 0 && policy != 2)) {
+        return kernInvalidArgument;
+    }
     if (!semaphores_.emplace(name, SemaphoreState{
             policy, static_cast<std::uint64_t>(value), {}}).second) {
         return kernInvalidArgument;

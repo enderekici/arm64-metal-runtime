@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -68,6 +68,7 @@ APP_SOURCES := \
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
 SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
+SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
@@ -124,6 +125,14 @@ $(SEMAPHORE_NATIVE): ../fixtures/handoff/mach-semaphore-lifecycle.c
 
 verify-semaphore-native: $(SEMAPHORE_NATIVE)
 	"$(SEMAPHORE_NATIVE)"
+
+$(SEMAPHORE_SCHEDULER): ../fixtures/handoff/guest-semaphore-scheduler.cpp \
+		guest_scheduler.cpp guest_state.cpp guest_signal_runtime.cpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. $^ -o "$@"
+
+verify-semaphore-scheduler: $(SEMAPHORE_SCHEDULER)
+	"$(SEMAPHORE_SCHEDULER)"
 
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }

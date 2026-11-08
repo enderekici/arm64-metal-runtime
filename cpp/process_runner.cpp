@@ -5222,23 +5222,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint32_t kernInvalidValue = 17;
                 std::optional<std::uint64_t> deadline;
                 const auto operation = static_cast<std::int64_t>(syscall);
+                const auto timeoutSeconds = static_cast<std::uint32_t>(registers[1]);
+                const auto timeoutNanoseconds = static_cast<std::int32_t>(
+                    static_cast<std::uint32_t>(registers[2]));
                 const bool nonblocking = operation == -38 &&
-                    registers[1] == 0 && registers[2] == 0;
+                    timeoutSeconds == 0 && timeoutNanoseconds == 0;
                 if (operation == -38) {
-                    const auto seconds = registers[1];
-                    const auto nanoseconds = registers[2];
-                    if (seconds > std::numeric_limits<std::uint32_t>::max() ||
-                        nanoseconds >= 1'000'000'000ULL) {
+                    if (timeoutNanoseconds < 0 || timeoutNanoseconds >= 1'000'000'000) {
                         registers[0] = kernInvalidValue;
                         registers[34] = 0;
                         continue;
                     }
                     const auto now = monotonicNanoseconds();
-                    const auto requested = seconds >
-                            (std::numeric_limits<std::uint64_t>::max() - nanoseconds) /
+                    const auto requested = timeoutSeconds >
+                            (std::numeric_limits<std::uint64_t>::max() -
+                                static_cast<std::uint32_t>(timeoutNanoseconds)) /
                                 1'000'000'000ULL
                         ? std::numeric_limits<std::uint64_t>::max()
-                        : seconds * 1'000'000'000ULL + nanoseconds;
+                        : static_cast<std::uint64_t>(timeoutSeconds) * 1'000'000'000ULL +
+                            static_cast<std::uint32_t>(timeoutNanoseconds);
                     deadline = now + std::min(
                         requested, std::numeric_limits<std::uint64_t>::max() - now);
                 }
@@ -5261,7 +5263,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             : guestScheduler.wait_semaphore(name, deadline, nonblocking);
                     if (result.waiting) {
                         registers[0] = 0;
-                        auto live = std::vector<std::uint64_t>(registers, registers + 36);
+                        const auto* state = static_cast<const std::uint64_t*>(
+                            stateBuffer.data());
+                        auto live = std::vector<std::uint64_t>(state,
+                            state + stateBuffer.size() / sizeof(std::uint64_t));
                         if (!syncThreadSwitch(false, live)) {
                             throw std::runtime_error(
                                 "Guest semaphore wait has no runnable thread");
@@ -5609,6 +5614,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             guestSemaphoreNames.find(name) == guestSemaphoreNames.end()) {
                             result = KERN_INVALID_CAPABILITY;
                         } else {
+                            (void)guestScheduler.expire_waiters(monotonicNanoseconds());
                             result = static_cast<std::uint32_t>(
                                 guestScheduler.destroy_semaphore(name));
                             if (result == KERN_SUCCESS) {
