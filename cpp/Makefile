@@ -182,7 +182,7 @@ verify-semaphore-native: $(SEMAPHORE_NATIVE)
 	"$(SEMAPHORE_NATIVE)"
 
 $(SEMAPHORE_SCHEDULER): ../fixtures/handoff/guest-semaphore-scheduler.cpp \
-		guest_scheduler.cpp guest_state.cpp guest_signal_runtime.cpp
+		guest_scheduler.cpp guest_state.cpp
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. $^ -o "$@"
 

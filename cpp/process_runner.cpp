@@ -1216,8 +1216,8 @@ public:
         enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
     }
 
-    void timeslice(std::uint64_t from, std::uint64_t to,
-                   std::uint64_t pc, std::uint64_t dispatches) {
+    void timeslice(std::uint64_t from, std::uint64_t to, std::uint64_t pc,
+                   std::uint64_t status, std::uint64_t dispatches) {
         if (!enabled_) return;
         if (events_ == maximumEvents) {
             if (!limitReported_) {
@@ -1229,7 +1229,7 @@ public:
         ++events_;
         std::cerr << "arm64-metal scheduler-trace event=timeslice from=" << from
                   << " to=" << to << " pc=0x" << hexadecimal(pc)
-                  << " dispatches=" << dispatches << '\n';
+                  << " status=" << status << " dispatches=" << dispatches << '\n';
     }
 
 private:
@@ -2310,6 +2310,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (queue.empty()) waiters = guestUnixReceiveWaiters.erase(waiters);
             else ++waiters;
         }
+        return expired;
     };
     constexpr std::uint64_t guestDispatchTimeSlice = 32;
     std::uint64_t dispatchesInTimeSlice = 0;
@@ -2410,6 +2411,46 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             selectKernel(static_cast<std::int64_t>(pc));
         }
         return switched;
+    };
+    const auto preemptAtDispatchBoundary = [&](std::uint64_t status) {
+        const auto now = monotonicNanoseconds();
+        const auto deadline = guestScheduler.earliest_deadline();
+        const auto expired = deadline && *deadline <= now
+            ? expireAndPruneGuestMachReceiveWaiters(now) : 0;
+        const auto threadId = guestScheduler.current_id();
+        if (timeSliceThread != threadId) {
+            timeSliceThread = threadId;
+            dispatchesInTimeSlice = 0;
+        }
+        if (signalRuntime.has_frames()) {
+            // Signal frames are still process-global. Do not switch guest threads
+            // until frame state is associated with an individual GuestThread.
+            dispatchesInTimeSlice = 0;
+            return false;
+        }
+        if (guestScheduler.ready_queue().empty()) {
+            dispatchesInTimeSlice = 0;
+            return false;
+        }
+        const auto boundaryCount = ++dispatchesInTimeSlice;
+        // A returned block-budget dispatch may have executed up to 8192
+        // guest instructions. Yield immediately there; ordinary PC handoffs
+        // use the bounded 32-dispatch quantum.
+        const auto quantum = status == 1 || status == 8
+            ? std::uint64_t{1} : guestDispatchTimeSlice;
+        if (expired == 0 && boundaryCount < quantum) return false;
+        const auto pc = static_cast<const std::uint64_t*>(stateBuffer.data())[33];
+        std::vector<std::uint64_t> live(
+            static_cast<const std::uint64_t*>(stateBuffer.data()),
+            static_cast<const std::uint64_t*>(stateBuffer.data()) +
+                stateBuffer.size() / sizeof(std::uint64_t));
+        if (syncThreadSwitch(true, live)) {
+            schedulerTrace.timeslice(threadId, guestScheduler.current_id(), pc,
+                                     status, boundaryCount);
+            return true;
+        }
+        dispatchesInTimeSlice = 0;
+        return false;
     };
     const GuestTlvRuntime::Read guestTlvRead = [&](
         std::uint64_t address, std::uint8_t* destination, std::size_t size) {
@@ -4461,6 +4502,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto status = registers[34];
+        if ((status == 1 || status == 7 || status == 8) &&
+            preemptAtDispatchBoundary(status)) {
+            continue;
+        }
         if (status == 0) {
             if (signalRuntime.has_frames() && resumeSignalFrame()) continue;
             if (!callbackFrames.empty() && registers[30] == kNoFault &&
@@ -6310,25 +6355,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (pc > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
                 throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
                                          hexadecimal(pc));
-            }
-            const auto threadId = guestScheduler.current_id();
-            if (timeSliceThread != threadId) {
-                timeSliceThread = threadId;
-                dispatchesInTimeSlice = 0;
-            }
-            if (guestScheduler.ready_queue().empty()) {
-                dispatchesInTimeSlice = 0;
-            } else if (++dispatchesInTimeSlice >= guestDispatchTimeSlice) {
-                std::vector<std::uint64_t> live(
-                    static_cast<const std::uint64_t*>(stateBuffer.data()),
-                    static_cast<const std::uint64_t*>(stateBuffer.data()) +
-                        stateBuffer.size() / sizeof(std::uint64_t));
-                if (syncThreadSwitch(true, live)) {
-                    schedulerTrace.timeslice(threadId, guestScheduler.current_id(),
-                                             pc, guestDispatchTimeSlice);
-                    continue;
-                }
-                dispatchesInTimeSlice = 0;
             }
             const auto entry = static_cast<std::int64_t>(pc);
             selectKernel(entry);
