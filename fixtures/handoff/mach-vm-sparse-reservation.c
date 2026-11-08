@@ -110,6 +110,8 @@ int main(void) {
     const kern_return_t owner_b_kr = map_region(&owner_b, 2 * MIB, 0,
         VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE | VM_MAKE_TAG(VM_MEMORY_MALLOC_SMALL),
         VM_PROT_READ | VM_PROT_WRITE, VM_PROT_READ | VM_PROT_WRITE);
+    const kern_return_t protect_mixed_none = mach_vm_protect(mach_task_self(),
+        owner_a, 6 * MIB, FALSE, VM_PROT_NONE);
     mach_vm_address_t span = owner_a;
     const kern_return_t span_kr = map_region(&span, 6 * MIB, 0,
         VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE | VM_MAKE_TAG(VM_MEMORY_MALLOC_SMALL),
@@ -127,8 +129,9 @@ int main(void) {
         (void)mach_vm_read_overwrite(mach_task_self(), owner_b, 1,
             (mach_vm_address_t)(uintptr_t)&span_right, &copied);
     }
-    printf("multi_owner_overwrite=%d exact=%d zero=%d/%d/%d reads=%d/%d/%d\n",
-        span_kr, span == owner_a, span_left == 0, span_mid == 0, span_right == 0,
+    printf("multi_owner_overwrite=%d exact=%d protect_mixed_none=%d zero=%d/%d/%d reads=%d/%d/%d\n",
+        span_kr, span == owner_a, protect_mixed_none,
+        span_left == 0, span_mid == 0, span_right == 0,
         span_left_kr, span_mid_kr, span_right_kr);
 
     mach_vm_address_t protect_a = base + 22 * MIB;
@@ -275,7 +278,8 @@ int main(void) {
         left_overlap_kr == KERN_NO_SPACE && right_overlap_kr == KERN_NO_SPACE &&
         mte_overwrite_kr == KERN_SUCCESS && repeated_kr == KERN_SUCCESS && repeated_zero &&
         owner_a_kr == KERN_SUCCESS && owner_b_kr == KERN_SUCCESS &&
-        span_kr == KERN_SUCCESS && span == owner_a && span_left_kr == KERN_SUCCESS &&
+        protect_mixed_none == KERN_SUCCESS && span_kr == KERN_SUCCESS &&
+        span == owner_a && span_left_kr == KERN_SUCCESS &&
         span_mid_kr == KERN_SUCCESS && span_right_kr == KERN_SUCCESS &&
         span_left == 0 && span_mid == 0 && span_right == 0 &&
         protect_a_kr == KERN_SUCCESS && protect_b_kr == KERN_SUCCESS &&
