@@ -1923,6 +1923,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, GuestMemoryRange> liveThreadStacks;
     liveThreadStacks.emplace(guestMainThreadID,
         GuestMemoryRange{bootstrap.stack.begin, bootstrap.stack.end});
+    std::map<std::uint64_t, GuestMemoryRange> threadStackGuards;
+    std::map<std::uint64_t, std::uint32_t> protectedGuestPages;
     initialize_bindings(image, bootstrap);
     initialize_authenticated_pointers(image, bootstrap);
     const auto dyldApis = options.cachedInitializers
@@ -2204,6 +2206,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             writableTable.push_back(range.begin);
             writableTable.push_back(range.end);
         }
+        writableTable.push_back(static_cast<std::uint64_t>(protectedGuestPages.size()));
+        for (const auto& page : protectedGuestPages) {
+            const auto guard = std::find_if(threadStackGuards.begin(), threadStackGuards.end(),
+                [&page](const auto& item) { return item.second.begin == page.first; });
+            if (guard == threadStackGuards.end()) {
+                throw std::logic_error("Protected guest page has no owning stack guard");
+            }
+            writableTable.push_back(guard->second.begin);
+            writableTable.push_back(guard->second.end);
+            writableTable.push_back(page.second);
+        }
         const auto byteLength = writableTable.size() * sizeof(std::uint64_t);
         if (writableBuffer.size() < byteLength) {
             auto expanded = backend.makeSharedBuffer(byteLength);
@@ -2218,6 +2231,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::memcpy(writableBuffer.data(), writableTable.data(), byteLength);
     };
     syncWritableTable(bootstrap.errnoSlot);
+    const auto releaseThreadStackGuard = [&](std::uint64_t threadId) {
+        const auto found = threadStackGuards.find(threadId);
+        if (found == threadStackGuards.end()) return;
+        const auto begin = found->second.begin;
+        protectedGuestPages.erase(begin);
+        guestMemory.remove_mapping(begin);
+        threadStackGuards.erase(found);
+        syncWritableTable(bootstrap.errnoSlot);
+    };
     const std::array<std::uint64_t, 4> memoryConfig{
         config.minimum_image_address, config.shared_guest_base,
         config.linear_image_end, config.mapping_backing_end};
@@ -2997,6 +3019,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         }
         if (completion.reapedThread) {
+            releaseThreadStackGuard(completion.reapedThread->id);
             if (completion.reapedThread->allocation) {
                 hostServiceState.heap->release(*completion.reapedThread->allocation);
             }
@@ -5999,6 +6022,30 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto begin = address & ~(pageSize - 1);
         const auto end = (requestedEnd + pageSize - 1) & ~(pageSize - 1);
         if ((protection & ~7U) != 0) return kernInvalidArgument;
+        const auto stackGuard = std::find_if(threadStackGuards.begin(),
+            threadStackGuards.end(), [begin, end](const auto& item) {
+                return item.second.begin == begin && item.second.end == end;
+            });
+        if (stackGuard != threadStackGuards.end()) {
+            if (setMaximum || (protection & ~3U) != 0) return kernProtectionFailure;
+            if (protection == 3U) {
+                protectedGuestPages.erase(begin);
+                guestMemory.remove_mapping(begin);
+            } else {
+                const bool wasProtected = protectedGuestPages.find(begin) !=
+                    protectedGuestPages.end();
+                protectedGuestPages[begin] = protection;
+                if (wasProtected) {
+                    guestMemory.set_mapping_permissions(begin,
+                        (protection & 1U) != 0, (protection & 2U) != 0);
+                } else {
+                    guestMemory.add_mapping({begin, end, begin,
+                        (protection & 2U) != 0, (protection & 1U) != 0});
+                }
+            }
+            syncWritableTable(bootstrap.errnoSlot);
+            return kernSuccess;
+        }
         auto allocation = std::find_if(vmAllocations.begin(), vmAllocations.end(),
             [begin, end](const auto& item) {
                 if (begin < item.second.begin || end > item.second.end) return false;
@@ -8045,9 +8092,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error("Guest pthread entry is not executable");
                 }
                 constexpr std::uint64_t stackSize = 512U * 1024U;
-                const auto allocationSize = 16U + guestThreadLocalPrefixBytes +
-                                            guestTSDSize + stackSize;
-                const auto allocation = allocateGuestHeap(allocationSize);
+                const auto pageSize = bootstrap.pageSize;
+                const auto threadDataSize = 16U + guestThreadLocalPrefixBytes + guestTSDSize;
+                if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||
+                    threadDataSize > std::numeric_limits<std::uint64_t>::max() -
+                                         (pageSize - 1)) {
+                    throw std::runtime_error("Guest pthread stack guard page size is invalid");
+                }
+                const auto guardOffset = (threadDataSize + pageSize - 1) & ~(pageSize - 1);
+                if (guardOffset > std::numeric_limits<std::uint64_t>::max() - pageSize -
+                                      stackSize) {
+                    throw std::length_error("Guest pthread stack allocation overflows");
+                }
+                const auto allocationSize = guardOffset + pageSize + stackSize;
+                const auto allocation = allocateGuestHeap(allocationSize, pageSize);
                 if (!allocation) {
                     hostRegisters[0] = EAGAIN;
                 } else {
@@ -8058,7 +8116,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto threadId = guestScheduler.next_thread_id();
                     const auto tsdAddress = allocationAddress + 16U +
                                             guestThreadLocalPrefixBytes;
-                    const auto stackStart = tsdAddress + guestTSDSize;
+                    const auto guardBegin = allocationAddress + guardOffset;
+                    const auto guardEnd = guardBegin + pageSize;
+                    const auto stackStart = guardEnd;
+                    const auto stackEnd = stackStart + stackSize;
                     const auto storeThreadWord = [&](std::uint64_t offset, std::uint64_t value) {
                         std::memcpy(threadStorage + offset, &value, sizeof(value));
                     };
@@ -8067,9 +8128,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     storeThreadWord(tsdOffset + 8U, allocationAddress);
                     storeThreadWord(tsdOffset + guestMachThreadSlotOffset,
                                     guestMachThreadName(threadId));
+                    if (threadStackGuards.find(threadId) != threadStackGuards.end() ||
+                        protectedGuestPages.find(guardBegin) != protectedGuestPages.end()) {
+                        throw std::logic_error("Duplicate guest pthread stack guard");
+                    }
+                    threadStackGuards.emplace(threadId,
+                        GuestMemoryRange{guardBegin, guardEnd});
+                    protectedGuestPages.emplace(guardBegin, 0U);
+                    try {
+                        guestMemory.add_mapping({guardBegin, guardEnd, guardBegin, false, false});
+                        syncWritableTable(bootstrap.errnoSlot);
+                    } catch (...) {
+                        protectedGuestPages.erase(guardBegin);
+                        threadStackGuards.erase(threadId);
+                        guestMemory.remove_mapping(guardBegin);
+                        hostServiceState.heap->release(*allocation);
+                        throw;
+                    }
                     auto thread = GuestScheduler::make_thread_frame(
                         {static_cast<std::int64_t>(stackStart),
-                         static_cast<std::int64_t>(stackStart + stackSize)},
+                         static_cast<std::int64_t>(stackEnd)},
                         *allocation, *allocation, static_cast<std::int64_t>(tsdAddress),
                         entry, hostRegisters[3], hostRegisters[guestSchedulerFPCR],
                         hostRegisters[guestSchedulerFPSR], hostServiceState.threadSignalMask);
@@ -8079,7 +8157,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         throw std::logic_error("Guest scheduler assigned an unexpected thread id");
                     }
                     liveThreadStacks.emplace(threadId,
-                        GuestMemoryRange{stackStart, stackStart + stackSize});
+                        GuestMemoryRange{stackStart, stackEnd});
+                    syncWritableTable(bootstrap.errnoSlot);
                     std::memcpy(threadIdDestination, &threadId, sizeof(threadId));
                     hostRegisters[0] = 0;
                 }
@@ -8099,6 +8178,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     if (joined.reapedThread) {
                         liveThreadStacks.erase(joined.reapedThread->id);
+                        releaseThreadStackGuard(joined.reapedThread->id);
                         if (joined.reapedThread->allocation) {
                             hostServiceState.heap->release(*joined.reapedThread->allocation);
                         }
@@ -8132,6 +8212,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 hostRegisters[0] = static_cast<std::uint32_t>(detached.error);
                 if (detached.reapedThread) {
                     liveThreadStacks.erase(detached.reapedThread->id);
+                    releaseThreadStackGuard(detached.reapedThread->id);
                     if (detached.reapedThread->allocation) {
                         hostServiceState.heap->release(*detached.reapedThread->allocation);
                     }
