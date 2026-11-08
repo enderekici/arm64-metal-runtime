@@ -12021,6 +12021,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == 92) {  // Darwin fcntl syscall.
+                const char* traceFcntl = std::getenv("ARM64_METAL_TRACE_FCNTL");
+                if (traceFcntl != nullptr && std::strcmp(traceFcntl, "1") == 0) {
+                    std::cerr << "arm64-metal fcntl-trace entry=raw-syscall"
+                              << " pc=0x" << hexadecimal(registers[33])
+                              << " lr=0x" << hexadecimal(registers[30])
+                              << " fd=" << static_cast<std::int32_t>(registers[0])
+                              << " cmd=" << static_cast<std::int32_t>(registers[1])
+                              << " arg=0x" << hexadecimal(registers[2])
+                              << " sp=0x" << hexadecimal(registers[31]) << '\n';
+                }
+            }
             throw std::runtime_error("Guest reached unsupported Darwin syscall 0x" +
                 hexadecimal(registers[16]) + " at PC 0x" + hexadecimal(registers[33]) +
                 " (x0=0x" + hexadecimal(registers[0]) + ")");

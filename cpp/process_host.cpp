@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <cwchar>
 #include <cstdlib>
+#include <cstdio>
 
 // Read-only libsystem_kernel queries; their private header is absent from the SDK.
 extern "C" int csr_check(std::uint32_t mask);
@@ -2747,6 +2748,26 @@ HostServiceResult dispatch_guest_host_service(
                     }
                 }
             } else {
+                const char* traceFcntl = std::getenv("ARM64_METAL_TRACE_FCNTL");
+                if (traceFcntl != nullptr && std::strcmp(traceFcntl, "1") == 0) {
+                    std::uint64_t stackArgument = 0;
+                    const char* stackArgumentStatus = "unreadable";
+                    try {
+                        std::memcpy(&stackArgument,
+                            memory.buffer(registers[31], sizeof(stackArgument)),
+                            sizeof(stackArgument));
+                        stackArgumentStatus = "numeric";
+                    } catch (const std::out_of_range&) {
+                        // Diagnostics must not change the original failure.
+                    }
+                    std::fprintf(stderr,
+                        "arm64-metal fcntl-trace entry=named pc=%s lr=%s fd=%d "
+                        "cmd=%d arg_x2=%s sp=%s stack_arg_%s=%s\n",
+                        hex_word(registers[33]).c_str(), hex_word(registers[30]).c_str(),
+                        descriptor, operation, hex_word(registers[2]).c_str(),
+                        hex_word(registers[31]).c_str(), stackArgumentStatus,
+                        hex_word(stackArgument).c_str());
+                }
                 throw std::runtime_error("Guest fcntl command unsupported");
             }
             if (result < 0) set_errno(errno);
