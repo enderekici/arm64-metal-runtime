@@ -968,6 +968,26 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  "; x[" + str(806 + 2 * rd) + "] = source[0] + source[1]; x[" +
                  str(807 + 2 * rd) + "] = 0ul; }"));
   }
+  if ((bits & 0xbf3ffc00) == 0x0e212800) {
+    const auto sourceWidth = 16 << field(22, 2);
+    if (sourceWidth >= 128) {
+      throw GuestError((std::string("Invalid XTN arrangement")));
+    }
+    const auto destinationWidth = sourceWidth / 2;
+    const auto sourceLanes = 128 / sourceWidth;
+    const auto top = field(30, 1) != 0;
+    const auto destinationBase = top ? 64 / destinationWidth : 0;
+    const auto initial = top ? (std::string("ulong2(") +
+                                    str(vector(rd)) + "[0], 0ul)")
+                             : std::string("ulong2(0)");
+    return emit((std::string("{ ulong2 source = ") + str(vector(rn)) +
+                 ", value = " + initial + ";\n              for (uint lane = 0; lane < " +
+                 str(sourceLanes) + "; ++lane)\n                  lane_add(value, lane + " +
+                 str(destinationBase) + ", " + str(destinationWidth) +
+                 ", lane_read(source, lane, " + str(sourceWidth) + "));\n              x[" +
+                 str(806 + 2 * rd) + "] = value[0]; x[" +
+                 str(807 + 2 * rd) + "] = value[1]; }"));
+  }
   if (auto lowered = lower_vector_crypto(bits, pc)) {
     return *lowered;
   }
