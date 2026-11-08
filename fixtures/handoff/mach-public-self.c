@@ -1,7 +1,14 @@
 #include <mach/mach.h>
 #include <mach/mach_host.h>
-#include <mach/mach_traps.h>
 #include <stdio.h>
+
+static kern_return_t raw_port_deallocate(mach_port_t task, mach_port_t name) {
+  register uint64_t x0 __asm__("x0") = task;
+  register uint64_t x1 __asm__("x1") = name;
+  register uint64_t x16 __asm__("x16") = (uint64_t)-18;
+  __asm__ volatile("svc #0x80" : "+r"(x0) : "r"(x1), "r"(x16) : "memory", "cc");
+  return (kern_return_t)x0;
+}
 
 int main(void) {
   mach_port_t task = mach_task_self();
@@ -13,10 +20,10 @@ int main(void) {
                        host_a != MACH_PORT_NULL && host_a != MACH_PORT_DEAD &&
                        host_a == host_b && thread_a != MACH_PORT_NULL &&
                        thread_a != MACH_PORT_DEAD && thread_a == thread_b;
-  const kern_return_t host_release_a = _kernelrpc_mach_port_deallocate_trap(task, host_a);
-  const kern_return_t host_release_b = _kernelrpc_mach_port_deallocate_trap(task, host_b);
-  const kern_return_t thread_release_a = _kernelrpc_mach_port_deallocate_trap(task, thread_a);
-  const kern_return_t thread_release_b = _kernelrpc_mach_port_deallocate_trap(task, thread_b);
+  const kern_return_t host_release_a = raw_port_deallocate(task, host_a);
+  const kern_return_t host_release_b = raw_port_deallocate(task, host_b);
+  const kern_return_t thread_release_a = raw_port_deallocate(task, thread_a);
+  const kern_return_t thread_release_b = raw_port_deallocate(task, thread_b);
   const int releases_ok = host_release_a == KERN_SUCCESS &&
                           host_release_b == KERN_SUCCESS &&
                           thread_release_a == KERN_SUCCESS &&
