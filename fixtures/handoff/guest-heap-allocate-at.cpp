@@ -16,6 +16,10 @@ int main() {
     if (!replacement || *replacement != 4096 || !finalBlock || *finalBlock != 8192 ||
         heap.size_of(*replacement) != 4096 || heap.size_of(*finalBlock) != 8192) return 1;
 
-    std::puts("guest heap allocate_at exact=ok collision=reject release=ok alignment=ok");
+    arm64metal::GuestHeap excludedHeap({0, 65536});
+    const auto skipped = excludedHeap.allocate_avoiding(16384, 16384, {{0, 24576}});
+    if (!skipped || *skipped != 32768 || excludedHeap.size_of(*skipped) != 16384) return 1;
+
+    std::puts("guest heap allocate_at exact=ok collision=reject release=ok alignment=ok avoid=ok");
     return 0;
 }

@@ -60,6 +60,12 @@ void GuestHeap::extend(GuestRange range) {
 }
 
 std::optional<std::int64_t> GuestHeap::allocate(std::uint64_t size, std::int64_t alignment) {
+    return allocate_avoiding(size, alignment, {});
+}
+
+std::optional<std::int64_t> GuestHeap::allocate_avoiding(
+    std::uint64_t size, std::int64_t alignment,
+    const std::vector<GuestRange>& excluded) {
     if (!is_power_of_two(alignment) || size > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         return std::nullopt;
     }
@@ -69,9 +75,24 @@ std::optional<std::int64_t> GuestHeap::allocate(std::uint64_t size, std::int64_t
 
     for (std::size_t index = 0; index < free_blocks_.size(); ++index) {
         const auto block = free_blocks_[index];
-        const auto padding = (-block.begin) & (alignment - 1);
-        if (block.size() < aligned || padding > block.size() - aligned) continue;
-        const auto address = block.begin + padding;
+        if (block.size() < aligned) continue;
+        auto address = block.begin + ((-block.begin) & (alignment - 1));
+        while (address >= block.begin && address <= block.end - aligned) {
+            const auto end = address + aligned;
+            auto next = address;
+            for (const auto& range : excluded) {
+                if (range.begin >= range.end || address >= range.end || range.begin >= end) continue;
+                if (range.end > std::numeric_limits<std::int64_t>::max() - (alignment - 1)) {
+                    next = block.end;
+                    break;
+                }
+                next = std::max(next,
+                    (range.end + alignment - 1) & ~(alignment - 1));
+            }
+            if (next == address) break;
+            address = next;
+        }
+        if (address < block.begin || address > block.end - aligned) continue;
         const auto end = address + aligned;
         std::vector<GuestRange> leftovers;
         if (block.begin < address) leftovers.push_back({block.begin, address});
