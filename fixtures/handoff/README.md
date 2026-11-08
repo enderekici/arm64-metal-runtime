@@ -647,6 +647,9 @@ backing cannot be reached as a linear guest address. The bound is the minimum
 of Metal's maximum buffer length, the guest linear-address limit, and the
 allocator's signed-offset limit. Guest regions remain individually contiguous,
 so existing CPU/GPU memory access rules do not span physical backing extents.
+Ordinary `mach_vm_allocate` remains restricted to the original linear backing
+arena; it rejects an appended sparse tail instead of forming a linear guest
+address that the original deallocation bounds cannot own.
 
 ## Named Mach VM read and protect services
 

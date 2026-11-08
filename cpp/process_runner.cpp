@@ -2846,34 +2846,51 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return false;
         }
         const auto minimumSize = oldSize + static_cast<std::size_t>(bytes);
-        if (!resizeGuestBuffer(guestMemory, minimumSize, false)) return false;
-        const auto newSize = guestMemory.size();
-        if (newSize <= oldSize || newSize > static_cast<std::size_t>(
-                std::numeric_limits<std::int64_t>::max())) {
+        const auto deviceLimit = backend.maxBufferLength();
+        const auto linearLimit = static_cast<std::size_t>(SharedCache::guestBase - 1);
+        const auto maximum = std::min(deviceLimit, linearLimit);
+        const auto pageSize = static_cast<std::size_t>(bootstrap.pageSize);
+        if (minimumSize <= oldSize || minimumSize > maximum || pageSize == 0 ||
+            (pageSize & (pageSize - 1)) != 0 ||
+            minimumSize > std::numeric_limits<std::size_t>::max() - (pageSize - 1)) {
             return false;
         }
+        const auto newSize = (minimumSize + pageSize - 1) & ~(pageSize - 1);
+        if (newSize > maximum || newSize > static_cast<std::size_t>(
+                std::numeric_limits<std::int64_t>::max())) return false;
         try {
-            guestMemory.add_mapping({oldSize, newSize, oldSize, false, false});
-            try {
-                mappingHeap.extend({static_cast<std::int64_t>(oldSize),
-                                    static_cast<std::int64_t>(newSize)});
-            } catch (...) {
-                guestMemory.remove_mapping(oldSize);
-                return false;
-            }
+            auto stagedMappingHeap = mappingHeap;
+            stagedMappingHeap.extend({static_cast<std::int64_t>(oldSize),
+                                      static_cast<std::int64_t>(newSize)});
+            auto stagedResident = resident;
+            const auto row = 1 + 4 * static_cast<std::size_t>(stagedResident[0]);
+            stagedResident[row] = oldSize;
+            stagedResident[row + 1] = newSize;
+            stagedResident[row + 2] = oldSize;
+            stagedResident[row + 3] = 2U;
+            ++stagedResident[0];
+
+            auto expanded = backend.makeSharedBuffer(newSize);
+            if (expanded.data() == nullptr) return false;
+            const auto* previous = static_cast<const std::uint8_t*>(memoryBuffer.data());
+            std::memcpy(expanded.data(), previous, oldSize);
+            std::memset(static_cast<std::uint8_t*>(expanded.data()) + oldSize, 0,
+                        newSize - oldSize);
+            guestMemory.rebind_with_mapping(
+                static_cast<std::uint8_t*>(expanded.data()), newSize,
+                {oldSize, newSize, oldSize, false, false});
+            memoryBuffer = std::move(expanded);
+            mappingHeap = std::move(stagedMappingHeap);
+            resident.swap(stagedResident);
+            hostServiceState.heapEnd = newSize;
+            const auto newGuestSize = static_cast<std::uint64_t>(newSize);
+            std::memcpy(sizeBuffer.data(), &newGuestSize, sizeof(newGuestSize));
+            std::memcpy(residentBuffer.data(), resident.data(),
+                        resident.size() * sizeof(std::uint64_t));
+            return true;
         } catch (...) {
             return false;
         }
-        const auto row = 1 + 4 * static_cast<std::size_t>(resident[0]);
-        resident[row] = oldSize;
-        resident[row + 1] = newSize;
-        resident[row + 2] = oldSize;
-        resident[row + 3] = 2U;
-        ++resident[0];
-        hostServiceState.heapEnd = newSize;
-        std::memcpy(residentBuffer.data(), resident.data(),
-                    resident.size() * sizeof(std::uint64_t));
-        return true;
     };
     const auto allocateGuestHeap = [&](std::uint64_t size,
                                        std::uint64_t alignment = 16)
@@ -3744,7 +3761,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         const auto backing = static_cast<std::size_t>(*allocated);
         const auto address = guestMappingBase + static_cast<std::uint64_t>(backing);
-        if (size > image.mapping_backing_end() - backing ||
+        const auto linearBackingEnd = image.mapping_backing_end();
+        if (backing >= linearBackingEnd || size > linearBackingEnd - backing ||
             address > std::numeric_limits<std::uint64_t>::max() - size ||
             (address & (alignment - 1)) != 0) {
             mappingHeap.release(*allocated);

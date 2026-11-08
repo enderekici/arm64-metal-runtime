@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 using namespace arm64metal;
@@ -15,6 +16,29 @@ int main() {
   assert(decoder_host_service_ids().at("_mach_vm_read_overwrite") == 197);
   assert(runner_host_service_ids().at("_mach_vm_protect") == 196);
   assert(runner_host_service_ids().at("_mach_vm_read_overwrite") == 197);
+
+  std::vector<std::uint8_t> borrowedBytes(256, 0x31);
+  std::vector<std::uint8_t> expandedBytes(512, 0x31);
+  GuestMemory borrowed(borrowedBytes.data(), borrowedBytes.size());
+  bool invalidRebindRejected = false;
+  try {
+    borrowed.rebind_with_mapping(expandedBytes.data(), expandedBytes.size(),
+                                 {256, 512, 512, false, false});
+  } catch (const std::invalid_argument&) {
+    invalidRebindRejected = true;
+  }
+  assert(invalidRebindRejected && borrowed.size() == borrowedBytes.size());
+  assert(*borrowed.buffer(0, 1) == 0x31);
+  borrowed.rebind_with_mapping(expandedBytes.data(), expandedBytes.size(),
+                               {256, 512, 256, false, false});
+  assert(borrowed.size() == expandedBytes.size());
+  bool guardUnreadable = false;
+  try {
+    (void)borrowed.buffer(256, 1);
+  } catch (const std::out_of_range&) {
+    guardUnreadable = true;
+  }
+  assert(guardUnreadable);
 
   ProcessBootstrapResult bootstrap;
   bootstrap.guestTaskPort = 77;

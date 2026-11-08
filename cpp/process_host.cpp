@@ -372,6 +372,28 @@ void GuestMemory::rebind(std::uint8_t* bytes, std::size_t size) {
     size_ = size;
 }
 
+void GuestMemory::rebind_with_mapping(std::uint8_t* bytes, std::size_t size,
+                                      GuestMemoryMapping mapping) {
+    if (!external_ || bytes == nullptr || size == 0) {
+        throw std::invalid_argument("Guest memory rebind requires a nonempty borrowed buffer");
+    }
+    if (mapping.logicalBegin >= mapping.logicalEnd || mapping.backingBegin > size ||
+        mapping.logicalEnd - mapping.logicalBegin > size - mapping.backingBegin) {
+        throw std::invalid_argument("Invalid guest memory mapping for rebind");
+    }
+    for (const auto& current : mappings_) {
+        if (mapping.logicalBegin < current.logicalEnd &&
+            current.logicalBegin < mapping.logicalEnd) {
+            throw std::invalid_argument("Replacement guest memory mapping overlaps");
+        }
+    }
+    auto stagedMappings = mappings_;
+    stagedMappings.push_back(mapping);
+    data_ = bytes;
+    size_ = size;
+    mappings_.swap(stagedMappings);
+}
+
 void GuestMemory::validate_logical_interval(std::uint64_t address,
                                             std::uint64_t length) const {
     if (length > std::numeric_limits<std::uint64_t>::max() - address)
