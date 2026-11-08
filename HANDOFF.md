@@ -56,10 +56,10 @@ smoke returned `mixed42`. Receipts: `/tmp/metal-vm-protect-gate.7ep6a4`.
 Focused Mach host-info and port-release cases from `dcc1488` match native,
 including invalid-host/flavor/count and rights cleanup controls. Isolated
 allowlisted raw-core candidate `8b67998` matched native byte-for-byte with
-status 0 and no diagnostics on its raw and stack fixtures. The latest isolated libz candidate `ffd7da2` advances past `bzero` and now
-stops at raw Darwin trap `-27` (`thread_self`). This supersedes the earlier
-virtualized-stack stop at `___pthread_init.cold.2`; neither candidate establishes
-full libz or general Mach IPC compatibility.
+status 0 and no diagnostics on its raw and stack fixtures. The latest isolated Java 26 and libz replays stop at raw syscall 366. The
+previous `ffd7da2` candidate advanced past `bzero` to raw trap `-27`
+(`thread_self`); neither result establishes full libz, Java, or general Mach IPC
+compatibility.
 
 ## Combined typed interpreter qualification
 
@@ -147,10 +147,37 @@ fallback. The exact archive SHA-256 is
 `.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
 `/tmp/metal-format-gate.wQXVyM` and `/tmp/metal-stack-registry-gate.zgf0Ez`.
 
-The separate demand-cache candidate's fixture returns exit status 32 in all
-three modes with same-PC trace verification. It remains pending integration
-and is not in the packaged archive described here. No broad application
-compatibility claim follows from these service and formatting fixtures.
+The demand-cache retry fixture returns status 32 in native, translated, and
+interpreter modes. Its trace records cache fault then cache resident at the same
+PC before retry; the fail-fast gate checks that transition. This proves only
+the named fixture and does not establish general demand-cache behavior.
+
+No broad application compatibility claim follows from these service and
+formatting fixtures.
+
+## Typed ADD/SUB flags, SP, and fallback boundary
+
+The ISA release checkpoint `6bda384` adds typed ADDS/SUBS, CMP/CMN, SP/WSP
+arithmetic, and flag-state checks. Regression, interpreter, and demand-cache
+gates exited 0; the package smoke returned 42. Runtime SHA-256 before and after
+was `a7e78d4bcfce5897b1f6bc699c9038f358b5766bd6c88a3e15961b3a527e6dd5`;
+interpreter metallib SHA-256 was
+`429d29b64ecd526d6f2cf80a52fdc7a835231d3fd1aa1fd1714bc5baf8f19231`. The
+standalone interpreter probe reported 39 dispatches.
+
+Two probe instruction encodings were corrected: shifted `SUB SP` from
+`0xd10043ff` to `0xd14007ff`, and `ADD X0, SP, #1` from `0x910003e0` to
+`0x910007e0`. The entry fixture `add-sub-sp-flags-main.s` performs SP add/sub,
+then CMP and `B.ne`. The gate asserts the typed interpreter block dispatch at
+`0x42d8` (8 packets), completion at `0x42ec` (3 remaining), and translated
+compile beginning at that same PC. Thus the fixture checks flag preservation
+across the typed-to-translated boundary. `B.ne` is translated fallback here;
+typed `B.cond` is not established by this result.
+
+The packaged trace shows that same boundary, then the translated fallback, and
+exit 42. Archive SHA-256 is
+`be8657af660dec6c94e82e376a330c6b5a02554852c114cfe53fca47b031e785`; copied to
+`.build/arm64-metal-cpp-macos.tar.gz`. Receipts: `/tmp/metal-isa-release-proof.KpUcrT`.
 
 ## Evidence locations
 
