@@ -536,6 +536,29 @@ verify-adc-sbc-carry-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_ADC_SBC_C
 		test "$$native_rc" -eq 42; \
 		echo "adc-sbc-carry native guest exit=$$native_rc"
 
+verify-adc-sbc-carry-interpreter: $(APP) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/adc-sbc-carry-interpreter.XXXXXX"); \
+		set +e; \
+		"$(INTERPRETER_ADC_SBC_CARRY_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_ADC_SBC_CARRY_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_ADC_SBC_CARRY_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq 42 && \
+		test "$$interpreter_rc" -eq 42 && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'sbcs x9, x9, x9' ../fixtures/interpreter/adc-sbc-carry-main.s && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		grep -q 'interpreter-block-ready.*pc=0x42d8 detail=36' "$$run_dir/interpreter.err" && \
+		grep -q 'interpreter-dispatch.*pc=0x42d8 detail=36' "$$run_dir/interpreter.err" && \
+		test "$$(grep -c 'event=interpreter-dispatch' "$$run_dir/interpreter.err")" -eq 1 && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/interpreter.err" && \
+		sed '/^arm64-metal trace /d' "$$run_dir/interpreter.err" >"$$run_dir/interpreter.no-trace.err" && \
+		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err" && \
+		echo "adc-sbc-carry interpreter dispatch verified: $$run_dir"
+
 verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \

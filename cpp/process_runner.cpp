@@ -402,6 +402,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::AddSubShiftedRegister;
             const bool addSubExtendedRegisterOpcode =
                 opcode == translate_core::Opcode::AddSubExtendedRegister;
+            const bool addSubCarryRegisterOpcode =
+                opcode == translate_core::Opcode::AddSubCarryRegister;
             const bool logicalShiftedRegisterOpcode =
                 opcode == translate_core::Opcode::LogicalShiftedRegister;
             const bool logicalImmediateOpcode =
@@ -494,6 +496,12 @@ ProcessKernelPlan plan_process_kernel(
                  operation.immediate <= 31 &&
                  (operation.width == 32 || operation.width == 64) &&
                  extendedAmount <= 4 && (operation.shift & ~0xffU) == 0);
+            const bool validAddSubCarryRegister =
+                !addSubCarryRegisterOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 (operation.shift & ~3U) == 0);
             const auto logicalAmount = (operation.shift >> 5U) & 63U;
             const auto logicalShiftType = (operation.shift >> 3U) & 3U;
             const bool validLogicalShiftedRegister =
@@ -515,7 +523,7 @@ ProcessKernelPlan plan_process_kernel(
                  operation.width == 64);
             if ((!moveWideOpcode && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
-                 !addSubExtendedRegisterOpcode &&
+                 !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
                  !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
@@ -523,6 +531,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validSignedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister || !validAddSubExtendedRegister ||
+                !validAddSubCarryRegister ||
                 !validLogicalShiftedRegister || !validLogicalImmediate || !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
