@@ -216,6 +216,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"___memcpy_chk", kMemcpyChkFailureService, true, true},
     {"_mach_host_self", 193, true, true},
     {"_mach_thread_self", 194, true, true},
+    {"__guest_libdyld_initialize", 196, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {

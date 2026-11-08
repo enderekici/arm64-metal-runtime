@@ -155,6 +155,12 @@ struct SharedCache::Impl {
     };
 
     struct Image {
+        struct Section {
+            std::string segmentName;
+            std::string sectionName;
+            std::uint64_t address = 0;
+            std::uint64_t size = 0;
+        };
         struct TlvSection {
             std::uint64_t address = 0;
             std::uint64_t size = 0;
@@ -171,6 +177,7 @@ struct SharedCache::Impl {
         std::vector<Segment> segments;
         std::vector<TlvSection> tlvSections;
         std::vector<InitializerSection> initializerSections;
+        std::vector<Section> sections;
         std::vector<std::uint64_t> routinesInitializers;
         std::vector<std::pair<std::uint64_t, std::uint64_t>> text;
         std::optional<std::pair<std::uint64_t, std::uint64_t>> exports;
@@ -403,19 +410,27 @@ struct SharedCache::Impl {
                 if (sectionCount > (size - 72) / 80) fail("Invalid cached Mach-O sections");
                 for (std::size_t section = 0; section < sectionCount; ++section) {
                     const auto sectionOffset = 72 + section * 80;
+                    const auto readFixedName = [&](std::size_t offset) {
+                        const auto* name = reinterpret_cast<const char*>(
+                            commands.data() + cursor + sectionOffset + offset);
+                        const auto* end = static_cast<const char*>(std::memchr(name, 0, 16));
+                        return std::string(name, end == nullptr ? name + 16 : end);
+                    };
+                    const auto sectionName = readFixedName(0);
+                    const auto sectionSegmentName = readFixedName(16);
+                    const auto sectionAddress = read(sectionOffset + 32, 8);
+                    const auto sectionSize = read(sectionOffset + 40, 8);
+                    if (sectionAddress < start || sectionAddress - start > segmentSize ||
+                        sectionSize > segmentSize - (sectionAddress - start)) {
+                        fail("Invalid cached Mach-O section");
+                    }
+                    result.sections.push_back({sectionSegmentName, sectionName,
+                                               sectionAddress, sectionSize});
                     const auto type = static_cast<std::uint32_t>(read(sectionOffset + 64, 4) & 0xffU);
                     if (type == 0x09 || type == 0x16) {
-                        const auto sectionAddress = read(sectionOffset + 32, 8);
-                        const auto sectionSize = read(sectionOffset + 40, 8);
-                        if (sectionAddress < start || sectionAddress - start > segmentSize ||
-                            sectionSize > segmentSize - (sectionAddress - start)) {
-                            fail("Invalid cached Mach-O initializer section");
-                        }
                         result.initializerSections.push_back({sectionAddress, sectionSize, type});
                     }
                     if (type != 0x11 && type != 0x12 && type != 0x13 && type != 0x15) continue;
-                    const auto sectionAddress = read(sectionOffset + 32, 8);
-                    const auto sectionSize = read(sectionOffset + 40, 8);
                     const auto alignment = static_cast<std::uint32_t>(read(sectionOffset + 52, 4));
                     if (alignment >= 63 || sectionAddress < start ||
                         sectionAddress - start > segmentSize ||
@@ -848,6 +863,25 @@ std::optional<SharedCache::TlvMetadata> SharedCache::tlvMetadata(
         result.template_size = templateEnd - templateStart;
     }
     return result;
+}
+
+std::optional<SharedCache::PointerCell> SharedCache::dyldApisCell() const {
+    constexpr const char* path = "/usr/lib/system/libdyld.dylib";
+    const auto image = impl_->image(path);
+    const Impl::Image::Section* match = nullptr;
+    for (const auto& section : image.sections) {
+        if (section.segmentName != "__TPRO_CONST" || section.sectionName != "__dyld_apis") {
+            continue;
+        }
+        if (match != nullptr) fail("Duplicate cached __dyld_apis sections");
+        match = &section;
+    }
+    if (match == nullptr) return std::nullopt;
+    if (match->size != sizeof(std::uint64_t)) {
+        fail("Unsupported cached __dyld_apis pointer-cell size");
+    }
+    (void)bytes(match->address, sizeof(std::uint64_t));
+    return PointerCell{guestAddress(match->address), match->size};
 }
 
 std::vector<SharedCache::Initializer> SharedCache::initializers(
