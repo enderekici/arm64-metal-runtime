@@ -8,20 +8,21 @@ whose recorded cases passed. Neither label claims general macOS compatibility.
 
 For replay commands and scratch evidence pointers, see [HANDOFF.md](HANDOFF.md).
 
-VM release source 224a7c9 passed both gates. Its code tree matches the VM
-changes at 8647989; only HANDOFF.md and COMPATIBILITY.md differ. Runtime digest
-410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047, metallib
-digest 7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9,
-archive digest 596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015.
-The gates recorded 42 launch comparisons and 2,048 function runs. See
-HANDOFF.md for receipts and open boundaries.
+Latest releases are CFG budget fallback source `1d9bffc` in `aba6a2c` and raw
+VM protection source `2136057`. The VM artifact passed 42 launch comparisons,
+2,048 function runs, and AOT/extracted archive smoke. Runtime digest
+`c59447c4a34f2afa9359f109d053de000cc179186c72113bac24bc60dcf2c386`, metallib
+digest `c977849dba7896b7536b14efb5ba501764bfd8024cb6f6f62ae5649d5b272bf4`,
+and archive digest
+`a19af8d8b637d2a4383d845cf1a8aa9a27ca464a136179d4e06004e9e614ea4c`. See
+HANDOFF.md for receipts and current proof boundaries.
 
 ## Execution, ISA, and process ABI
 
 | Area | State at checkpoint | Source ownership | Next proof |
 |---|---|---|---|
 | ARM64 guest execution | **Proven, bounded.** Reachable guest blocks translate to Metal; unsupported instructions fail explicitly. No guest CPU fallback. The full ISA is not claimed. | [translate_core.cpp](cpp/translate_core.cpp), [process_decoder.cpp](cpp/process_decoder.cpp), [process_msl.cpp](cpp/process_msl.cpp), [process_runner.cpp](cpp/process_runner.cpp) | Turn each real app’s first unsupported opcode into a native/GPU fixture, then replay the unchanged app. |
-| Opt-in AOT GPU interpreter | **Proven for typed MOVZ/RET and MOVN/MOVK.** The release interpreter passed both gates. The extracted archive smoke exited 42; its trace reports interpreter-block-ready detail 3. | [gpu_interpreter.cpp](cpp/gpu_interpreter.cpp), [gpu_interpreter.metal](cpp/gpu_interpreter.metal), [main.cpp](cpp/main.cpp), [Makefile](Makefile) | CFG candidate f1ddb46 passed earlier gates, then exposed a confirmed double-charge on typed-to-untyped fallback. Hold until fixed and rerun both gates. |
+| Opt-in AOT GPU interpreter | **Proven for recorded typed operations and fallback.** CFG budget fallback source `1d9bffc` was released in `aba6a2c`; focused proof recorded 13 dispatches and extracted archive smoke returned branch 7 / mixed 42. | [gpu_interpreter.cpp](cpp/gpu_interpreter.cpp), [gpu_interpreter.metal](cpp/gpu_interpreter.metal), [main.cpp](cpp/main.cpp), [Makefile](Makefile) | Keep interpreter opt-in and qualify each newly supported operation against native and translated controls. |
 | Registers, calls, stack, startup | **Proven for tested launch ABI.** LC_MAIN, argc/argv, bounded stack, direct/indirect calls, guest exit and host-call resume pass fixtures. | [process_runner.cpp](cpp/process_runner.cpp), [guest_state.cpp](cpp/guest_state.cpp) | Add an ABI fixture only when an unchanged target exposes a mismatch. |
 | SIMD and floating point | **Proven for named matrices and app paths**, including vector memory, conversions, comparisons, FRINTP, FDIV and status flags. Other opcodes and FPCR/FPSR behavior remain open. | [process_decoder.cpp](cpp/process_decoder.cpp), [process_msl.cpp](cpp/process_msl.cpp), [guest_vector_crypto.cpp](cpp/guest_vector_crypto.cpp) | Use the exact failing instruction and operands; compare result bits and flags with native. |
 | Syscall/import ABI | **Modeled, selective.** Known imports/services cross a numbered host boundary; unsupported requests fail with context. libc and environment behavior are partial. | [process_decoder.cpp](cpp/process_decoder.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp), [guest_format.cpp](cpp/guest_format.cpp) | Differential-probe the first missing import/service, including errors, carry and output buffers. |
@@ -34,7 +35,7 @@ HANDOFF.md for receipts and open boundaries.
 | Chained/legacy fixups | **Proven for recorded rebase/bind forms.** JVM cache slots and local-load cases were compared with dyld. The parser explicitly rejects pages with multiple chained-fixup starts at [macho.cpp:457](cpp/macho.cpp:457). | [macho.cpp](cpp/macho.cpp), [image_loader.cpp](cpp/image_loader.cpp) | First obtain a real failing image using that encoding; inspect its starts table and compare patched slots with native dyld. |
 | Shared cache and residency | **Proven for focused libz, libSystem and framework paths** in resident/demand modes. Not every image or startup protocol is covered. | [shared_cache.cpp](cpp/shared_cache.cpp), [cache_residency.cpp](cpp/cache_residency.cpp), [image_loader.cpp](cpp/image_loader.cpp), [process_runner.cpp](cpp/process_runner.cpp) | Replay unchanged cache-root/provider cases. Trace the first page, binding or initializer whose state differs. |
 | Dyld APIs and lifecycle | **Modeled selectively.** Individual queried APIs have native fixtures. Full bootstrap is incomplete; handoff records a cached wrapper reading gAPIs as a prior app stop. Runtime dlopen covers a subset. Full unload, delayed activation, lazy and weak binding remain open. | [image_loader.cpp](cpp/image_loader.cpp), [process_decoder.cpp](cpp/process_decoder.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp), [guest_dlopen.hpp](cpp/guest_dlopen.hpp) | Replay Java, CoreFoundation allocator and tar. Trace the first post-query dyld operation and model its state transition from native behavior. |
-| Guest VM, heap, protection | **Proven for named bounds, heap-growth, file-mapping, selected mmap/mprotect, and multi-allocation deallocation cases.** | [guest_state.cpp](cpp/guest_state.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp) | VM release source 224a7c9 matches native/GPU stdout, stderr and status on the multi-allocation fixture and passes both gates on runtime 410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047. General VM semantics remain open. |
+| Guest VM, heap, protection | **Proven for named bounds, heap-growth, file-mapping, multi-allocation deallocation, and raw protection cases.** | [guest_state.cpp](cpp/guest_state.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp) | Source `2136057` matched native/GPU output and status, including invalid target `268435459`, overflow 4, and unmapped 1; passed 42+2,048+AOT gates. Runtime `c59447c4a34f2afa9359f109d053de000cc179186c72113bac24bc60dcf2c386`; general VM semantics remain open. |
 | PAC and arm64e | **Modeled, selected cases proven.** Authenticated pointers are tracked/validated in software; this is not Apple hardware PAC. | [process_msl.cpp](cpp/process_msl.cpp), [process_decoder.cpp](cpp/process_decoder.cpp), [process_runner.cpp](cpp/process_runner.cpp), [macho.cpp](cpp/macho.cpp) | Differential-test the exact key, modifier and instruction sequence from a failing binary. |
 | Generated/JIT code | **Partially modeled; application use remains open.** Anonymous JIT transaction and focused protection/revocation/partial-unmap paths have integrated code and tests. | [process_runner.cpp](cpp/process_runner.cpp), [image_loader.cpp](cpp/image_loader.cpp), [process_host.cpp](cpp/process_host.cpp) | Positive RW-to-RX calls and revocation tests passed in isolation; MAP_JIT and broad app behavior remain open. Keep full gate tied to exact runtime. |
 
@@ -42,9 +43,9 @@ HANDOFF.md for receipts and open boundaries.
 
 | Area | State at checkpoint | Source ownership | Next proof |
 |---|---|---|---|
-| Darwin/POSIX services | **Modeled, selective.** File I/O, selected metadata, signals, signing/process/cache queries and loader services have focused comparisons. | [process_host.cpp](cpp/process_host.cpp), [darwin_bridge.cpp](cpp/darwin_bridge.cpp), [process_decoder.cpp](cpp/process_decoder.cpp) | Focused host_info candidate cad3d149 matches native for exact and reduced flags. Full libz startup still stops at raw trap -18; its candidate is in progress. Do not infer full libz parity from the focused call. |
+| Darwin/POSIX services | **Modeled, selective.** File I/O, selected metadata, signals, signing/process/cache queries and loader services have focused comparisons. | [process_host.cpp](cpp/process_host.cpp), [darwin_bridge.cpp](cpp/darwin_bridge.cpp), [process_decoder.cpp](cpp/process_decoder.cpp) | Combined IPC source `dcc1488` preserves exact host-info/port-release parity. Full libz now reaches raw `SYS_sysctl` 202 at `0x10084a458`; native ABI is proven, guest implementation is WIP. Do not infer full libz parity. |
 | Threads and synchronization | **Modeled, bounded, proven for recorded cases.** Cooperative dispatch covers pthread creation, mutexes, conditions, join, TLS errno, signal masks and selected atomics. Parallel dispatch, cancellation and general asynchronous I/O remain open. | [guest_scheduler.cpp](cpp/guest_scheduler.cpp), [process_runner.cpp](cpp/process_runner.cpp), [process_host.cpp](cpp/process_host.cpp), [guest_signal_runtime.cpp](cpp/guest_signal_runtime.cpp) | Extend for the first real client primitive that diverges; retain timeout behavior in a standalone native comparison. |
-| Mach IPC/services | **Open beyond individually implemented traps.** Host-service and Darwin bridge code does not establish general Mach port, message or service behavior. | [darwin_bridge.cpp](cpp/darwin_bridge.cpp), [process_host.cpp](cpp/process_host.cpp), [process_runner.cpp](cpp/process_runner.cpp) | Trace the first GUI/app Mach message path; build a native request/reply fixture for that message and its error case. |
+| Mach IPC/services | **Open beyond individually implemented traps.** Focused `dcc1488` host-info and port-release fixtures match native, including invalid arguments and rights cleanup; this does not establish general Mach port, message or service behavior. | [darwin_bridge.cpp](cpp/darwin_bridge.cpp), [process_host.cpp](cpp/process_host.cpp), [process_runner.cpp](cpp/process_runner.cpp) | Implement and test the observed raw `SYS_sysctl` 202 call reached by full libz, then replay the unchanged libz control; retain a separate GUI/app Mach request/reply fixture. |
 | GUI frameworks/lifecycle | **Open.** README explicitly leaves GUI frameworks open. No GUI startup, interaction, rendering or shutdown is established. | [image_loader.cpp](cpp/image_loader.cpp), [process_host.cpp](cpp/process_host.cpp), [process_runner.cpp](cpp/process_runner.cpp), [metal_backend.cpp](cpp/metal_backend.cpp) | Select one unchanged small GUI app. Prove launch, an observable interaction/effect and clean exit against native; take its first missing framework/service as the next scoped task. |
 
 ## Packaging and acceptance boundary
@@ -52,14 +53,16 @@ HANDOFF.md for receipts and open boundaries.
 | Area | State at checkpoint | Source ownership | Next proof |
 |---|---|---|---|
 | C++ launcher build | **Proven locally.** Strict C++ app build and full make verify passed for the recorded artifact. | [cpp/Makefile](cpp/Makefile), [Makefile](Makefile) | Rebuild candidate source and record its digest before the final matrix. |
-| Bundle entry point | **Artifact identity proven for VM release source 224a7c9.** Runtime 410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047; metallib 7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9; archive 596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015. | [Makefile](Makefile), [README.md](README.md), [main.cpp](cpp/main.cpp) | Keep digest checks attached to the exact gate artifact and qualify application paths separately. |
+| Bundle entry point | **Artifact identity proven for VM protection source `2136057`.** Runtime `c59447c4a34f2afa9359f109d053de000cc179186c72113bac24bc60dcf2c386`; metallib `c977849dba7896b7536b14efb5ba501764bfd8024cb6f6f62ae5649d5b272bf4`; archive `a19af8d8b637d2a4383d845cf1a8aa9a27ca464a136179d4e06004e9e614ea4c`. Extracted smoke returned `mixed42`. | [Makefile](Makefile), [README.md](README.md), [main.cpp](cpp/main.cpp) | Keep digest checks attached to the exact gate artifact and qualify application paths separately. |
 | Drop-in compatibility | **Not established generally.** Passing unchanged cases establish only those binaries, inputs, OS build, launch flags and observed effects. | [HANDOFF.md](HANDOFF.md), [LEDGER.md](LEDGER.md) | Keep a named app matrix with binary identity, env/flags, native and Metal stdout/stderr/status, side effects, timeout/crash receipt and runtime digest. Mark each case independently. |
 
 ## Interpreter and remaining qualification
 
-Typed MOVZ/RET and MOVN/MOVK are qualified in the release artifact. The
-combined entry case matches native and translator, exits 42, and produces
-packed value 3. CFG work at 50740ab is separate and unqualified.
+The released CFG budget-fallback source `1d9bffc` in `aba6a2c` recorded 13
+dispatches and extracted-archive branch 7 / mixed 42 results. The raw VM
+protection source `2136057` passed 42 launch comparisons, 2,048 function runs,
+and AOT/extracted archive smoke. These remain named-fixture proofs, not broad
+app qualification.
 Astra's direction is a precompiled GPU interpreter as the eventual default,
 with translation retained during migration and for hot code. Share instruction
 semantics on GPU, compare native/translator/interpreter results, and expand one

@@ -37,40 +37,33 @@ Capture stdout, stderr, and exit status separately for native and Metal. Freeze 
 
 ## Current wave
 
-The VM multi-allocation release candidate at source 224a7c9 passed both gates.
-Its code tree matches the VM changes at 8647989; the tree difference is limited
-to HANDOFF.md and COMPATIBILITY.md. The runtime SHA-256 before and after the
-gate was
-410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047.
-The metallib SHA-256 was
-7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9.
-Both gates recorded 42 launch comparisons and 2,048 function runs. Receipts
-are under /tmp/metal-vm-multi-gate.HuuxCB.
+CFG budget fallback source `1d9bffc` was released in `aba6a2c`. The
+interpreter-typed miss now preserves the block budget when falling back to
+translation. Its focused proof recorded 13 dispatches; extracted-archive
+interpreter smoke covered branch result 7 and mixed result 42.
 
-The multi-allocation VM fixture's native and GPU stdout, stderr, and status
-match exactly. The extracted archive smoke used the adjacent AOT library and
-returned exit status 42. Its trace reports interpreter-block-ready detail=3.
-Archive SHA-256:
-596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015.
-The interpreter remains opt-in.
+Raw VM protection source `2136057` passed the full launch/function/AOT gates:
+42 launch comparisons, 2,048 function runs, and extracted archive smoke. The
+native and GPU protection fixture matched stdout, stderr, and status, including
+invalid target `268435459`, overflow result 4, and unmapped result 1. Runtime
+SHA-256 was `c59447c4a34f2afa9359f109d053de000cc179186c72113bac24bc60dcf2c386`;
+metallib SHA-256 was
+`c977849dba7896b7536b14efb5ba501764bfd8024cb6f6f62ae5649d5b272bf4`.
+Archive SHA-256 was
+`a19af8d8b637d2a4383d845cf1a8aa9a27ca464a136179d4e06004e9e614ea4c`; extracted
+smoke returned `mixed42`. Receipts: `/tmp/metal-vm-protect-gate.7ep6a4`.
 
-The focused host_info candidate at cad3d149 matches native for exact and
-reduced flags. Full libz startup still stops at raw Darwin trap -18; that
-candidate is in progress. The earlier observed request was mach_msg2 host_info
-(ID 200, flavor 5, count 8). Do not claim full libz compatibility from the
-focused host_info match.
+Focused Mach host-info and port-release cases from `dcc1488` match native,
+including invalid-host/flavor/count and rights cleanup controls. The combined
+libz startup advances through the four recorded syscall flags and now stops at
+raw `SYS_sysctl` (202), PC `0x10084a458`; native ABI is proven, guest handling
+is not implemented. Receipt: `/tmp/metal-ipc-combined-gate.W8VmaB`. Typed GPU
+memory helper work is in progress. Do not claim full libz or general Mach IPC
+compatibility from these focused cases.
 
-VM deallocation across allocations matches the native/GPU fixture. Keep the
-full gate evidence attached to the exact runtime hash above.
-
-CFG candidate f1ddb46 passed earlier gates, then exposed a confirmed
-double-charge when an interpreter-typed operation misses and falls back to an
-untyped translated block. Hold that candidate until the counter behavior is
-fixed and the full gates rerun. A prior green result does not qualify the
-current CFG path.
-
-General unchanged-app compatibility remains open. These VM, package, and
-interpreter results cover only named fixtures and runtime artifacts.
+General unchanged-app compatibility remains open. The CFG, VM, and IPC results
+cover only named fixtures, exact runtime artifacts, and recorded launch
+configurations.
 
 ## Evidence locations
 
@@ -80,17 +73,7 @@ The [loader probe sources](fixtures/handoff/README.md) are included in the repos
 
 ## Final checkpoint verification
 
-The VM multi-allocation release source 224a7c9 passed both gates with runtime
-SHA-256 410dfba09f8dde6cadba9b2751bac252abb7ae03b62253cfd569a7519db22047 and
-metallib SHA-256 7dcb6055879dee609f199a23f705bce98df9dc36973aff7529239c8b41214ec9.
-The gates recorded 42 launch comparisons and 2,048 function runs. The
-multi-allocation fixture matched native stdout, stderr and status. The extracted
-archive smoke exited 42; its trace reports interpreter-block-ready detail=3.
-Archive digest:
-596af44896f4af94c30ce87da505088d3e0fdc7884d5961d0f3077ca9def2015.
-Receipts: /tmp/metal-vm-multi-gate.HuuxCB.
-
-The host_info focused candidate at cad3d149 matches native exact/reduced flags.
-Full libz startup stops at raw trap -18 and its candidate remains in progress.
-CFG candidate f1ddb46 is held for a confirmed typed-to-untyped miss double-charge.
-Neither result establishes broad application compatibility.
+See [Current wave](#current-wave) for the latest released interpreter and VM
+proof, exact hashes, receipts, and the remaining libz syscall boundary. The
+full compatibility matrix and its proof limits are in
+[COMPATIBILITY.md](COMPATIBILITY.md).
