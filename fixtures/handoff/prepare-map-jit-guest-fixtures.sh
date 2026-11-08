@@ -13,6 +13,8 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror \
   "$fixture_dir/map-jit-call-guest.c" -o "$output/map-jit-call-guest"
 xcrun clang -arch arm64 -Wall -Wextra -Werror \
   "$fixture_dir/map-jit-siginfo-fault.c" -o "$output/map-jit-siginfo-fault"
+xcrun clang -arch arm64 -Wall -Wextra -Werror \
+  "$fixture_dir/map-jit-opposite-mode-resume.c" -o "$output/map-jit-opposite-mode-resume"
 
 make_bundle() {
   name=$1
@@ -43,4 +45,6 @@ make_bundle hardened-jit-call \
   "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-call-guest
 make_bundle hardened-jit-siginfo-fault \
   "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-siginfo-fault
+make_bundle hardened-jit-opposite-mode-resume \
+  "$fixture_dir/map-jit-guest-allow-jit.plist" map-jit-opposite-mode-resume
 printf 'GPU guest fixtures prepared under %s\n' "$output"

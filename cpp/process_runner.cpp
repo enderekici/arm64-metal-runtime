@@ -1099,6 +1099,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return CompiledProcessKernel{std::move(translated), {}, false};
     };
     bool processCodeCacheInvalidated = false;
+    std::function<bool(bool)> applyJitWriteProtection;
     const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
     if (state[33] > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::runtime_error("Guest entry address exceeds the supported code range");
@@ -1127,6 +1128,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         activeKernel = &found->second;
         activeEntry = entry;
+    };
+    const auto clearInvalidatedProcessCodeCache = [&]() {
+        if (!processCodeCacheInvalidated) return false;
+        processCodeCacheInvalidated = false;
+        kernels.clear();
+        decodeErrors.clear();
+        activeKernel = nullptr;
+        return true;
     };
 
     const std::vector<BufferBinding> bindings{
@@ -1587,6 +1596,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                   live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount));
         std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
         if (switched) {
+            if (!applyJitWriteProtection ||
+                !applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
+                throw std::runtime_error("Guest thread MAP_JIT mode could not be applied before resume");
+            }
+            (void)clearInvalidatedProcessCodeCache();
             const auto pc = live[33];
             if (pc > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
                 throw std::runtime_error("Guest thread resumed outside translated text");
@@ -2938,7 +2952,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return kernSuccess;
     };
     bool activeJitWriteProtection = true;
-    const auto applyJitWriteProtection = [&](bool enabled) {
+    applyJitWriteProtection = [&](bool enabled) {
         auto& thread = guestScheduler.current();
         if (activeJitWriteProtection == enabled) {
             thread.jitWriteProtect = enabled;
@@ -3059,18 +3073,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     std::uint64_t dispatchSequence = 0;
     while (true) {
-        if (!applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
+        if (!applyJitWriteProtection ||
+            !applyJitWriteProtection(guestScheduler.current().jitWriteProtect)) {
             throw std::runtime_error("Guest thread MAP_JIT mode could not be applied");
         }
         if (const auto signalExit = deliverPendingSignal()) return *signalExit;
         auto& callbackFrames = callbackFramesByThread[guestScheduler.current_id()];
         auto* registers = static_cast<std::uint64_t*>(stateBuffer.data());
-        if (processCodeCacheInvalidated) {
-            processCodeCacheInvalidated = false;
+        if (clearInvalidatedProcessCodeCache()) {
             const auto continuation = registers[33];
-            kernels.clear();
-            decodeErrors.clear();
-            activeKernel = nullptr;
             if (continuation != kNoFault) {
                 if (continuation > static_cast<std::uint64_t>(
                                        std::numeric_limits<std::int64_t>::max())) {
