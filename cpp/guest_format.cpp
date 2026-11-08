@@ -8,8 +8,45 @@
 namespace arm64metal {
 namespace {
 
+constexpr std::size_t kMaximumFieldWidth = 4096;
+
 void append_text(std::vector<std::uint8_t>& output, std::string_view text) {
     output.insert(output.end(), text.begin(), text.end());
+}
+
+void append_padded(std::vector<std::uint8_t>& output, std::string_view text,
+                   std::size_t width, bool zero_pad, bool alternate,
+                   char conversion) {
+    std::string prefix;
+    if (alternate && (conversion == 'x' || conversion == 'X') && text != "0") {
+        prefix = conversion == 'X' ? "0X" : "0x";
+    } else if (alternate && conversion == 'o' &&
+               (text.empty() || text.front() != '0')) {
+        prefix = "0";
+    }
+
+    const auto length = prefix.size() + text.size();
+    if (length >= width) {
+        append_text(output, prefix);
+        append_text(output, text);
+        return;
+    }
+    const auto padding = width - length;
+    if (!zero_pad) {
+        output.insert(output.end(), padding, static_cast<std::uint8_t>(' '));
+        append_text(output, prefix);
+        append_text(output, text);
+        return;
+    }
+    append_text(output, prefix);
+    if (!text.empty() && text.front() == '-') {
+        output.push_back('-');
+        output.insert(output.end(), padding, static_cast<std::uint8_t>('0'));
+        append_text(output, std::string_view(text).substr(1));
+        return;
+    }
+    output.insert(output.end(), padding, static_cast<std::uint8_t>('0'));
+    append_text(output, text);
 }
 
 template <typename Integer>
@@ -49,6 +86,22 @@ std::vector<std::uint8_t> format_guest_output(
             continue;
         }
 
+        bool alternate = false;
+        bool zero_pad = false;
+        while (index < format.size() && (format[index] == '#' || format[index] == '0')) {
+            if (format[index] == '#') alternate = true;
+            if (format[index] == '0') zero_pad = true;
+            ++index;
+        }
+        std::size_t width = 0;
+        while (index < format.size() && format[index] >= '0' && format[index] <= '9') {
+            const auto digit = static_cast<std::size_t>(format[index++] - '0');
+            if (width > (kMaximumFieldWidth - digit) / 10) {
+                throw GuestFormatError("Guest printf field width exceeds limit");
+            }
+            width = width * 10 + digit;
+        }
+
         bool wide = false;
         if (index < format.size() && (format[index] == 'j' || format[index] == 'l' ||
                                       format[index] == 't' || format[index] == 'z')) {
@@ -59,7 +112,7 @@ std::vector<std::uint8_t> format_guest_output(
         if (index >= format.size()) throw GuestFormatError("Incomplete guest printf conversion");
 
         const auto conversion = format[index++];
-        if (conversion == '%' && !wide) {
+        if (conversion == '%' && !wide && width == 0 && !alternate && !zero_pad) {
             output.push_back('%');
             continue;
         }
@@ -69,6 +122,9 @@ std::vector<std::uint8_t> format_guest_output(
         if (!supported || (wide && (conversion == 'c' || conversion == 's'))) {
             throw GuestFormatError("Unsupported guest printf conversion");
         }
+        if ((conversion == 'c' || conversion == 's') && alternate) {
+            throw GuestFormatError("Unsupported guest printf conversion flags");
+        }
 
         const auto raw = argument();
         const auto number = wide ? raw : static_cast<std::uint32_t>(raw);
@@ -76,19 +132,41 @@ std::vector<std::uint8_t> format_guest_output(
             case 'd':
             case 'i':
                 if (wide) {
-                    append_text(output, integer_text(bit_cast_signed<std::int64_t>(raw), 10));
+                    append_padded(output,
+                                  integer_text(bit_cast_signed<std::int64_t>(raw), 10),
+                                  width, zero_pad, alternate, conversion);
                 } else {
-                    append_text(output, integer_text(bit_cast_signed<std::int32_t>(
-                        static_cast<std::uint32_t>(number)), 10));
+                    append_padded(output,
+                                  integer_text(bit_cast_signed<std::int32_t>(
+                                      static_cast<std::uint32_t>(number)), 10),
+                                  width, zero_pad, alternate, conversion);
                 }
                 break;
-            case 'u': append_text(output, integer_text(number, 10)); break;
-            case 'x': append_text(output, integer_text(number, 16)); break;
-            case 'X': append_text(output, integer_text(number, 16, true)); break;
-            case 'o': append_text(output, integer_text(number, 8)); break;
-            case 'c': output.push_back(static_cast<std::uint8_t>(raw)); break;
+            case 'u':
+                append_padded(output, integer_text(number, 10), width, zero_pad,
+                              alternate, conversion);
+                break;
+            case 'x':
+                append_padded(output, integer_text(number, 16), width, zero_pad,
+                              alternate, conversion);
+                break;
+            case 'X':
+                append_padded(output, integer_text(number, 16, true), width,
+                              zero_pad, alternate, conversion);
+                break;
+            case 'o':
+                append_padded(output, integer_text(number, 8), width, zero_pad,
+                              alternate, conversion);
+                break;
+            case 'c': {
+                const auto character = static_cast<std::uint8_t>(raw);
+                if (width > 1) output.insert(output.end(), width - 1, ' ');
+                output.push_back(character);
+                break;
+            }
             case 's': {
                 const auto bytes = string(raw);
+                if (bytes.size() < width) output.insert(output.end(), width - bytes.size(), ' ');
                 output.insert(output.end(), bytes.begin(), bytes.end());
                 break;
             }

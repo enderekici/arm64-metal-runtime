@@ -93,6 +93,26 @@ xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
 .build/handoff-probes/typed-operation
 ```
 
+## Guest printf integer formats
+
+The native ARM64 oracle checks `%02x`, `%#llx`, and `%zu` across the Darwin
+variadic stack slots. The CPU-only formatter check uses the same slot sequence,
+verifies 32-bit narrowing versus 64-bit values, preserves existing conversions,
+and rejects unsupported or oversized formats:
+
+```sh
+mkdir -p .build/handoff-probes
+xcrun clang -Wall -Wextra -Werror \
+  fixtures/handoff/guest-printf-formats.c -o .build/handoff-probes/guest-printf-formats
+.build/handoff-probes/guest-printf-formats
+xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -Icpp \
+  fixtures/handoff/guest-format-test.cpp cpp/guest_format.cpp \
+  -o .build/handoff-probes/guest-format-test
+.build/handoff-probes/guest-format-test
+```
+
+Expected native output is `1 2 3 4 5 6|0a|0x123456789abcdef|4294967301`.
+
 ## Typed MOVN and MOVK slice
 
 The native assembly control covers X/W MOVN complements, X/W MOVK field

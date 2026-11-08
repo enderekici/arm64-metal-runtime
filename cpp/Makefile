@@ -28,7 +28,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter clean
+.PHONY: all components app verify-interpreter verify-guest-format clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -80,6 +80,8 @@ INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-typed-memory-
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
+GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
+GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
@@ -145,6 +147,20 @@ $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN): ../fixtures/interpreter/typed-memory-
 $(INTERPRETER_CBZ_CBNZ_MAIN): ../fixtures/interpreter/cbz-cbnz-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(GUEST_FORMAT_NATIVE): ../fixtures/handoff/guest-printf-formats.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -Wall -Wextra -Werror "$<" -o "$@"
+
+$(GUEST_FORMAT_TEST): ../fixtures/handoff/guest-format-test.cpp guest_format.cpp guest_format.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG ../fixtures/handoff/guest-format-test.cpp guest_format.cpp -o "$@"
+
+verify-guest-format: $(GUEST_FORMAT_NATIVE) $(GUEST_FORMAT_TEST)
+	"$(GUEST_FORMAT_NATIVE)" >"$(BUILD_DIR)/guest-printf-formats.native.out"
+	printf '%s\n' '1 2 3 4 5 6|0a|0x123456789abcdef|4294967301' >"$(BUILD_DIR)/guest-printf-formats.expected.out"
+	cmp "$(BUILD_DIR)/guest-printf-formats.expected.out" "$(BUILD_DIR)/guest-printf-formats.native.out"
+	"$(GUEST_FORMAT_TEST)"
 
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
