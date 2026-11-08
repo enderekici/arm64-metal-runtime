@@ -4702,6 +4702,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live, guestMemory, fault, live[37],
                 static_cast<std::uint64_t>(activeEntry));
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                if (hostServiceState.signals.action(fault.signal).handler == 0) {
+                    std::cerr << "arm64-metal: Guest process memory access fault at 0x"
+                              << hexadecimal(address) << " at PC 0x"
+                              << hexadecimal(registers[33]) << " width "
+                              << registers[guestCacheFaultWidth] << " x10=0x"
+                              << hexadecimal(registers[10]) << " tp=0x"
+                              << hexadecimal(registers[guestThreadPointer]) << '\n';
+                }
                 return delivery.exitStatus;
             }
             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
@@ -4728,6 +4736,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live, guestMemory, fault, live[37],
                 static_cast<std::uint64_t>(activeEntry));
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                if (status == 3 &&
+                    hostServiceState.signals.action(fault.signal).handler == 0) {
+                    std::cerr << "arm64-metal: Guest process reached an invalid code address\n";
+                }
                 return delivery.exitStatus;
             }
             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {

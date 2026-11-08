@@ -6,8 +6,10 @@
 #include <signal.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
+#include <sys/ucontext.h>
 #include <utility>
 
 namespace arm64metal {
@@ -23,6 +25,19 @@ constexpr std::size_t kGuestSiginfoAddress = 24;
 constexpr std::size_t kGuestUcontextSignalMask = 4;
 constexpr std::size_t kGuestUcontextMcontextPointer = 48;
 
+static_assert(sizeof(void*) == 8);
+static_assert(sizeof(siginfo_t) == kGuestSiginfoSize);
+static_assert(offsetof(siginfo_t, si_addr) == kGuestSiginfoAddress);
+static_assert(sizeof(ucontext_t) == kGuestUcontextSize);
+static_assert(offsetof(ucontext_t, uc_sigmask) == kGuestUcontextSignalMask);
+static_assert(offsetof(ucontext_t, uc_mcontext) == kGuestUcontextMcontextPointer);
+static_assert(sizeof(*static_cast<ucontext_t*>(nullptr)->uc_mcontext) == kGuestMcontextSize);
+static_assert(offsetof(_STRUCT_MCONTEXT, __ss.__pc) ==
+              kGuestMcontextThreadState + 256);
+static_assert(offsetof(_STRUCT_MCONTEXT, __ss.__cpsr) ==
+              kGuestMcontextThreadState + 264);
+static_assert(offsetof(_STRUCT_MCONTEXT, __ns) == kGuestMcontextNeonState);
+
 std::uint64_t aligned_down(std::uint64_t value, std::uint64_t alignment) {
     return value & ~(alignment - 1U);
 }
@@ -30,6 +45,18 @@ std::uint64_t aligned_down(std::uint64_t value, std::uint64_t alignment) {
 void write_context_integer(std::uint8_t* bytes, std::size_t offset,
                            const void* value, std::size_t size) {
     std::memcpy(bytes + offset, value, size);
+}
+
+std::uint32_t cpsr_from_guest_flags(std::uint64_t flags) noexcept {
+    return static_cast<std::uint32_t>(((flags >> 1U) & 1U) << 31U |
+                                      (flags & 1U) << 30U |
+                                      ((flags >> 3U) & 1U) << 29U |
+                                      ((flags >> 2U) & 1U) << 28U);
+}
+
+std::uint64_t guest_flags_from_cpsr(std::uint32_t cpsr) noexcept {
+    return ((cpsr >> 30U) & 1U) | (((cpsr >> 31U) & 1U) << 1U) |
+           (((cpsr >> 28U) & 1U) << 2U) | (((cpsr >> 29U) & 1U) << 3U);
 }
 
 bool ignored_by_default(std::int32_t signal) noexcept {
@@ -189,6 +216,9 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
     }
     write_context_integer(mcontext, kGuestMcontextThreadState + 256,
                           &registers[guestSignalPC], sizeof(std::uint64_t));
+    const auto cpsr = cpsr_from_guest_flags(registers[32]);
+    write_context_integer(mcontext, kGuestMcontextThreadState + 264,
+                          &cpsr, sizeof(cpsr));
     std::memcpy(mcontext + kGuestMcontextNeonState,
                 registers.data() + guestSignalVectorStart,
                 (guestSignalVectorEnd - guestSignalVectorStart) * sizeof(std::uint64_t));
@@ -250,6 +280,9 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
         }
         std::memcpy(&registers[guestSignalPC],
                     mcontext + kGuestMcontextThreadState + 256, sizeof(std::uint64_t));
+        std::uint32_t cpsr = 0;
+        std::memcpy(&cpsr, mcontext + kGuestMcontextThreadState + 264, sizeof(cpsr));
+        registers[32] = guest_flags_from_cpsr(cpsr);
         recompile = registers[guestSignalPC] != frame.registers[guestSignalPC];
         std::memcpy(registers.data() + guestSignalVectorStart,
                     mcontext + kGuestMcontextNeonState,
