@@ -15,6 +15,7 @@ struct LaunchOptions {
     bool demandCache = false;
     bool cacheBootstrap = false;
     bool cachedInitializers = false;
+    bool interpreter = false;
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;

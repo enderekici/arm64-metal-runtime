@@ -45,6 +45,9 @@ public:
     [[nodiscard]] Result run(const Backend& backend,
                              const std::vector<InstructionPacket>& packets,
                              ProcessState initialState) const;
+    [[nodiscard]] Result dispatch(const Backend& backend,
+                                  const std::vector<InstructionPacket>& packets,
+                                  SharedBuffer& processState) const;
 
 private:
     ComputeKernel kernel_;

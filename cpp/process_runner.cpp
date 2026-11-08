@@ -8,6 +8,7 @@
 #include "guest_signal_runtime.hpp"
 #include "guest_scheduler.hpp"
 #include "guest_tlv.hpp"
+#include "gpu_interpreter.hpp"
 #include "metal_backend.hpp"
 #include "process_decoder.hpp"
 #include "process_host.hpp"
@@ -267,20 +268,53 @@ std::vector<GuestMemoryMapping> guest_memory_mappings(const ExecutableImage& ima
     return mappings;
 }
 
-ComputeKernel compile_process_kernel(const ExecutableImage& image,
-                                     const process_msl::Config& config,
-                                     const std::map<std::int64_t, std::string>& imports,
-                                     const std::map<std::int64_t, std::int64_t>& guestStubs,
-                                     std::map<std::int64_t, std::string>& allDecodeErrors,
-                                     std::int64_t entry,
-                                     const Backend& backend) {
+struct ProcessKernelPlan {
     std::map<std::int64_t, Instruction> instructions;
+    std::vector<gpu_interpreter::InstructionPacket> interpretedPackets;
+    bool interpreterEligible = false;
+};
+
+struct CompiledProcessKernel {
+    ComputeKernel translated;
+    std::vector<gpu_interpreter::InstructionPacket> interpretedPackets;
+    bool usesInterpreter = false;
+};
+
+ProcessKernelPlan plan_process_kernel(
+    const ExecutableImage& image,
+    const std::map<std::int64_t, std::string>& imports,
+    const std::map<std::int64_t, std::int64_t>& guestStubs,
+    std::map<std::int64_t, std::string>& allDecodeErrors,
+    std::int64_t entry,
+    bool allowInterpreter) {
+    ProcessKernelPlan plan;
     std::map<std::int64_t, std::string> decodeErrors;
-    decode_reachable(image, imports, guestStubs, instructions, decodeErrors, entry);
+    decode_reachable(image, imports, guestStubs, plan.instructions, decodeErrors, entry);
     allDecodeErrors.insert(decodeErrors.begin(), decodeErrors.end());
-    const auto cases = translate_core::render_blocks(instructions, entry, "ul");
-    const auto source = process_msl::render_source(cases, config);
-    return backend.compileCompute(source, "run_process");
+
+    if (!allowInterpreter) return plan;
+
+    auto pc = entry;
+    while (plan.interpretedPackets.size() < 8192) {
+        const auto found = plan.instructions.find(pc);
+        if (found == plan.instructions.end() || !found->second.operation) break;
+        const auto& operation = *found->second.operation;
+        plan.interpretedPackets.push_back({
+            translate_core::serialize_operation(operation),
+            static_cast<std::uint64_t>(pc)});
+        if (operation.opcode == translate_core::Opcode::Return) {
+            plan.interpreterEligible = true;
+            return plan;
+        }
+        if (operation.opcode != translate_core::Opcode::MoveWideZero ||
+            pc > std::numeric_limits<std::int64_t>::max() - 4) {
+            plan.interpretedPackets.clear();
+            break;
+        }
+        pc += 4;
+    }
+    plan.interpretedPackets.clear();
+    return plan;
 }
 
 bool cache_faulted(const std::uint64_t* registers) {
@@ -873,6 +907,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     processRegisters[guestThreadPointer] = bootstrap.mainThreadSpecificData;
 
     auto backend = Backend::createDefault();
+    std::unique_ptr<gpu_interpreter::Interpreter> interpreter;
+    if (options.interpreter) {
+        const auto pipelinesBefore = backend.compiledPipelineCount();
+        interpreter = std::make_unique<gpu_interpreter::Interpreter>(backend);
+        progressTrace.event("interpreter-pipeline-ready", startup.front(),
+                            backend.compiledPipelineCount() - pipelinesBefore);
+    }
     auto memoryBuffer = backend.makeSharedBuffer(bootstrap.memory.size());
     auto stateBuffer = backend.makeSharedBuffer(processRegisters.size() * sizeof(std::uint64_t));
     const auto residentCapacity = image.cache_regions.size() + 4096;
@@ -972,17 +1013,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
 
     std::map<std::int64_t, std::string> decodeErrors;
-    std::map<std::int64_t, ComputeKernel> kernels;
+    std::map<std::int64_t, CompiledProcessKernel> kernels;
     const auto compileKernel = [&](std::int64_t entry) {
+        const auto plan = plan_process_kernel(image, imports, guestStubs,
+                                              decodeErrors, entry,
+                                              interpreter != nullptr);
+        if (plan.interpreterEligible) {
+            progressTrace.event("interpreter-block-ready",
+                                static_cast<std::uint64_t>(entry),
+                                plan.interpretedPackets.size());
+            return CompiledProcessKernel{{}, plan.interpretedPackets, true};
+        }
+
         const auto started = std::chrono::steady_clock::now();
         progressTrace.event("compile-start", static_cast<std::uint64_t>(entry));
-        auto kernel = compile_process_kernel(image, config, imports, guestStubs,
-                                             decodeErrors, entry, backend);
+        const auto cases = translate_core::render_blocks(plan.instructions, entry, "ul");
+        const auto source = process_msl::render_source(cases, config);
+        auto translated = backend.compileCompute(source, "run_process");
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
         progressTrace.event("compile-done", static_cast<std::uint64_t>(entry),
                             static_cast<std::uint64_t>(elapsed));
-        return kernel;
+        return CompiledProcessKernel{std::move(translated), {}, false};
     };
     bool processCodeCacheInvalidated = false;
     const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
@@ -2887,15 +2939,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (reportDispatch) {
                 progressTrace.event("dispatch-start", registers[33], dispatchSequence);
             }
-            (void)backend.dispatch(*activeKernel, bindings, one, one);
+            if (activeKernel->usesInterpreter) {
+                progressTrace.event("interpreter-dispatch", registers[33],
+                                    activeKernel->interpretedPackets.size());
+                (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
+                                            stateBuffer);
+            } else {
+                (void)backend.dispatch(activeKernel->translated, bindings, one, one);
+            }
             if (reportDispatch) {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - dispatchStarted).count();
                 progressTrace.event("dispatch-done", registers[33],
                                     static_cast<std::uint64_t>(elapsed));
             }
+        } else if (activeKernel->usesInterpreter) {
+            (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
+                                        stateBuffer);
         } else {
-            (void)backend.dispatch(*activeKernel, bindings, one, one);
+            (void)backend.dispatch(activeKernel->translated, bindings, one, one);
         }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto status = registers[34];

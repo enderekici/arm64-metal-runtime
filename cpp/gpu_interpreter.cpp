@@ -50,7 +50,6 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             if (width == 32u) value = uint(value);
             if (rd < 31u) state[rd] = value;
             pc = instruction.pc + 4ul;
-            state[33] = pc;
             continue;
         }
         if (opcode == 2u) {
@@ -62,12 +61,10 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             }
             const ulong target = state[source];
             if (target == ~0ul) {
-                state[33] = pc;
                 state[34] = 0;
                 return;
             }
             if (target >= (1ul << 48)) {
-                state[33] = pc;
                 state[34] = 3;
                 return;
             }
@@ -92,10 +89,26 @@ Interpreter::Interpreter(const Backend& backend)
 Result Interpreter::run(const Backend& backend,
                         const std::vector<InstructionPacket>& packets,
                         ProcessState initialState) const {
+    auto stateBuffer = backend.makeSharedBuffer(sizeof(initialState));
+    if (stateBuffer.data() == nullptr) {
+        throw std::runtime_error("Metal interpreter state allocation failed");
+    }
+    std::memcpy(stateBuffer.data(), initialState.data(), sizeof(initialState));
+    return dispatch(backend, packets, stateBuffer);
+}
+
+Result Interpreter::dispatch(const Backend& backend,
+                             const std::vector<InstructionPacket>& packets,
+                             SharedBuffer& processState) const {
     if (!kernel_) throw std::logic_error("GPU interpreter kernel is not compiled");
     if (packets.empty() || packets.size() > 8192) {
         throw std::invalid_argument("Interpreter basic block packet count is outside [1, 8192]");
     }
+    if (processState.data() == nullptr ||
+        processState.size() < processRegisterCount * sizeof(std::uint64_t)) {
+        throw std::invalid_argument("Interpreter process state buffer is too small");
+    }
+    const auto* initialState = static_cast<const std::uint64_t*>(processState.data());
     if (initialState[programCounterIndex] != packets.front().pc) {
         throw std::invalid_argument("Interpreter process PC must match the first packet");
     }
@@ -120,29 +133,28 @@ Result Interpreter::run(const Backend& backend,
         } else if (opcode != translate_core::Opcode::MoveWideZero ||
                    operation[1] > 31 || operation[2] != 0 ||
                    operation[3] > 0xffff || (operation[5] != 32 && operation[5] != 64) ||
-                   operation[4] >= operation[5] || (operation[4] & 15U) != 0) {
+                   operation[4] >= operation[5] || (operation[4] & 15U) != 0 ||
+                   (operation[5] == 32 && operation[4] > 16)) {
             throw std::invalid_argument("Interpreter basic block contains an unsupported operation");
         }
     }
 
-    auto stateBuffer = backend.makeSharedBuffer(sizeof(initialState));
     auto packetBuffer = backend.makeSharedBuffer(packets.size() * sizeof(InstructionPacket));
     auto countBuffer = backend.makeSharedBuffer(sizeof(std::uint32_t));
-    if (stateBuffer.data() == nullptr || packetBuffer.data() == nullptr ||
-        countBuffer.data() == nullptr) {
-        throw std::runtime_error("Metal interpreter buffer allocation failed");
+    if (packetBuffer.data() == nullptr || countBuffer.data() == nullptr) {
+        throw std::runtime_error("Metal interpreter packet allocation failed");
     }
-    std::memcpy(stateBuffer.data(), initialState.data(), sizeof(initialState));
     std::memcpy(packetBuffer.data(), packets.data(),
                 packets.size() * sizeof(InstructionPacket));
     const auto count = static_cast<std::uint32_t>(packets.size());
     std::memcpy(countBuffer.data(), &count, sizeof(count));
 
     const std::vector<BufferBinding> bindings{
-        {&stateBuffer, 0, 0}, {&packetBuffer, 1, 0}, {&countBuffer, 2, 0}};
+        {&processState, 0, 0}, {&packetBuffer, 1, 0}, {&countBuffer, 2, 0}};
     const auto timing = backend.dispatch(kernel_, bindings, {1, 1, 1}, {1, 1, 1});
     Result result;
-    result.state = *static_cast<const ProcessState*>(stateBuffer.data());
+    std::copy_n(static_cast<const std::uint64_t*>(processState.data()),
+                processRegisterCount, result.state.begin());
     result.timing = timing;
     return result;
 }

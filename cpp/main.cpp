@@ -42,6 +42,7 @@ void print_help() {
   std::cout <<
       "Usage:\n"
       "  arm64-metal launch EXECUTABLE [ARG ...]\n"
+      "    Set ARM64_METAL_INTERPRETER=1 to opt in for typed MOVZ/RET blocks.\n"
       "  arm64-metal run BINARY SYMBOL [INPUT.json|-] [BLOCK_BUDGET]\n"
       "  arm64-metal verify TRUSTED_DYLIB SYMBOL\n"
       "  arm64-metal translate BINARY SYMBOL\n"
@@ -130,6 +131,7 @@ int run_command(const std::vector<std::string>& args) {
     options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
+    options.interpreter = environment_enabled("ARM64_METAL_INTERPRETER");
     return arm64metal::process_runner::launch_executable(args[1], arguments, options);
   }
 
