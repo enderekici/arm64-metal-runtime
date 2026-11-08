@@ -214,6 +214,13 @@ inline LogicalShiftedResult logical_shifted_apply(
     }
     return LogicalShiftedResult{value, flags};
 }
+inline LogicalShiftedResult logical_variable_shift_apply(
+    uint shiftType, ulong value, ulong amountValue, uint width,
+    uint previousFlags) {
+    const uint amount = uint(amountValue) & (width - 1u);
+    return logical_shifted_apply(1u, 0u, 0ul, value, shiftType, amount,
+                                 width, 0u, previousFlags);
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -331,6 +338,14 @@ inline constexpr LogicalShiftedResult logical_shifted_apply(
             (static_cast<std::uint32_t>((value & signBit) != 0U) << 1U);
   }
   return {value, flags};
+}
+inline constexpr LogicalShiftedResult logical_variable_shift_apply(
+    std::uint32_t shiftType, std::uint64_t value,
+    std::uint64_t amountValue, std::uint32_t width,
+    std::uint32_t previousFlags) {
+  const auto amount = static_cast<std::uint32_t>(amountValue) & (width - 1U);
+  return logical_shifted_apply(1U, 0U, 0U, value, shiftType, amount,
+                               width, 0U, previousFlags);
 }
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
@@ -457,6 +472,11 @@ inline constexpr char typed_integer_msl_source[] =
     "width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
     "flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u); } "
     "return LogicalShiftedResult{value, flags}; }\n"
+    "inline LogicalShiftedResult logical_variable_shift_apply(uint shiftType, "
+    "ulong value, ulong amountValue, uint width, uint previousFlags) { "
+    "uint amount = uint(amountValue) & (width - 1u); "
+    "return logical_shifted_apply(1u, 0u, 0ul, value, shiftType, amount, "
+    "width, 0u, previousFlags); }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

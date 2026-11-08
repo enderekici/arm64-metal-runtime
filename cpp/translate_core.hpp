@@ -39,6 +39,7 @@ enum class Opcode : std::uint32_t {
   LogicalImmediate = 24,
   TestBitBranch = 25,
   Adr = 27,
+  LogicalVariableShiftRegister = 29,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -75,6 +76,9 @@ enum class Opcode : std::uint32_t {
 // and width=32 or 64. Rn/Rm/Rd register 31 is ZR. Opc selects AND, ORR,
 // EOR, or ANDS, with invert selecting BIC, ORN, EON, or BICS. Shift types
 // 0/1/2/3 are LSL/LSR/ASR/ROR. ANDS/BICS update NZCV.
+// Logical variable shifts use destination=Rd, source=Rn, immediate=Rm,
+// shift=shiftType (0/1/2/3 for LSLV/LSRV/ASRV/RORV), and width=32 or 64.
+// Rn/Rm/Rd register 31 is ZR. The shift amount uses the low 5 or 6 bits of Rm.
 // Logical immediate uses destination=Rd, source=(opc << 5) | Rn,
 // immediate=mask low word, shift=mask high word, width=32 or 64. Register 31
 // is ZR. Opc selects AND, ORR, EOR, or ANDS; ANDS updates NZCV.

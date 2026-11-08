@@ -303,6 +303,39 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 29u) {
+                const uint rd = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const uint rm = instruction.operation[3];
+                const uint shiftType = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (rd > 31u || rn > 31u || rm > 31u || shiftType > 3u ||
+                    (width != 32u && width != 64u) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong value = rn == 31u ? 0ul : state[rn];
+                const ulong amount = rm == 31u ? 0ul : state[rm];
+                const LogicalShiftedResult result = logical_variable_shift_apply(
+                    shiftType, value, amount, width, uint(state[32]));
+                if (rd != 31u) state[rd] = result.value;
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 1u || opcode == 3u || opcode == 4u) {
                 const uint rd = instruction.operation[1];
                 const uint immediate = instruction.operation[3];

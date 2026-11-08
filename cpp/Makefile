@@ -84,6 +84,7 @@ INTERPRETER_CSEL_MAIN := $(BUILD_DIR)/interpreter-csel-family-main
 INTERPRETER_ADD_SUB_SHIFTED_MAIN := $(BUILD_DIR)/interpreter-add-sub-shifted-register-main
 INTERPRETER_ADD_SUB_EXTENDED_MAIN := $(BUILD_DIR)/interpreter-add-sub-extended-register-main
 INTERPRETER_LOGICAL_SHIFTED_MAIN := $(BUILD_DIR)/interpreter-logical-shifted-register-main
+INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN := $(BUILD_DIR)/interpreter-logical-variable-shifts-main
 INTERPRETER_LOGICAL_IMMEDIATE_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-main
 INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-invalid-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
@@ -253,6 +254,10 @@ $(INTERPRETER_ADD_SUB_EXTENDED_MAIN): ../fixtures/interpreter/add-sub-extended-r
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_LOGICAL_SHIFTED_MAIN): ../fixtures/interpreter/logical-shifted-register-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN): ../fixtures/interpreter/logical-variable-shifts-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -594,7 +599,7 @@ verify-adc-sbc-carry-interpreter: $(APP) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(INT
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err" && \
 		echo "adc-sbc-carry interpreter dispatch verified: $$run_dir"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -872,6 +877,22 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/logical-shifted.native.err" "$$run_dir/logical-shifted.translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/logical-shifted.interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/logical-shifted.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN)" >"$$run_dir/logical-variable-shifts.native.out" 2>"$$run_dir/logical-variable-shifts.native.err"; logical_variable_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN)" >"$$run_dir/logical-variable-shifts.translated.out" 2>"$$run_dir/logical-variable-shifts.translated.err"; logical_variable_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN)" >"$$run_dir/logical-variable-shifts.interpreter.out" 2>"$$run_dir/logical-variable-shifts.interpreter.err"; logical_variable_interpreter_rc=$$?; \
+		printf '%s\n' "$$logical_variable_native_rc" >"$$run_dir/logical-variable-shifts.native.rc"; \
+		printf '%s\n' "$$logical_variable_translated_rc" >"$$run_dir/logical-variable-shifts.translated.rc"; \
+		printf '%s\n' "$$logical_variable_interpreter_rc" >"$$run_dir/logical-variable-shifts.interpreter.rc"; \
+		set -e; \
+		test "$$logical_variable_native_rc" -eq 42 && test "$$logical_variable_translated_rc" -eq "$$logical_variable_native_rc" && \
+		test "$$logical_variable_interpreter_rc" -eq "$$logical_variable_native_rc" && \
+		cmp "$$run_dir/logical-variable-shifts.native.out" "$$run_dir/logical-variable-shifts.translated.out" && \
+		cmp "$$run_dir/logical-variable-shifts.native.out" "$$run_dir/logical-variable-shifts.interpreter.out" && \
+		cmp "$$run_dir/logical-variable-shifts.native.err" "$$run_dir/logical-variable-shifts.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/logical-variable-shifts.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/logical-variable-shifts.interpreter.err" && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/logical-variable-shifts.interpreter.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_LOGICAL_IMMEDIATE_MAIN)" >"$$run_dir/logical-immediate.native.out" 2>"$$run_dir/logical-immediate.native.err"; logical_immediate_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_LOGICAL_IMMEDIATE_MAIN)" >"$$run_dir/logical-immediate.translated.out" 2>"$$run_dir/logical-immediate.translated.err"; logical_immediate_translated_rc=$$?; \

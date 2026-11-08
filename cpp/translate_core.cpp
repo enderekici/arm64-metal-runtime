@@ -317,6 +317,12 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::LogicalShiftedRegister, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), packed, width};
   }
+  if ((bits & 0x7fe0f000U) == 0x1ac02000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto shiftType = field(bits, 10, 2);
+    return Operation{Opcode::LogicalVariableShiftRegister, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5), shiftType, width};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -564,6 +570,26 @@ Instruction make_operation_instruction(Operation operation,
       if (mode == LoweringMode::Process) {
         code.push_back("x[32] = logical_result.flags;");
       }
+    }
+    code.push_back("}");
+  } else if (operation.opcode == Opcode::LogicalVariableShiftRegister) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || operation.shift > 3 ||
+        (operation.width != 32 && operation.width != 64)) {
+      throw std::invalid_argument("Typed logical variable-shift operands are invalid");
+    }
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("{");
+    code.push_back("const LogicalShiftedResult logical_result = "
+                   "logical_variable_shift_apply(" +
+                   std::to_string(operation.shift) + "u, " +
+                   reg(operation.source, operation.width == 64) + ", " +
+                   reg(operation.immediate, operation.width == 64) + ", " +
+                   std::to_string(operation.width) + "u, " + flags + ");");
+    if (operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = logical_result.value;");
     }
     code.push_back("}");
   } else if (operation.opcode == Opcode::Return) {

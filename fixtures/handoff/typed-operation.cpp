@@ -369,12 +369,41 @@ int main() {
   assert(carryMsl != std::string_view::npos &&
          logicalMsl.find("}\nstruct LogicalShiftedResult", carryMsl) !=
              std::string_view::npos);
-  assert(logicalMsl.find("flags}; }\ninline bool arm64_condition_holds") !=
+  assert(logicalMsl.find("width, 0u, previousFlags); }\n"
+                         "inline bool arm64_condition_holds") !=
          std::string_view::npos);
   assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==
          std::string_view::npos);
 
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t shiftType = 0; shiftType < 4; ++shiftType) {
+      const auto bits = 0x1ac02000U | (width == 64 ? 0x80000000U : 0U) |
+                        (shiftType << 10U) | (2U << 16U) |
+                        (1U << 5U) | 3U;
+      const auto variable = decode_operation(bits);
+      assert(variable.has_value() &&
+             variable->opcode == Opcode::LogicalVariableShiftRegister &&
+             variable->destination == 3 && variable->source == 1 &&
+             variable->immediate == 2 && variable->shift == shiftType &&
+             variable->width == width);
+      assert((serialize_operation(*variable) ==
+              arm64metal::translate_core::OperationPacket{
+                  29, 3, 1, 2, shiftType, width}));
+      const auto lowered = make_operation_instruction(
+          *variable, {0x1004}, LoweringMode::Process,
+          std::uint64_t{1} << 48);
+      assert(lowered.code.size() == 4 &&
+             lowered.code[1].find("logical_variable_shift_apply(") !=
+                 std::string::npos &&
+             lowered.code[2] == "x[3] = logical_result.value;");
+    }
+  }
+  assert(!decode_operation(0x1ac02000U | (5U << 10U)).has_value());
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "logical_variable_shift_apply") != std::string_view::npos);
+
   using arm64metal::logical_shifted_apply;
+  using arm64metal::logical_variable_shift_apply;
   using arm64metal::logical_immediate_apply;
   assert(logical_immediate_apply(0, 0x1234, 0xff, 64, 0, 0xf).value == 0x34);
   assert(logical_immediate_apply(1, 0, 0x8000000000000001ULL, 64, 0, 0xf)
@@ -416,6 +445,25 @@ int main() {
              .value == 0xe0000001U);
   assert(logical_shifted_apply(1, 0, 0, 0x80000005U, 3, 2, 32, 0, 0)
              .value == 0x60000001U);
+  const auto variableValue = 0x8000000000000004ULL;
+  assert(logical_variable_shift_apply(0, variableValue, 1, 64, 0xf).value ==
+         0x8ULL);
+  assert(logical_variable_shift_apply(1, variableValue, 1, 64, 0xf).value ==
+         0x4000000000000002ULL);
+  assert(logical_variable_shift_apply(2, variableValue, 1, 64, 0xf).value ==
+         0xc000000000000002ULL);
+  assert(logical_variable_shift_apply(3, variableValue, 1, 64, 0xf).value ==
+         0x4000000000000002ULL);
+  assert(logical_variable_shift_apply(0, 0x80000000U, 0x10000001U, 32, 0xf)
+             .value == 0U);
+  assert(logical_variable_shift_apply(1, 0x80000000U, 31, 32, 0xf).value == 1U);
+  assert(logical_variable_shift_apply(2, 0x80000000U, 31, 32, 0xf).value ==
+         0xffffffffU);
+  assert(logical_variable_shift_apply(3, 0x80000000U, 31, 32, 0xf).value == 1U);
+  assert(logical_variable_shift_apply(0, 0x8000000000000004ULL, 0x1001, 64, 0xf)
+             .value == 0x8ULL);
+  assert(logical_variable_shift_apply(2, 0x1234, 0, 64, 0xf).value == 0x1234);
+  assert(logical_variable_shift_apply(1, 0, 0, 32, 0xf).flags == 0xf);
 
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};
