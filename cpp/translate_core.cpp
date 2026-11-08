@@ -52,14 +52,24 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
   }
 
-  if ((bits & 0x7f800000) != 0x52800000) return std::nullopt;
+  const auto moveWide = bits & 0x7f800000;
+  Opcode opcode;
+  if (moveWide == 0x52800000) {
+    opcode = Opcode::MoveWideZero;
+  } else if (moveWide == 0x12800000) {
+    opcode = Opcode::MoveWideNot;
+  } else if (moveWide == 0x72800000) {
+    opcode = Opcode::MoveWideKeep;
+  } else {
+    return std::nullopt;
+  }
 
   const auto width = field(bits, 31, 1) == 1 ? 64u : 32u;
   const auto shift = field(bits, 21, 2) * 16u;
   if (shift >= width) {
     throw std::runtime_error("Invalid MOVZ shift for destination width");
   }
-  return Operation{Opcode::MoveWideZero, field(bits, 0, 5), 0,
+  return Operation{opcode, field(bits, 0, 5), 0,
                    field(bits, 5, 16), shift, width};
 }
 
@@ -68,12 +78,33 @@ Instruction make_operation_instruction(Operation operation,
                                        LoweringMode mode,
                                        std::uint64_t guest_code_limit) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::MoveWideZero) {
+  if (operation.opcode == Opcode::MoveWideZero ||
+      operation.opcode == Opcode::MoveWideNot ||
+      operation.opcode == Opcode::MoveWideKeep) {
     if (operation.destination != 31) {
       const auto type = operation.width == 64 ? "ulong" : "uint";
       const auto value = std::uint64_t{operation.immediate} << operation.shift;
-      code.push_back("x[" + std::to_string(operation.destination) + "] = " +
-                     type + "(" + std::to_string(value) + "ul);");
+      const auto destination = "x[" + std::to_string(operation.destination) + "]";
+      if (operation.opcode == Opcode::MoveWideZero) {
+        code.push_back(destination + " = " + type + "(" +
+                       std::to_string(value) + "ul);");
+      } else if (operation.opcode == Opcode::MoveWideNot) {
+        code.push_back(destination + " = " + type + "(~" +
+                       std::to_string(value) + "ul);");
+      } else {
+        const auto mask = std::uint64_t{0xffff} << operation.shift;
+        const auto current = operation.width == 64
+            ? destination
+            : "uint(" + destination + ")";
+        const auto typedMask = operation.width == 64
+            ? std::to_string(mask) + "ul"
+            : "uint(" + std::to_string(mask) + "ul)";
+        const auto typedValue = operation.width == 64
+            ? std::to_string(value) + "ul"
+            : "uint(" + std::to_string(value) + "ul)";
+        code.push_back(destination + " = " + type + "((" + current + " & ~" +
+                       typedMask + ") | " + typedValue + ");");
+      }
     }
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {

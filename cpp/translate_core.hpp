@@ -15,6 +15,8 @@ namespace arm64metal::translate_core {
 enum class Opcode : std::uint32_t {
   MoveWideZero = 1,
   Return = 2,
+  MoveWideNot = 3,
+  MoveWideKeep = 4,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.

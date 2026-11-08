@@ -92,3 +92,20 @@ xcrun clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
   -o .build/handoff-probes/typed-operation
 .build/handoff-probes/typed-operation
 ```
+
+## Typed MOVN and MOVK slice
+
+The native assembly control covers X/W MOVN complements, X/W MOVK field
+replacement, and zero-register discard:
+
+```sh
+xcrun clang -arch arm64 -c fixtures/handoff/typed-move-wide.s \
+  -o .build/handoff-probes/typed-move-wide.o
+xcrun clang -arch arm64 fixtures/handoff/typed-move-wide-main.c \
+  .build/handoff-probes/typed-move-wide.o \
+  -o .build/handoff-probes/typed-move-wide
+.build/handoff-probes/typed-move-wide
+```
+
+The existing host-side typed-operation check also verifies MOVN/MOVK packet
+fields and translator statements.

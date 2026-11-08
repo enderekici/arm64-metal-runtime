@@ -749,16 +749,6 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     }
     return emit((std::string(str(reg(rd))) + " = " + str(address) + "ul;"));
   }
-  auto wideImmediate = bits & 0x7f800000;
-  if (wideImmediate == 0x12800000 && (rd != 31) &&
-      (field(31, 1) == 1 || field(21, 2) < 2)) {
-    auto type =
-        field(31, 1) == 1 ? (std::string("ulong")) : (std::string("uint"));
-    auto invert = std::string("~");
-    auto value = uint64_t(field(5, 16)) << (16 * field(21, 2));
-    return emit((std::string(str(reg(rd))) + " = " + str(type) + "(" +
-                 str(invert) + str(value) + "ul);"));
-  }
   if (((bits & 0x7fa00000) == 0x13800000) && (field(22, 1) == field(31, 1)) &&
       (rd != 31)) {
     auto width = field(31, 1) == 1 ? 64 : 32;

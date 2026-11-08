@@ -39,6 +39,45 @@ int main() {
   assert(discarded.operation->destination == 31);
   assert(discarded.code.empty());
 
+  const auto moveNot = decode_operation(0x92a24680);
+  assert(moveNot.has_value());
+  assert(moveNot->opcode == Opcode::MoveWideNot);
+  assert(moveNot->width == 64);
+  assert(moveNot->shift == 16);
+  const auto moveNotLowered = make_operation_instruction(
+      *moveNot, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(moveNotLowered.code ==
+         std::vector<std::string>{"x[0] = ulong(~305397760ul);"});
+  assert((serialize_operation(*moveNot) ==
+          arm64metal::translate_core::OperationPacket{
+              3, 0, 0, 0x1234, 16, 64}));
+
+  const auto moveKeepWide = decode_operation(0xf2d579a0);
+  assert(moveKeepWide.has_value());
+  assert(moveKeepWide->opcode == Opcode::MoveWideKeep);
+  const auto moveKeepWideLowered = make_operation_instruction(
+      *moveKeepWide, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(moveKeepWideLowered.code == std::vector<std::string>{
+      "x[0] = ulong((x[0] & ~281470681743360ul) | 188896956645376ul);"});
+
+  const auto moveKeepWord = decode_operation(0x72b579a0);
+  assert(moveKeepWord.has_value());
+  assert(moveKeepWord->width == 32);
+  const auto moveKeepWordLowered = make_operation_instruction(
+      *moveKeepWord, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(moveKeepWordLowered.code == std::vector<std::string>{
+      "x[0] = uint((uint(x[0]) & ~uint(4294901760ul)) | uint(2882338816ul));"});
+
+  const auto discardedMoveKeep = decode_operation(0xf2d579bf);
+  assert(discardedMoveKeep.has_value());
+  assert(make_operation_instruction(
+             *discardedMoveKeep, {0x1004}, LoweringMode::Process,
+             std::uint64_t{1} << 48)
+             .code.empty());
+
   const auto returnOperation = decode_operation(0xd65f03c0);
   assert(returnOperation.has_value());
   assert(returnOperation->opcode == Opcode::Return);
@@ -48,7 +87,7 @@ int main() {
   assert(returned.ends_block_at(0x1000));
   assert(returned.code.size() == 5);
 
-  assert(!decode_operation(0xf2a24680).has_value());
+  assert(!decode_operation(0x10000000).has_value());
 
   bool invalidShiftRejected = false;
   try {
