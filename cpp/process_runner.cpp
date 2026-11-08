@@ -1993,13 +1993,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::set<std::uint64_t> dynamicCodeRegionStarts;
     struct GuestReceiveRight { std::uint32_t flags; std::uint64_t context; };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
-    std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
-        {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
     std::set<std::uint32_t> guestDeadPortNames;
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::set<std::uint32_t> guestSemaphoreNames;
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
-    std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     struct GuestLocalMessage {
         std::uint32_t size;
         std::uint32_t remotePort;
