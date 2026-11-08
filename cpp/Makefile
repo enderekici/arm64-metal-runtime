@@ -123,6 +123,12 @@ GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
 MAP_JIT_POLICY_TEST := $(BUILD_DIR)/map-jit-policy-test
 CHAINED_ADDENDS_TEST := $(BUILD_DIR)/chained-addends-test
 CHAINED_ADDENDS_FIXTURE := $(BUILD_DIR)/libchained-addend-fixture.dylib
+CHAINED_ADDEND_PROVIDER := $(BUILD_DIR)/libchained-addend-provider.dylib
+CHAINED_ADDEND_POINTER := $(BUILD_DIR)/chained-addend-positive-pointer.o
+CHAINED_ADDEND_POSITIVE := $(BUILD_DIR)/chained-addend-positive
+CHAINED_ADDEND_WEAK_POINTER := $(BUILD_DIR)/chained-addend-weak-pointer.o
+CHAINED_ADDEND_WEAK := $(BUILD_DIR)/chained-addend-weak
+CHAINED_ADDENDS_IMAGE_TEST := $(BUILD_DIR)/chained-addends-image-test
 MAP_JIT_POLICY_FIXTURE := $(BUILD_DIR)/map-jit-policy-fixture
 MEMCPY_CHK_NATIVE := $(BUILD_DIR)/memcpy-chk-native
 MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
@@ -324,9 +330,54 @@ $(CHAINED_ADDENDS_FIXTURE): ../fixtures/handoff/chained-addend-fixture.c
 	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
 		-Wl,-undefined,dynamic_lookup -Wall -Wextra -Werror "$<" -o "$@"
 
+$(CHAINED_ADDEND_PROVIDER): ../fixtures/handoff/chained-addend-positive-provider.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
+		-Wl,-install_name,@rpath/libchained-addend-provider.dylib \
+		-Wall -Wextra -Werror "$<" -o "$@"
+
+$(CHAINED_ADDEND_POINTER): ../fixtures/handoff/chained-addend-positive-pointer.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -c "$<" -o "$@"
+
+$(CHAINED_ADDEND_POSITIVE): ../fixtures/handoff/chained-addend-positive-main.c $(CHAINED_ADDEND_POINTER) $(CHAINED_ADDEND_PROVIDER)
+	xcrun clang -arch arm64 -Wl,-fixup_chains -Wl,-rpath,@executable_path \
+		-Wl,-L,$(BUILD_DIR) -Wl,-lchained-addend-provider "$<" \
+		"$(CHAINED_ADDEND_POINTER)" -o "$@"
+
+$(CHAINED_ADDEND_WEAK_POINTER): ../fixtures/handoff/chained-addend-weak-pointer.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -c "$<" -o "$@"
+
+$(CHAINED_ADDEND_WEAK): ../fixtures/handoff/chained-addend-weak-main.c $(CHAINED_ADDEND_WEAK_POINTER)
+	xcrun clang -arch arm64 -Wl,-fixup_chains -Wl,-undefined,dynamic_lookup \
+		"$<" "$(CHAINED_ADDEND_WEAK_POINTER)" -o "$@"
+
+$(CHAINED_ADDENDS_IMAGE_TEST): ../fixtures/handoff/chained-addends-image-test.cpp image_loader.cpp macho.cpp shared_cache.cpp guest_code_policy.cpp guest_tlv.cpp guest_state.cpp guest_format.cpp guest_scheduler.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I. "$<" image_loader.cpp macho.cpp \
+		shared_cache.cpp guest_code_policy.cpp guest_tlv.cpp guest_state.cpp guest_format.cpp \
+		guest_scheduler.cpp guest_strings.cpp guest_vector_crypto.cpp translate_core.cpp \
+		-framework Foundation -framework Security -framework CoreFoundation -o "$@"
+
 .PHONY: verify-chained-addends
-verify-chained-addends: $(CHAINED_ADDENDS_TEST) $(CHAINED_ADDENDS_FIXTURE)
+verify-chained-addends: $(CHAINED_ADDENDS_TEST) $(CHAINED_ADDENDS_FIXTURE) \
+	$(CHAINED_ADDEND_POSITIVE) $(CHAINED_ADDEND_WEAK) $(CHAINED_ADDENDS_IMAGE_TEST)
 	"$(CHAINED_ADDENDS_TEST)" "$(CHAINED_ADDENDS_FIXTURE)"
+	xcrun dyld_info -arch arm64 -fixup_chain_details "$(CHAINED_ADDEND_POSITIVE)" | grep -q 'addend: 12'
+	xcrun dyld_info -arch arm64 -imports "$(CHAINED_ADDEND_WEAK)" | \
+		grep -q '_chained_missing_target \[weak-import\]'
+	"$(CHAINED_ADDEND_POSITIVE)" >"$(BUILD_DIR)/chained-addend-positive.native"
+	printf '%s\n' 'marker=4242 offset=3' >"$(BUILD_DIR)/chained-addend-positive.expected"
+	cmp "$(BUILD_DIR)/chained-addend-positive.expected" "$(BUILD_DIR)/chained-addend-positive.native"
+	"$(CHAINED_ADDEND_WEAK)" >"$(BUILD_DIR)/chained-addend-weak.native"
+	printf '%s\n' 'weak_pointer=12' >"$(BUILD_DIR)/chained-addend-weak.expected"
+	cmp "$(BUILD_DIR)/chained-addend-weak.expected" "$(BUILD_DIR)/chained-addend-weak.native"
+	"$(CHAINED_ADDENDS_IMAGE_TEST)" strong "$(CHAINED_ADDEND_POSITIVE)" >"$(BUILD_DIR)/chained-addend-positive.loader"
+	printf '%s\n' 'strong_addend=12' >"$(BUILD_DIR)/chained-addend-positive.loader.expected"
+	cmp "$(BUILD_DIR)/chained-addend-positive.loader.expected" "$(BUILD_DIR)/chained-addend-positive.loader"
+	"$(CHAINED_ADDENDS_IMAGE_TEST)" weak "$(CHAINED_ADDEND_WEAK)" >"$(BUILD_DIR)/chained-addend-weak.loader"
+	printf '%s\n' 'weak_null_addend=12' >"$(BUILD_DIR)/chained-addend-weak.loader.expected"
+	cmp "$(BUILD_DIR)/chained-addend-weak.loader.expected" "$(BUILD_DIR)/chained-addend-weak.loader"
 
 $(INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
 	@mkdir -p "$(dir $@)"

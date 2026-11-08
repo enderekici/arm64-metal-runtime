@@ -2451,7 +2451,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error("Unresolved staged guest binding " +
                                              bind.resolved_name);
                 }
-                if (target != 0 && bind.imported.addend != 0) {
+                if ((target != 0 || bind.weak_null) && bind.imported.addend != 0) {
                     const auto addend = bind.imported.addend;
                     if (addend > 0) target += static_cast<std::uint64_t>(addend);
                     else target -= static_cast<std::uint64_t>(-(addend + 1)) + 1;

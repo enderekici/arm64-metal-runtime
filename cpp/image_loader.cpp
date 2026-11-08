@@ -1044,20 +1044,16 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
       bindings[address] = name;
       const auto apply_addend = [&](std::uint64_t value) {
         const auto addend = binding.second.addend;
-        if ((addend > 0 && value > static_cast<std::uint64_t>(
-                                      std::numeric_limits<std::int64_t>::max()) -
-                                      static_cast<std::uint64_t>(addend)) ||
-            (addend < 0 && value < static_cast<std::uint64_t>(-(addend + 1)) + 1)) {
-          fail("Executable binding addend overflows");
-        }
-        const auto adjusted = addend > 0
-            ? value + static_cast<std::uint64_t>(addend)
-            : value - (static_cast<std::uint64_t>(-(addend + 1)) + 1);
-        if (adjusted > static_cast<std::uint64_t>(
-                           std::numeric_limits<std::int64_t>::max())) {
+        if (value > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max())) {
           fail("Executable binding target exceeds guest range");
         }
-        return static_cast<std::int64_t>(adjusted);
+        const auto signedValue = static_cast<std::int64_t>(value);
+        if ((addend > 0 && signedValue > std::numeric_limits<std::int64_t>::max() - addend) ||
+            (addend < 0 && signedValue < std::numeric_limits<std::int64_t>::min() - addend)) {
+          fail("Executable binding addend overflows");
+        }
+        return signedValue + addend;
       };
       if (target) function_bindings[address] = apply_addend(*target);
       else if (!binding.second.weak || host_service_ids.count(name) || guest_memory_imports.count(name)) {
@@ -1067,6 +1063,8 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
         synthetic[name] = stub;
         imports[stub] = name;
         function_bindings[address] = apply_addend(static_cast<std::uint64_t>(stub));
+      } else {
+        function_bindings[address] = apply_addend(0);
       }
     }
   }
