@@ -2554,10 +2554,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         throw std::runtime_error("Missing guest VM resident row");
     };
-    const auto removeVmRegion = [&](const VmRegion& region) {
-        guestMemory.remove_mapping(region.begin);
-        removeVmRegionFromResident(resident, region);
-    };
     const auto syncResidentTable = [&]() {
         std::memcpy(residentBuffer.data(), resident.data(), resident.size() * sizeof(std::uint64_t));
     };
@@ -2716,71 +2712,71 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         const auto arenaEnd = guestMappingBase + image.mapping_backing_end();
         if (begin < guestMappingBase || end > arenaEnd) return kernInvalidArgument;
-        auto found = vmAllocations.end();
-        for (auto allocation = vmAllocations.begin(); allocation != vmAllocations.end(); ++allocation) {
-            if (allocation->second.end <= begin || allocation->second.begin >= end) continue;
-            if (found != vmAllocations.end()) return kernInvalidAddress;
-            found = allocation;
-        }
-        if (found == vmAllocations.end()) return kernSuccess;
-        auto& allocation = found->second;
-        const auto mappedBegin = std::max(begin, allocation.begin);
-        const auto mappedEnd = std::min(end, allocation.end);
-
-        std::vector<VmRegion> replacement;
-        for (const auto& region : allocation.regions) {
-            if (region.end <= mappedBegin || region.begin >= mappedEnd) {
-                replacement.push_back(region);
-                continue;
-            }
-            if (region.begin < mappedBegin) {
-                replacement.push_back({region.begin, mappedBegin, region.backing,
-                                        region.readable, region.writable, region.executable});
-            }
-            if (region.end > mappedEnd) {
-                replacement.push_back({mappedEnd, region.end,
-                    region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
-                    region.readable, region.writable, region.executable});
-            }
-        }
-        if (resident[0] < allocation.regions.size() ||
-            resident[0] - allocation.regions.size() + replacement.size() > residentCapacity) {
-            return kernNoSpace;
-        }
-
-        DynamicCodeReplacement stagedCodeRegions;
+        std::map<std::uint64_t, VmAllocation> stagedAllocations;
+        std::vector<std::uint64_t> stagedResident;
+        std::vector<std::uint64_t> removedBegins;
+        std::vector<GuestMemoryMapping> addedMappings;
+        std::vector<std::int64_t> releasedBackings;
+        std::vector<VmRegion> stagedCodeRegionsInput;
+        auto dynamicBegin = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t dynamicEnd = 0;
         try {
-            stagedCodeRegions = prepareDynamicCodeRegions(
-                allocation.begin, allocation.end, replacement);
+            stagedAllocations = vmAllocations;
+            stagedResident = resident;
+            for (const auto& [allocationBegin, allocation] : vmAllocations) {
+                if (allocation.end <= begin || allocation.begin >= end) continue;
+                const auto mappedBegin = std::max(begin, allocation.begin);
+                const auto mappedEnd = std::min(end, allocation.end);
+                std::vector<VmRegion> replacement;
+                for (const auto& region : allocation.regions) {
+                    if (region.end <= mappedBegin || region.begin >= mappedEnd) {
+                        replacement.push_back(region);
+                        continue;
+                    }
+                    if (region.begin < mappedBegin) {
+                        replacement.push_back({region.begin, mappedBegin, region.backing,
+                            region.readable, region.writable, region.executable});
+                    }
+                    if (region.end > mappedEnd) {
+                        replacement.push_back({mappedEnd, region.end,
+                            region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
+                            region.readable, region.writable, region.executable});
+                    }
+                }
+
+                for (const auto& region : allocation.regions) {
+                    removedBegins.push_back(region.begin);
+                    removeVmRegionFromResident(stagedResident, region);
+                }
+                for (const auto& region : replacement) {
+                    appendVmRegionToResident(stagedResident, region);
+                    addedMappings.push_back({region.begin, region.end, region.backing,
+                                             region.writable, region.readable});
+                    stagedCodeRegionsInput.push_back(region);
+                }
+
+                dynamicBegin = std::min(dynamicBegin, allocation.begin);
+                dynamicEnd = std::max(dynamicEnd, allocation.end);
+                auto stagedAllocation = stagedAllocations.find(allocationBegin);
+                if (replacement.empty()) {
+                    releasedBackings.push_back(
+                        static_cast<std::int64_t>(allocation.backing));
+                    stagedAllocations.erase(stagedAllocation);
+                } else {
+                    stagedAllocation->second.regions = std::move(replacement);
+                }
+            }
+            if (removedBegins.empty()) return kernSuccess;
+            DynamicCodeReplacement stagedCodeRegions = prepareDynamicCodeRegions(
+                dynamicBegin, dynamicEnd, stagedCodeRegionsInput);
+            guestMemory.replace_mappings(removedBegins, addedMappings);
+            vmAllocations.swap(stagedAllocations);
+            resident.swap(stagedResident);
+            commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
             return kernNoSpace;
         }
-
-        const auto oldRegions = allocation.regions;
-        std::vector<VmRegion> publishedRegions;
-        publishedRegions.reserve(replacement.size());
-        for (const auto& region : oldRegions) removeVmRegion(region);
-        try {
-            for (const auto& region : replacement) {
-                publishVmRegion(region);
-                publishedRegions.push_back(region);
-            }
-        } catch (...) {
-            for (const auto& region : publishedRegions) removeVmRegion(region);
-            try {
-                for (const auto& region : oldRegions) publishVmRegion(region);
-            } catch (...) {
-                throw std::runtime_error("Unable to restore guest VM mappings after deallocation failure");
-            }
-            syncResidentTable();
-            return kernNoSpace;
-        }
-        allocation.regions = std::move(replacement);
-        if (allocation.regions.empty()) {
-            mappingHeap.release(static_cast<std::int64_t>(allocation.backing));
-            vmAllocations.erase(found);
-        }
-        commitDynamicCodeRegions(std::move(stagedCodeRegions));
+        for (const auto backing : releasedBackings) mappingHeap.release(backing);
         syncResidentTable();
         return kernSuccess;
     };
