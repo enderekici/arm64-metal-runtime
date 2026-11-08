@@ -197,6 +197,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_dladdr", 165, true, true},
     {"__tlv_bootstrap", 164, true, true},
     {"__tlv_get_addr", 172, true, false},
+    {"_pthread_get_stackaddr_np", 180, true, true},
+    {"_pthread_get_stacksize_np", 181, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {

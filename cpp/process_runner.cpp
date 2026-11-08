@@ -4166,6 +4166,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 180 || service == 181) {
+                const auto threadId = hostRegisters[0];
+                const auto* thread = guestScheduler.find(threadId);
+                if (thread == nullptr) {
+                    throw std::runtime_error("Guest pthread stack query references unknown thread");
+                }
+                if (thread->stack.begin < 0 || thread->stack.end <= thread->stack.begin) {
+                    throw std::runtime_error("Guest pthread has invalid stack metadata");
+                }
+                hostRegisters[0] = service == 180
+                    ? static_cast<std::uint64_t>(thread->stack.end)
+                    : static_cast<std::uint64_t>(thread->stack.end - thread->stack.begin);
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 117) {
                 hostRegisters[0] = image.link_time_version(guest_cstring(guestMemory,
                                                                          hostRegisters[0]));
