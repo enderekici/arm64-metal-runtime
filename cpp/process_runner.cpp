@@ -1271,7 +1271,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     process_msl::Config config;
     config.linear_image_end = image.linear_image_end;
     config.mapping_backing_end = image.mapping_backing_end();
-    config.writable_regions.reserve(image.writable_regions.size());
+    config.writable_regions.reserve(image.writable_regions.size() + 1);
     for (const auto& range : image.writable_regions) {
         if (range.first < 0 || range.second < range.first) {
             throw std::runtime_error("Executable image has an invalid writable range");
@@ -1279,6 +1279,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         config.writable_regions.push_back({static_cast<std::uint64_t>(range.first),
                                            static_cast<std::uint64_t>(range.second)});
     }
+    config.writable_regions.push_back({
+        static_cast<std::uint64_t>(bootstrap.stack.begin),
+        static_cast<std::uint64_t>(bootstrap.stack.end)});
 
     // The lower bound remains the current thread's errno slot. The linear heap
     // above it remains writable by existing policy, including reclaimed
