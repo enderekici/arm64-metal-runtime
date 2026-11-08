@@ -4631,6 +4631,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (cache_faulted(registers) && options.demandCache) {
                 const auto requested = registers[guestCacheFaultAddress];
                 const auto width = registers[guestCacheFaultWidth];
+                const auto faultPc = registers[33];
+                if (activeKernel->usesInterpreter) {
+                    const auto faultPacket = std::find_if(
+                        activeKernel->interpretedPackets.begin(),
+                        activeKernel->interpretedPackets.end(),
+                        [faultPc](const auto& packet) { return packet.pc == faultPc; });
+                    if (registers[guestFaultAddress] != requested ||
+                        (width != 4 && width != 8) ||
+                        faultPacket == activeKernel->interpretedPackets.end()) {
+                        throw std::runtime_error(
+                            "Interpreter cache retry has invalid fault provenance");
+                    }
+                    const auto opcode = static_cast<translate_core::Opcode>(
+                        faultPacket->operation[0]);
+                    if ((opcode != translate_core::Opcode::LoadUnsignedImmediate &&
+                         opcode != translate_core::Opcode::StoreUnsignedImmediate) ||
+                        faultPacket->operation[5] / 8U != width) {
+                        throw std::runtime_error(
+                            "Interpreter cache retry does not match its memory packet");
+                    }
+                    progressTrace.event("interpreter-cache-fault", faultPc, requested);
+                }
                 if (!makeCacheResident(requested, width)) {
                     throw std::runtime_error("Guest cache fault could not be resolved at PC 0x" +
                         hexadecimal(registers[33]) + ", address 0x" + hexadecimal(requested) +
@@ -4640,6 +4662,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live[guestFaultAddress] = kNoFault;
                 live[guestCacheFaultAddress] = kNoFault;
                 live[guestCacheFaultWidth] = 0;
+                if (activeKernel->usesInterpreter) {
+                    live[35] = faultPc | gpu_interpreter::cacheRetryPcMarker;
+                    progressTrace.event("interpreter-cache-resident", faultPc, requested);
+                }
                 continue;
             }
             const auto address = registers[guestFaultAddress];

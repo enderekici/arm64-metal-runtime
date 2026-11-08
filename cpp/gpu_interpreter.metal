@@ -45,11 +45,21 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             return;
         }
         const int firstIndex = find_packet(packets, packetCount, pc);
-        if (firstIndex < 0 || (packets[firstIndex].flags & 1u) == 0u) {
+        if (firstIndex < 0) {
             state[33] = pc;
             state[34] = 7;
             return;
         }
+        const uint firstOpcode = packets[firstIndex].operation[0];
+        const bool memoryRetry =
+            (firstOpcode == 6u || firstOpcode == 7u) &&
+            state[35] == (pc | 0x8000000000000000ul);
+        if ((packets[firstIndex].flags & 1u) == 0u && !memoryRetry) {
+            state[33] = pc;
+            state[34] = 7;
+            return;
+        }
+        if (memoryRetry) state[35] = 0ul;
         --state[36];
 
         bool leftBlock = false;

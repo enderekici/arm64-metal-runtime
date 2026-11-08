@@ -68,6 +68,7 @@ Result Interpreter::dispatch(const Backend& backend,
     const auto* initialState = static_cast<const std::uint64_t*>(processState.data());
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
     bool hasInitialPc = false;
+    std::size_t initialPacketIndex = packets.size();
     bool hasMemoryAccess = false;
     std::uint64_t previousPc = 0;
     for (std::size_t index = 0; index < packets.size(); ++index) {
@@ -76,7 +77,10 @@ Result Interpreter::dispatch(const Backend& backend,
             (index != 0 && packet.pc <= previousPc)) {
             throw std::invalid_argument("Interpreter packets must have ordered aligned PCs");
         }
-        hasInitialPc = hasInitialPc || packet.pc == initialState[programCounterIndex];
+        if (packet.pc == initialState[programCounterIndex]) {
+            hasInitialPc = true;
+            initialPacketIndex = index;
+        }
         previousPc = packet.pc;
         if ((packet.flags & ~(packetBlockStart | packetBlockEnd)) != 0 ||
             packet.successorCount > 2) {
@@ -154,6 +158,17 @@ Result Interpreter::dispatch(const Backend& backend,
     }
     if (!hasInitialPc) {
         throw std::invalid_argument("Interpreter process PC is absent from the packet table");
+    }
+    const auto& initialPacket = packets[initialPacketIndex];
+    const auto initialOpcode = static_cast<translate_core::Opcode>(
+        initialPacket.operation[0]);
+    const bool memoryRetry =
+        (initialOpcode == translate_core::Opcode::LoadUnsignedImmediate ||
+         initialOpcode == translate_core::Opcode::StoreUnsignedImmediate) &&
+        initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
+    if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
+        throw std::invalid_argument(
+            "Interpreter mid-block entry requires a host cache-retry marker");
     }
     if (hasMemoryAccess && (memoryAccess == nullptr ||
         memoryAccess->guestMemoryBuffer == nullptr || memoryAccess->guestSizeBuffer == nullptr ||

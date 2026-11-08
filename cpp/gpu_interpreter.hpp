@@ -13,6 +13,7 @@ namespace arm64metal::gpu_interpreter {
 
 inline constexpr std::uint32_t packetBlockStart = 1U;
 inline constexpr std::uint32_t packetBlockEnd = 2U;
+inline constexpr std::uint64_t cacheRetryPcMarker = std::uint64_t{1} << 63U;
 
 // Fixed-width host/device packet. Control-flow edges stay 64-bit guest PCs,
 // separate from the canonical 24-byte operation serialization.
