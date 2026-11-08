@@ -56,10 +56,10 @@ smoke returned `mixed42`. Receipts: `/tmp/metal-vm-protect-gate.7ep6a4`.
 Focused Mach host-info and port-release cases from `dcc1488` match native,
 including invalid-host/flavor/count and rights cleanup controls. Isolated
 allowlisted raw-core candidate `8b67998` matched native byte-for-byte with
-status 0 and no diagnostics on its raw and stack fixtures. The latest isolated Java 26 and libz replays stop at raw syscall 366. The
-previous `ffd7da2` candidate advanced past `bzero` to raw trap `-27`
-(`thread_self`); neither result establishes full libz, Java, or general Mach IPC
-compatibility.
+status 0 and no diagnostics on its raw and stack fixtures. An isolated raw syscall-366 proof exists, but the Java 26 application still
+stops at raw syscall 206. The isolated result does not establish Java startup
+support. Six local IPC fixtures passed in isolation; general Mach IPC and full
+application service behavior remain open.
 
 ## Combined typed interpreter qualification
 
@@ -179,7 +179,28 @@ exit 42. Archive SHA-256 is
 `be8657af660dec6c94e82e376a330c6b5a02554852c114cfe53fca47b031e785`; copied to
 `.build/arm64-metal-cpp-macos.tar.gz`. Receipts: `/tmp/metal-isa-release-proof.KpUcrT`.
 
-## Evidence locations
+## MAP_JIT synthetic-package qualification
+
+The JIT release candidate `9a9b255` models guest MAP_JIT eligibility, write
+protection, synchronous SIGBUS information, and opposite-mode thread resume.
+The timing-independent gate-only commit `de2ca71` leaves runtime and metallib
+bytes unchanged. Strict regression, interpreter, and demand-cache gates exited
+0. Four extracted-package native/GPU synthetic fixtures matched: executable
+JIT call status 0 including code mutation result 41 to 42; no-entitlement denial
+status 21; SIGBUS retry status 77 with signal 10, code 1, and matching fault
+address; and opposite-mode thread-resume status 0.
+
+The packaged controls exercise the permission decision and resume sequence on
+synthetic binaries, not an unchanged application. Runtime SHA-256 was
+`7449e1418602c458574876cc8c6be333c20502bb282f699e985a03d10f314ae7`; interpreter
+metallib SHA-256 was
+`429d29b64ecd526d6f2cf80a52fdc7a835231d3fd1aa1fd1714bc5baf8f19231`. Archive
+SHA-256 is
+`adc0db4137d93888a480d616fee21f7e20273a53194441d35384aebbd0436302`; copied to
+`.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
+`/tmp/metal-jit-order-release.dR6ja0`; the old/fixed scheduler comparison is
+in `/tmp/map-jit-switch-proof`.
+
 
 The [loader probe sources](fixtures/handoff/README.md) are included in the repository.
 
