@@ -5782,8 +5782,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
-                if (messageId == 3418 || messageId == 3419) {
-                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                const bool clockServiceMessage = messageId == 1000 &&
+                    guestClockServiceIds.find(static_cast<std::uint32_t>(registers[3])) !=
+                        guestClockServiceIds.end();
+                if (messageId == 3418 || messageId == 3419) {                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;
                     constexpr std::uint32_t machMessageComplex = 0x80000000;
                     const auto remote = static_cast<std::uint32_t>(registers[3]);
@@ -6062,7 +6064,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
-                if (messageId == 1000) {
+                if (messageId == 1000 && clockServiceMessage) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;
                     const auto remote = static_cast<std::uint32_t>(registers[3]);
@@ -6159,7 +6161,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const bool sendRequested = (options & machSendMessage) != 0;
                 const bool receiveRequested = (options & machReceiveMessage) != 0;
                 const bool specialRemote = remote == guestMachTaskPort ||
-                                           remote == guestMachHostPort;
+                                           remote == guestMachHostPort || clockServiceMessage;
                 const bool localSend = sendRequested && !specialRemote;
                 const bool localReceive = receiveRequested && !sendRequested &&
                     receiveName != guestMachTaskPort && receiveName != guestMachHostPort;

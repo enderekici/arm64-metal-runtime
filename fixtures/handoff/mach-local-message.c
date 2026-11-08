@@ -68,6 +68,16 @@ int main(void) {
   const int received_message = receive == MACH_MSG_SUCCESS &&
       received.header.msgh_id == 0x4d534731 && received.payload == 0x1234abcd;
 
+  message.header.msgh_id = 1000;
+  message.payload = 0x87654321;
+  const uint64_t local_id_1000_send = call_send(&message, sizeof(message), port, 1000);
+  memset(&received, 0, sizeof(received));
+  const uint64_t local_id_1000_receive = call_receive(
+      &received, port, sizeof(received), MACH_RCV_MSG, 0);
+  const int local_id_1000 = local_id_1000_send == MACH_MSG_SUCCESS &&
+      local_id_1000_receive == MACH_MSG_SUCCESS && received.header.msgh_id == 1000 &&
+      received.payload == 0x87654321;
+
   struct {
     mach_msg_header_t header;
     mach_msg_max_trailer_t trailer;
@@ -90,11 +100,11 @@ int main(void) {
       sizeof(empty), MACH_RCV_MSG | MACH_RCV_TIMEOUT, 1);
 
   printf("task=%d allocate=%d insert=%d invalid_destination=%d send=%d "
-         "receive=%d payload=%d timeout=%llu receive_only_send=%llu "
+         "receive=%d payload=%d local_id_1000=%d timeout=%llu receive_only_send=%llu "
          "invalid_receive=%llu\n",
       task != MACH_PORT_NULL, allocated == KERN_SUCCESS, inserted == KERN_SUCCESS,
       invalid_destination_rejected, sent == MACH_MSG_SUCCESS,
-      receive == MACH_MSG_SUCCESS, received_message,
+      receive == MACH_MSG_SUCCESS, received_message, local_id_1000,
       (unsigned long long)timeout, (unsigned long long)receive_only_send,
       (unsigned long long)invalid_receive);
 
@@ -105,6 +115,7 @@ int main(void) {
   return !(task != MACH_PORT_NULL && allocated == KERN_SUCCESS &&
       inserted == KERN_SUCCESS && invalid_destination_rejected &&
       sent == MACH_MSG_SUCCESS && receive == MACH_MSG_SUCCESS && received_message &&
+      local_id_1000 &&
       receive_only_allocated == KERN_SUCCESS &&
       timeout == MACH_RCV_TIMED_OUT && receive_only_send == MACH_SEND_INVALID_DEST &&
       invalid_receive == MACH_RCV_INVALID_NAME);
