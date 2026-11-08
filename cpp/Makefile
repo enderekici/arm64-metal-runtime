@@ -95,6 +95,10 @@ INTERPRETER_BL_MAIN := $(BUILD_DIR)/interpreter-bl-nested-main
 INTERPRETER_BL_NATIVE := $(BUILD_DIR)/interpreter-bl-nested-native
 INTERPRETER_BL_UNPLANNED_MAIN := $(BUILD_DIR)/interpreter-bl-unplanned-main
 INTERPRETER_BL_UNPLANNED_NATIVE := $(BUILD_DIR)/interpreter-bl-unplanned-native
+INTERPRETER_BRANCH_REGISTER_MAIN := $(BUILD_DIR)/interpreter-branch-register-main
+INTERPRETER_BRANCH_REGISTER_NATIVE := $(BUILD_DIR)/interpreter-branch-register-native
+INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN := $(BUILD_DIR)/interpreter-branch-register-import-main
+INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE := $(BUILD_DIR)/interpreter-branch-register-import-native
 INTERPRETER_TYPED_MEMORY_MAIN := $(BUILD_DIR)/interpreter-typed-memory-main
 INTERPRETER_TYPED_MEMORY_RO_MAIN := $(BUILD_DIR)/interpreter-typed-memory-ro-main
 INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-typed-memory-unmapped-main
@@ -298,6 +302,22 @@ $(INTERPRETER_BL_UNPLANNED_NATIVE): ../fixtures/interpreter/bl-unplanned-main.s 
 $(INTERPRETER_BL_UNPLANNED_MAIN): ../fixtures/interpreter/bl-unplanned-main.s ../fixtures/interpreter/bl-unplanned-functions.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main -x assembler-with-cpp ../fixtures/interpreter/bl-unplanned-main.s -x none ../fixtures/interpreter/bl-unplanned-functions.s -lSystem -o "$@"
+
+$(INTERPRETER_BRANCH_REGISTER_NATIVE): ../fixtures/interpreter/branch-register-main.s ../fixtures/interpreter/branch-register-native-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -DARM64_GUEST_NATIVE_TEST=1 -Wall -Wextra -Werror -x assembler-with-cpp ../fixtures/interpreter/branch-register-main.s -x none ../fixtures/interpreter/branch-register-native-main.c -o "$@"
+
+$(INTERPRETER_BRANCH_REGISTER_MAIN): ../fixtures/interpreter/branch-register-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main -x assembler-with-cpp "$<" -lSystem -o "$@"
+
+$(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE): ../fixtures/interpreter/branch-register-import-main.s ../fixtures/interpreter/branch-register-import-native-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -DARM64_GUEST_NATIVE_TEST=1 -Wall -Wextra -Werror -x assembler-with-cpp ../fixtures/interpreter/branch-register-import-main.s -x none ../fixtures/interpreter/branch-register-import-native-main.c -o "$@"
+
+$(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN): ../fixtures/interpreter/branch-register-import-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main -x assembler-with-cpp "$<" -lSystem -o "$@"
 
 $(INTERPRETER_TYPED_MEMORY_MAIN): ../fixtures/interpreter/typed-memory-main.s
 	@mkdir -p "$(BUILD_DIR)"
@@ -621,7 +641,7 @@ verify-adc-sbc-carry-interpreter: $(APP) $(INTERPRETER_ADC_SBC_CARRY_MAIN) $(INT
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err" && \
 		echo "adc-sbc-carry interpreter dispatch verified: $$run_dir"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_LOGICAL_VARIABLE_SHIFTS_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_MAIN) $(INTERPRETER_LOGICAL_IMMEDIATE_INVALID_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_BL_MAIN) $(INTERPRETER_BL_NATIVE) $(INTERPRETER_BL_UNPLANNED_MAIN) $(INTERPRETER_BL_UNPLANNED_NATIVE) $(INTERPRETER_BRANCH_REGISTER_MAIN) $(INTERPRETER_BRANCH_REGISTER_NATIVE) $(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN) $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_TBZ_TBNZ_MAIN) $(INTERPRETER_ADR_ADRP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -724,6 +744,42 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		awk '/event=interpreter-dispatch pc=0x42d8/ { entry=1; next } entry && /event=dispatch-done pc=0x4300/ { target_exit=1; next } target_exit && /event=compile-start pc=0x4300/ { target_compile=1; next } target_compile && /event=dispatch-done pc=0x42f0/ { return_exit=1; next } return_exit && /event=compile-start pc=0x42f0/ { return_compile=1; next } return_compile && /event=interpreter-dispatch pc=0x42e0/ { resumed=1; exit } END { exit !resumed }' "$$run_dir/bl-unplanned.interpreter.err" && \
 		sed '/^arm64-metal trace /d' "$$run_dir/bl-unplanned.interpreter.err" >"$$run_dir/bl-unplanned.interpreter.no-trace.err" && \
 		cmp "$$run_dir/bl-unplanned.native.err" "$$run_dir/bl-unplanned.interpreter.no-trace.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_BRANCH_REGISTER_NATIVE)" >"$$run_dir/branch-register.native.out" 2>"$$run_dir/branch-register.native.err"; branch_register_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_MAIN)" >"$$run_dir/branch-register.translated.out" 2>"$$run_dir/branch-register.translated.err"; branch_register_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_MAIN)" >"$$run_dir/branch-register.interpreter.out" 2>"$$run_dir/branch-register.interpreter.err"; branch_register_interpreter_rc=$$?; \
+		printf '%s\n' "$$branch_register_native_rc" >"$$run_dir/branch-register.native.rc"; \
+		printf '%s\n' "$$branch_register_translated_rc" >"$$run_dir/branch-register.translated.rc"; \
+		printf '%s\n' "$$branch_register_interpreter_rc" >"$$run_dir/branch-register.interpreter.rc"; \
+		set -e; \
+		test "$$branch_register_native_rc" -eq 42 && test "$$branch_register_translated_rc" -eq "$$branch_register_native_rc" && \
+		test "$$branch_register_interpreter_rc" -eq "$$branch_register_native_rc" && \
+		cmp "$$run_dir/branch-register.native.out" "$$run_dir/branch-register.translated.out" && \
+		cmp "$$run_dir/branch-register.native.out" "$$run_dir/branch-register.interpreter.out" && \
+		cmp "$$run_dir/branch-register.native.err" "$$run_dir/branch-register.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch-register.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/branch-register.interpreter.err" && \
+		awk '/event=interpreter-dispatch/ { seen=1; next } seen && /event=compile-start/ { found=1 } END { exit found }' "$$run_dir/branch-register.interpreter.err" && \
+		sed '/^arm64-metal trace /d' "$$run_dir/branch-register.interpreter.err" >"$$run_dir/branch-register.interpreter.no-trace.err" && \
+		cmp "$$run_dir/branch-register.native.err" "$$run_dir/branch-register.interpreter.no-trace.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE)" >"$$run_dir/branch-register-import.native.out" 2>"$$run_dir/branch-register-import.native.err"; branch_register_import_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN)" >"$$run_dir/branch-register-import.translated.out" 2>"$$run_dir/branch-register-import.translated.err"; branch_register_import_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN)" >"$$run_dir/branch-register-import.interpreter.out" 2>"$$run_dir/branch-register-import.interpreter.err"; branch_register_import_interpreter_rc=$$?; \
+		printf '%s\n' "$$branch_register_import_native_rc" >"$$run_dir/branch-register-import.native.rc"; \
+		printf '%s\n' "$$branch_register_import_translated_rc" >"$$run_dir/branch-register-import.translated.rc"; \
+		printf '%s\n' "$$branch_register_import_interpreter_rc" >"$$run_dir/branch-register-import.interpreter.rc"; \
+		set -e; \
+		test "$$branch_register_import_native_rc" -eq 42 && test "$$branch_register_import_translated_rc" -eq "$$branch_register_import_native_rc" && \
+		test "$$branch_register_import_interpreter_rc" -eq "$$branch_register_import_native_rc" && \
+		cmp "$$run_dir/branch-register-import.native.out" "$$run_dir/branch-register-import.translated.out" && \
+		cmp "$$run_dir/branch-register-import.native.out" "$$run_dir/branch-register-import.interpreter.out" && \
+		cmp "$$run_dir/branch-register-import.native.err" "$$run_dir/branch-register-import.translated.err" && \
+		grep -qx 'blr-import' "$$run_dir/branch-register-import.native.out" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/branch-register-import.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/branch-register-import.interpreter.err" && \
+		sed '/^arm64-metal trace /d' "$$run_dir/branch-register-import.interpreter.err" >"$$run_dir/branch-register-import.interpreter.no-trace.err" && \
+		cmp "$$run_dir/branch-register-import.native.err" "$$run_dir/branch-register-import.interpreter.no-trace.err" || exit 1; \
 		set +e; \
 		"$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.native.out" 2>"$$run_dir/typed-memory.native.err"; memory_native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_MAIN)" >"$$run_dir/typed-memory.translated.out" 2>"$$run_dir/typed-memory.translated.err"; memory_translated_rc=$$?; \

@@ -120,6 +120,12 @@ Result Interpreter::dispatch(const Backend& backend,
                 packet.successor1 != packet.pc + 4) {
                 throw std::invalid_argument("Interpreter BL packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::BranchRegister) {
+            if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 0 ||
+                operation[1] != 0 || operation[2] > 31 || operation[3] > 1 ||
+                operation[4] != 0 || operation[5] != 64) {
+                throw std::invalid_argument("Interpreter BR/BLR packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::BranchZero) {
             const auto branchTarget = static_cast<std::int64_t>(packet.pc) +
                 static_cast<std::int32_t>(operation[4]);

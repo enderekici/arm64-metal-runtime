@@ -159,6 +159,12 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      0, 64};
   }
 
+  const auto registerBranch = bits & 0xfffffc1fU;
+  if (registerBranch == 0xd61f0000U || registerBranch == 0xd63f0000U) {
+    return Operation{Opcode::BranchRegister, 0, field(bits, 5, 5),
+                     registerBranch == 0xd63f0000U ? 1U : 0U, 0, 64};
+  }
+
   const auto unsignedMemory = bits & 0xffc00000U;
   const auto signedUnsignedMemory = unsignedMemory;
   const auto signedUnsignedLoads =
@@ -635,6 +641,22 @@ Instruction make_operation_instruction(Operation operation,
     }
     code.push_back("x[30] = " + std::to_string(next[1]) + "ul;");
     code.push_back("pc = " + std::to_string(next[0]) + "ul; break;");
+  } else if (operation.opcode == Opcode::BranchRegister) {
+    if (mode != LoweringMode::Process || operation.destination != 0 ||
+        operation.source > 31 || operation.immediate > 1 ||
+        operation.shift != 0 || operation.width != 64 || !next.empty() ||
+        guest_code_limit == 0 || guest_pc >= guest_code_limit) {
+      throw std::invalid_argument("Typed BR/BLR operands are invalid");
+    }
+    code.push_back("x[33] = " + reg(operation.source, true) + ";");
+    if (operation.immediate == 1) {
+      code.push_back("x[30] = " + std::to_string(guest_pc + 4) + "ul;");
+    }
+    code.push_back("if (x[33] == 0ul || x[33] >= " +
+                   std::to_string(guest_code_limit) +
+                   "ul || (x[33] & 3ul) != 0ul) { x[874] = x[33]; x[33] = " +
+                   std::to_string(guest_pc) + "ul; x[34] = 3; return; }");
+    code.push_back("x[34] = 7; return;");
   } else if (operation.opcode == Opcode::BranchZero) {
     if (operation.source > 31 || operation.immediate > 1 ||
         (operation.width != 32 && operation.width != 64) || next.size() != 2) {
@@ -716,7 +738,8 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation->opcode != Opcode::LoadUnscaledWriteback &&
       operation->opcode != Opcode::StoreUnscaledWriteback &&
       operation->opcode != Opcode::LoadSignedScalar &&
-      operation->opcode != Opcode::BranchLink) {
+      operation->opcode != Opcode::BranchLink &&
+      operation->opcode != Opcode::BranchRegister) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

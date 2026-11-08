@@ -41,6 +41,7 @@ enum class Opcode : std::uint32_t {
   Adr = 27,
   BranchLink = 28,
   LogicalVariableShiftRegister = 29,
+  BranchRegister = 30,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -68,6 +69,9 @@ enum class Opcode : std::uint32_t {
 // shift=(variant << 4) | condition, and width=32 or 64.
 // Direct BL uses immediate=signed byte displacement, width=64, and resolved
 // next edges {target, return PC}; LR receives the return PC.
+// BR/BLR use source=Rn, immediate=1 for BLR and 0 for BR, width=64, and no
+// static successors. Register 31 reads XZR; BLR snapshots its target before
+// writing LR=PC+4.
 // ADD/SUB shifted register uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(setFlags << 9) | (subtract << 8) | (shiftType << 6) | amount,
 // and width=32 or 64. Shift types 0/1/2 are LSL/LSR/ASR; register 31 is ZR.

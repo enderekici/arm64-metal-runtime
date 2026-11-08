@@ -954,6 +954,83 @@ int main() {
   assert(stubBranchLink.code[0] == "x[30] = 4100ul;");
   assert(stubBranchLink.code[1] == "pc = 8192ul; break;");
 
+  const auto branchRegister = decode_operation(0xd61f0120U);  // BR X9.
+  assert(branchRegister && branchRegister->opcode == Opcode::BranchRegister &&
+         branchRegister->destination == 0 && branchRegister->source == 9 &&
+         branchRegister->immediate == 0 && branchRegister->shift == 0 &&
+         branchRegister->width == 64);
+  assert((serialize_operation(*branchRegister) ==
+          arm64metal::translate_core::OperationPacket{30, 0, 9, 0, 0, 64}));
+  const auto branchRegisterLowered = make_operation_instruction(
+      *branchRegister, {}, LoweringMode::Process, 0x10000, 0x2000);
+  assert(branchRegisterLowered.next.empty() &&
+         branchRegisterLowered.ends_block_at(0x2000));
+  assert((branchRegisterLowered.code == std::vector<std::string>{
+      "x[33] = x[9];",
+      "if (x[33] == 0ul || x[33] >= 65536ul || (x[33] & 3ul) != 0ul) { "
+      "x[874] = x[33]; x[33] = 8192ul; x[34] = 3; return; }",
+      "x[34] = 7; return;"}));
+
+  const auto branchLinkRegister = decode_operation(0xd63f03c0U);  // BLR X30.
+  assert(branchLinkRegister && branchLinkRegister->opcode == Opcode::BranchRegister &&
+         branchLinkRegister->source == 30 && branchLinkRegister->immediate == 1 &&
+         branchLinkRegister->width == 64);
+  const auto branchLinkRegisterLowered = make_operation_instruction(
+      *branchLinkRegister, {}, LoweringMode::Process, 0x10000, 0x2000);
+  assert((branchLinkRegisterLowered.code == std::vector<std::string>{
+      "x[33] = x[30];",
+      "x[30] = 8196ul;",
+      "if (x[33] == 0ul || x[33] >= 65536ul || (x[33] & 3ul) != 0ul) { "
+      "x[874] = x[33]; x[33] = 8192ul; x[34] = 3; return; }",
+      "x[34] = 7; return;"}));
+  assert((serialize_operation(*branchLinkRegister) ==
+          arm64metal::translate_core::OperationPacket{30, 0, 30, 1, 0, 64}));
+
+  const auto branchZeroRegister = decode_operation(0xd61f03e0U);  // BR XZR.
+  const auto branchLinkZeroRegister = decode_operation(0xd63f03e0U);  // BLR XZR.
+  assert(branchZeroRegister && branchZeroRegister->source == 31 &&
+         branchZeroRegister->immediate == 0);
+  assert(branchLinkZeroRegister && branchLinkZeroRegister->source == 31 &&
+         branchLinkZeroRegister->immediate == 1);
+  assert(make_operation_instruction(*branchZeroRegister, {},
+                                    LoweringMode::Process, 0x10000, 0x2000)
+             .code[0] == "x[33] = 0ul;");
+  assert(!decode_operation(0xd61f0800U).has_value());  // Reserved fixed bit.
+  const auto indirectWithMap = arm64metal::decode_process(
+      0xd63f0120U, 0x2000, {{0x9000, "_exit"}}, {{0x8000, 0x7000}}, false);
+  assert(indirectWithMap.operation &&
+         indirectWithMap.operation->opcode == Opcode::BranchRegister &&
+         indirectWithMap.next.empty() &&
+         indirectWithMap.code[0] == "x[33] = x[9];");
+  auto invalidBranchRegister = *branchRegister;
+  invalidBranchRegister.source = 32;
+  bool branchRegisterRejected = false;
+  try {
+    (void)make_operation_instruction(invalidBranchRegister, {},
+                                     LoweringMode::Process, 0x10000, 0x2000);
+  } catch (const std::invalid_argument&) {
+    branchRegisterRejected = true;
+  }
+  assert(branchRegisterRejected);
+  invalidBranchRegister = *branchRegister;
+  invalidBranchRegister.width = 32;
+  branchRegisterRejected = false;
+  try {
+    (void)make_operation_instruction(invalidBranchRegister, {},
+                                     LoweringMode::Process, 0x10000, 0x2000);
+  } catch (const std::invalid_argument&) {
+    branchRegisterRejected = true;
+  }
+  assert(branchRegisterRejected);
+  branchRegisterRejected = false;
+  try {
+    (void)make_operation_instruction(*branchRegister, {0x2004},
+                                     LoweringMode::Process, 0x10000, 0x2000);
+  } catch (const std::invalid_argument&) {
+    branchRegisterRejected = true;
+  }
+  assert(branchRegisterRejected);
+
   const auto loadWord = decode_operation(0xb9400403);
   assert(loadWord.has_value());
   assert(loadWord->opcode == Opcode::LoadUnsignedImmediate);

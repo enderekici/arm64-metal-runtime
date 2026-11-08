@@ -185,6 +185,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                            decodedOperation->opcode == translate_core::Opcode::Branch;
   const bool typedBranchLink = decodedOperation &&
                                decodedOperation->opcode == translate_core::Opcode::BranchLink;
+  const bool typedBranchRegister = decodedOperation &&
+      decodedOperation->opcode == translate_core::Opcode::BranchRegister;
   const bool typedBranchZero = decodedOperation &&
                                decodedOperation->opcode == translate_core::Opcode::BranchZero;
   const bool typedBranchCondition = decodedOperation &&
@@ -208,6 +210,11 @@ Instruction decode_process(uint32_t bits, int64_t pc,
           guestCodeLimit, static_cast<std::uint64_t>(pc));
     }
   }
+  if (typedBranchRegister) {
+    return translate_core::make_operation_instruction(
+        *decodedOperation, {}, translate_core::LoweringMode::Process,
+        guestCodeLimit, static_cast<std::uint64_t>(pc));
+  }
   if (typedBranchZero) {
     const auto target = pc + static_cast<std::int32_t>(decodedOperation->shift);
     return translate_core::make_operation_instruction(
@@ -226,7 +233,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         *decodedOperation, {target, next}, translate_core::LoweringMode::Process,
         guestCodeLimit, static_cast<std::uint64_t>(pc));
   }
-  if (decodedOperation && !typedBranch && !typedBranchLink && !typedBranchZero &&
+  if (decodedOperation && !typedBranch && !typedBranchLink &&
+      !typedBranchRegister && !typedBranchZero &&
       !typedBranchCondition &&
       !typedTestBitBranch &&
       decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
@@ -441,20 +449,6 @@ Instruction decode_process(uint32_t bits, int64_t pc,
              str(guestFaultAddress) + "] = " + str(reg(rn)) + "; x[" +
              str(guestCacheFaultAddress) + "] = " + str(modifier) +
              "; x[33] = " + str(pc) + "ul; x[34] = 10; return; }"),
-            linked ? (std::string("x[30] = ") + str(next) + "ul;")
-                   : (std::string("")),
-            (std::string("pc = target; } break;")),
-        },
-        linked ? PCs{next} : PCs{});
-  }
-  auto indirect = bits & 0xfffffc1f;
-  if ((indirect == 0xd61f0000 || indirect == 0xd63f0000) && (rn != 31)) {
-    auto linked = indirect == 0xd63f0000;
-    return make_instruction(
-        Strings{
-            (std::string("{ ulong target = ") + str(reg(rn)) + ";"),
-            (std::string("if (target >= ") + str(guestCodeLimit) +
-             "ul) { x[874] = target; x[33] = pc; x[34] = 3; return; }"),
             linked ? (std::string("x[30] = ") + str(next) + "ul;")
                    : (std::string("")),
             (std::string("pc = target; } break;")),

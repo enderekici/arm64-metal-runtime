@@ -402,6 +402,31 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 leftBlock = true;
                 break;
             }
+            if (opcode == 30u) {
+                const uint rn = instruction.operation[2];
+                const uint link = instruction.operation[3];
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (!blockEnd || instruction.successorCount != 0u ||
+                    instruction.operation[1] != 0u || rn > 31u || link > 1u ||
+                    instruction.operation[4] != 0u ||
+                    instruction.operation[5] != 64u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong target = rn == 31u ? 0ul : state[rn];
+                if (link != 0u) state[30] = instruction.pc + 4ul;
+                if (target == 0ul || target >= (1ul << 48) ||
+                    (target & 3ul) != 0ul) {
+                    state[874] = target;
+                    state[33] = pc;
+                    state[34] = 3;
+                    return;
+                }
+                state[33] = target;
+                state[34] = 7;
+                return;
+            }
             if (opcode == 15u) {
                 if ((instruction.flags & 2u) == 0u ||
                     instruction.successorCount != 2u) {

@@ -365,6 +365,18 @@ ProcessKernelPlan plan_process_kernel(
                 complete = true;
                 break;
             }
+            if (opcode == translate_core::Opcode::BranchRegister) {
+                const auto& operation = *instruction.operation;
+                if (!instruction.ends_block_at(pc) || !instruction.next.empty() ||
+                    operation.destination != 0 || operation.source > 31 ||
+                    operation.immediate > 1 || operation.shift != 0 ||
+                    operation.width != 64) {
+                    break;
+                }
+                block.push_back({pc, &instruction, true});
+                complete = true;
+                break;
+            }
             if (opcode == translate_core::Opcode::BranchZero) {
                 if (!instruction.ends_block_at(pc) || instruction.next.size() != 2 ||
                     instruction.next[0] < 0 || instruction.next[1] < 0) {
