@@ -410,9 +410,9 @@ Native output is `send_woke=1 timeout=268451843 destroy_result=0 destroy_wake=26
 ## Late local Mach message after receive timeout
 
 `mach-local-late-message.c` leaves the main thread runnable while a worker's
-10 ms local receive times out. After the worker marks entry, the main thread
-busy-spins for 100 ms, sends two messages immediately without
-joining or yielding, then joins and receives them from the same port in FIFO
+10 ms local receive times out. The main thread yields until the worker blocks,
+then busy-spins for 100 ms and sends two messages immediately without joining
+or yielding. It then joins and receives them from the same port in FIFO
 order. This catches stale waiter delivery consuming a message after its
 deadline while also checking that the late message remains queued.
 

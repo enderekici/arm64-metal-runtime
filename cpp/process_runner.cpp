@@ -1819,7 +1819,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
     };
     const auto expireAndPruneGuestMachReceiveWaiters = [&](std::uint64_t now) {
-        (void)guestScheduler.expire_waiters(now);
+        const auto expired = guestScheduler.expire_waiters(now);
+        if (expired != 0) progressTrace.event("mach-waiters-expired", now, expired);
         pruneGuestMachReceiveWaiters();
     };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
@@ -6206,6 +6207,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     message.body.assign(bytes + sizeof(mach_msg_header_t),
                                                         bytes + sendSize);
                                     guestMachMessageQueues[remote].push_back(std::move(message));
+                                    progressTrace.event("mach-message-send",
+                                        guestScheduler.current_id(),
+                                        static_cast<std::uint32_t>(messageId));
                                     deliverGuestMachMessage(remote);
                                 } catch (const std::exception&) {
                                     result = machSendInvalidData;

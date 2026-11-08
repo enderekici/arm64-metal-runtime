@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -88,6 +89,7 @@ int main(void) {
     const uint64_t waitStart = monotonic_nanoseconds();
     while (atomic_load_explicit(&context.entered, memory_order_acquire) == 0 &&
            monotonic_nanoseconds() - waitStart < UINT64_C(1000000000)) {
+      (void)sched_yield();
     }
   }
 
