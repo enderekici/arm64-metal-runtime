@@ -38,6 +38,7 @@
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <mach/mach.h>
@@ -3951,6 +3952,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;
+    bool connectDiagnosticEmitted = false;
     while (true) {
         syncTproThreadAccess();
         if (!applyJitWriteProtection ||
@@ -8313,6 +8315,52 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 registers[34] = 0;
                 continue;
+            }
+            if (registers[16] == 98 && progressTrace.enabled() &&
+                !connectDiagnosticEmitted) {
+                connectDiagnosticEmitted = true;
+                const auto address = registers[1];
+                const auto addressLength = registers[2];
+                const auto pathOffset = offsetof(sockaddr_un, sun_path);
+                const auto maximumLength = sizeof(sockaddr_un);
+                const auto logClass = [&](const char* category, unsigned sunLength,
+                                          unsigned family) {
+                    std::cerr << "arm64-metal trace connect-sockaddr pc=0x"
+                              << hexadecimal(registers[33]) << " lr=0x"
+                              << hexadecimal(registers[30]) << " fd=" << registers[0]
+                              << " length=" << addressLength << " sun_len=" << sunLength
+                              << " family=" << family << " path_class=" << category << '\n';
+                };
+                if (addressLength < pathOffset || addressLength > maximumLength ||
+                    address < ExecutableImage::minimum_image_address) {
+                    logClass("invalid-bounds", 0, 0);
+                } else {
+                    try {
+                        const auto* bytes = guestMemory.buffer(address,
+                            static_cast<std::size_t>(addressLength));
+                        const auto sunLength = static_cast<unsigned char>(bytes[0]);
+                        const auto family = static_cast<unsigned char>(bytes[1]);
+                        const auto pathBytes = static_cast<std::size_t>(addressLength) - pathOffset;
+                        const auto* path = bytes + pathOffset;
+                        const auto terminator = std::find(path, path + pathBytes, '\0');
+                        const auto pathLength = static_cast<std::size_t>(terminator - path);
+                        const bool isSyslog =
+                            (pathLength == sizeof("/var/run/syslog") - 1 &&
+                                std::memcmp(path, "/var/run/syslog", pathLength) == 0) ||
+                            (pathLength == sizeof("/private/var/run/syslog") - 1 &&
+                                std::memcmp(path, "/private/var/run/syslog", pathLength) == 0);
+                        const bool isRunDirectory =
+                            (pathLength >= sizeof("/var/run/") - 1 &&
+                                std::memcmp(path, "/var/run/", sizeof("/var/run/") - 1) == 0) ||
+                            (pathLength >= sizeof("/private/var/run/") - 1 &&
+                                std::memcmp(path, "/private/var/run/",
+                                    sizeof("/private/var/run/") - 1) == 0);
+                        logClass(isSyslog ? "syslog" : isRunDirectory ? "var-run" : "opaque",
+                            sunLength, family);
+                    } catch (const std::out_of_range&) {
+                        logClass("unreadable", 0, 0);
+                    }
+                }
             }
             throw std::runtime_error("Guest reached unsupported Darwin syscall 0x" +
                 hexadecimal(registers[16]) + " at PC 0x" + hexadecimal(registers[33]) +
