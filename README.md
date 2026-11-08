@@ -27,9 +27,12 @@ handles supported imports, preserving guest state across dispatches. Set
 start/completion, sampled Metal dispatch start/completion, and guest host-service
 entries on stderr. The trace is capped at 128 events and prints one limit notice.
 After the cap, it emits at most one sampled progress event every 10 seconds, up
-to 16 more events. It also marks image-load boundaries, initializer transitions,
-and raw Darwin syscall entries. Without this flag the process runner emits no
-progress messages.
+to 16 more events by default. Set `ARM64_METAL_TRACE_PROGRESS_LIMIT` to a decimal
+value from 0 to 4096 to change that bounded report count. Progress lines include
+tagged compile starts/completions, summed compile milliseconds, and dispatch
+count. It also marks image-load boundaries, initializer transitions, and raw
+Darwin syscall entries. Without this flag the process runner emits no progress
+messages.
 
 The verified system executable corpus covers `true`, `false`, `echo`, `pwd`,
 `printenv` named lookups, `dirname`, `basename`, `cat` reading files and stdin,

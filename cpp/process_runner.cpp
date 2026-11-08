@@ -1347,21 +1347,30 @@ public:
             std::getenv("ARM64_METAL_TRACE_INTERPRETER_PACKETS");
         packetTraceEnabled_ = enabled_ && packetTrace != nullptr &&
                               std::strcmp(packetTrace, "1") == 0;
+        periodicReportLimit_ = parsePeriodicReportLimit(
+            std::getenv("ARM64_METAL_TRACE_PROGRESS_LIMIT"));
     }
 
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
 
     void event(const char* name, std::uint64_t pc, std::uint64_t detail = 0) {
         if (!enabled_) return;
+        if (std::strcmp(name, "compile-start") == 0) {
+            increment(compileStarts_);
+        } else if (std::strcmp(name, "compile-done") == 0) {
+            increment(compileCompletions_);
+            addSaturating(compileMilliseconds_, detail);
+        }
         const auto now = std::chrono::steady_clock::now();
         if (events_ == maximumEvents) {
             if (!limitReported_) {
-                std::cerr << "arm64-metal trace event-limit=" << maximumEvents << '\n';
+                std::cerr << "arm64-metal trace event-limit=" << maximumEvents
+                          << " progress-limit=" << periodicReportLimit_ << '\n';
                 limitReported_ = true;
                 lastPeriodic_ = now;
                 return;
             }
-            if (periodicEvents_ == maximumPeriodicEvents ||
+            if (periodicEvents_ == periodicReportLimit_ ||
                 now - lastPeriodic_ < periodicInterval) return;
             ++periodicEvents_;
             lastPeriodic_ = now;
@@ -1370,6 +1379,10 @@ public:
         }
         ++events_;
         write("event", name, pc, detail, now);
+    }
+
+    void recordDispatch() noexcept {
+        if (enabled_) increment(dispatches_);
     }
 
     void interpreterPacket(std::uint64_t pc, std::uint64_t opcode) {
@@ -1390,14 +1403,47 @@ public:
 private:
     static constexpr std::size_t maximumEvents = 128;
     static constexpr std::size_t maximumPacketEvents = 4096;
-    static constexpr std::size_t maximumPeriodicEvents = 16;
+    static constexpr std::size_t defaultPeriodicReportLimit = 16;
+    static constexpr std::size_t maximumPeriodicReportLimit = 4096;
     static constexpr auto periodicInterval = std::chrono::seconds(10);
+
+    static std::size_t parsePeriodicReportLimit(const char* text) noexcept {
+        if (text == nullptr || text[0] == '\0') return defaultPeriodicReportLimit;
+        std::size_t value = 0;
+        for (const char* digit = text; *digit != '\0'; ++digit) {
+            if (*digit < '0' || *digit > '9') return defaultPeriodicReportLimit;
+            const auto next = static_cast<std::size_t>(*digit - '0');
+            if (value > (maximumPeriodicReportLimit - next) / 10) {
+                return maximumPeriodicReportLimit;
+            }
+            value = value * 10 + next;
+            if (value > maximumPeriodicReportLimit) return maximumPeriodicReportLimit;
+        }
+        return value;
+    }
+
+    static void increment(std::uint64_t& value) noexcept {
+        if (value < std::numeric_limits<std::uint64_t>::max()) ++value;
+    }
+
+    static void addSaturating(std::uint64_t& total, std::uint64_t value) noexcept {
+        const auto maximum = std::numeric_limits<std::uint64_t>::max();
+        total = value > maximum - total ? maximum : total + value;
+    }
+
     void write(const char* kind, const char* name, std::uint64_t pc,
                std::uint64_t detail, std::chrono::steady_clock::time_point now) const {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - started_).count();
         std::cerr << "arm64-metal trace +" << elapsed << "ms " << kind << '=' << name
-                  << " pc=0x" << hexadecimal(pc) << " detail=" << detail << '\n';
+                  << " pc=0x" << hexadecimal(pc) << " detail=" << detail;
+        if (std::strcmp(kind, "progress") == 0) {
+            std::cerr << " compile-starts=" << compileStarts_
+                      << " compile-done=" << compileCompletions_
+                      << " compile-ms=" << compileMilliseconds_
+                      << " dispatches=" << dispatches_;
+        }
+        std::cerr << '\n';
     }
 
     bool enabled_ = false;
@@ -1406,6 +1452,11 @@ private:
     std::size_t events_ = 0;
     std::size_t packetEvents_ = 0;
     bool packetLimitReported_ = false;
+    std::uint64_t compileStarts_ = 0;
+    std::uint64_t compileCompletions_ = 0;
+    std::uint64_t compileMilliseconds_ = 0;
+    std::uint64_t dispatches_ = 0;
+    std::size_t periodicReportLimit_ = defaultPeriodicReportLimit;
     std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastPeriodic_ = started_;
     std::size_t periodicEvents_ = 0;
@@ -6388,6 +6439,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             registers[34] = 0;
         } else if (progressTrace.enabled() || jitExecutionTrace.enabled()) {
             ++dispatchSequence;
+            if (progressTrace.enabled()) progressTrace.recordDispatch();
             const bool reportDispatch = dispatchSequence <= 16 || dispatchSequence % 32 == 0;
             const auto dispatchedPc = registers[33];
             const auto dispatchStarted = std::chrono::steady_clock::now();
