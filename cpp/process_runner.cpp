@@ -1211,6 +1211,10 @@ public:
     ProgressTrace() {
         const char* enabled = std::getenv("ARM64_METAL_TRACE");
         enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+        const char* packetTrace =
+            std::getenv("ARM64_METAL_TRACE_INTERPRETER_PACKETS");
+        packetTraceEnabled_ = enabled_ && packetTrace != nullptr &&
+                              std::strcmp(packetTrace, "1") == 0;
     }
 
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
@@ -1236,8 +1240,24 @@ public:
         write("event", name, pc, detail, now);
     }
 
+    void interpreterPacket(std::uint64_t pc, std::uint64_t opcode) {
+        if (!packetTraceEnabled_) return;
+        if (packetEvents_ == maximumPacketEvents) {
+            if (!packetLimitReported_) {
+                std::cerr << "arm64-metal trace interpreter-packet-limit="
+                          << maximumPacketEvents << '\n';
+                packetLimitReported_ = true;
+            }
+            return;
+        }
+        ++packetEvents_;
+        write("event", "interpreter-packet", pc, opcode,
+              std::chrono::steady_clock::now());
+    }
+
 private:
     static constexpr std::size_t maximumEvents = 128;
+    static constexpr std::size_t maximumPacketEvents = 4096;
     static constexpr std::size_t maximumPeriodicEvents = 16;
     static constexpr auto periodicInterval = std::chrono::seconds(10);
     void write(const char* kind, const char* name, std::uint64_t pc,
@@ -1249,8 +1269,11 @@ private:
     }
 
     bool enabled_ = false;
+    bool packetTraceEnabled_ = false;
     bool limitReported_ = false;
     std::size_t events_ = 0;
+    std::size_t packetEvents_ = 0;
+    bool packetLimitReported_ = false;
     std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastPeriodic_ = started_;
     std::size_t periodicEvents_ = 0;
@@ -1812,8 +1835,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 static_cast<std::uint64_t>(entry),
                                 plan.interpretedPackets.size());
             for (const auto& packet : plan.interpretedPackets) {
-                progressTrace.event("interpreter-packet", packet.pc,
-                                    packet.operation[0]);
+                progressTrace.interpreterPacket(packet.pc,
+                                                packet.operation[0]);
             }
             return CompiledProcessKernel{{}, plan.interpretedPackets, true};
         }

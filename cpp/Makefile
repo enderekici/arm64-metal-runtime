@@ -348,7 +348,7 @@ verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_R
 	trap 'rm -rf "$$run_dir"' EXIT; \
 	run_case() { \
 		name=$$1; executable=$$2; expected_status=$$3; expected_ops=$$4; \
-		if ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$$executable" >"$$run_dir/$$name.out" 2>"$$run_dir/$$name.trace"; then rc=0; else rc=$$?; fi; \
+		if ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 "$(APP)" launch "$$executable" >"$$run_dir/$$name.out" 2>"$$run_dir/$$name.trace"; then rc=0; else rc=$$?; fi; \
 		test "$$rc" -eq "$$expected_status"; \
 		awk -v wanted="$$expected_ops" ' \
 			function hexval(s, i, n, c) { sub(/^pc=0x/, "", s); n=0; for(i=1;i<=length(s);i++){ c=index("0123456789abcdef",tolower(substr(s,i,1)))-1; if(c<0)return -1; n=n*16+c } return n } \
