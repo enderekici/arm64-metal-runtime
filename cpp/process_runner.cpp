@@ -2703,6 +2703,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     constexpr std::uint32_t kernProtectionFailure = 2;
     constexpr std::uint32_t kernNoSpace = 3;
     constexpr std::uint32_t kernInvalidArgument = 4;
+    constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
     std::optional<std::size_t> kdebugTypeFilterBacking;
     std::uint64_t kdebugTypeFilterLogicalCursor = guestMappingBase + (std::uint64_t{1} << 32U);
     hostServiceState.machVmAllocate = [&](std::uint64_t size, std::uint64_t alignment,
@@ -4655,7 +4656,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             progressTrace.event("raw-syscall", registers[33], syscall);
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-14))) {
                 if (registers[0] != bootstrap.guestTaskPort) {
-                    registers[0] = kernInvalidArgument;
+                    registers[0] = machSendInvalidDest;
                 } else if (!hostServiceState.machVmProtect) {
                     registers[0] = kernInvalidArgument;
                 } else {

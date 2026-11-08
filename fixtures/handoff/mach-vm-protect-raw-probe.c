@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <mach/message.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -41,6 +42,11 @@ int main(void) {
   memory[page] = 0x52;
   memory[2 * page] = 0x73;
 
+  const kern_return_t invalid_target = raw_protect(MACH_PORT_NULL, base, page,
+                                                    FALSE, VM_PROT_READ);
+  const kern_return_t overflow = raw_protect(task, UINT64_MAX - 7, 32,
+                                              FALSE, VM_PROT_READ);
+  const kern_return_t unmapped = raw_protect(task, 0, page, FALSE, VM_PROT_READ);
   const kern_return_t current_read = raw_protect(task, base + page, page,
                                                   FALSE, VM_PROT_READ);
   const int restore_write = mprotect((void *)(uintptr_t)(base + page), page,
@@ -80,16 +86,20 @@ int main(void) {
   const kern_return_t release_left = mach_vm_deallocate(task, base, page);
   const kern_return_t release_right = mach_vm_deallocate(task, base + 2 * page, page);
 
-  printf("page=%llu current=%d restore=%d/read=%d lower=%d raise=%d write=%d "
+  printf("invalid=%u overflow=%d unmapped=%d page=%llu current=%d restore=%d/read=%d lower=%d raise=%d write=%d "
          "mprotect-rw=%d/%d read=%d/%d middle=%u edges=%d,%d:%u,%u "
          "dealloc=%d hole=%d/%d release=%d,%d\n",
-         (unsigned long long)page, current_read, restore_write, set_read,
+         invalid_target, overflow, unmapped, (unsigned long long)page,
+         current_read, restore_write, set_read,
          lower_maximum, raise_maximum, write_over_maximum,
          writable_after_lowering, writable_errno,
          readable_after_lowering, readable_errno, middle,
          left_rw, right_rw, left, right, deallocate_middle,
          access_hole, hole_errno, release_left, release_right);
-  return current_read || restore_write || set_read || lower_maximum ||
+  return invalid_target != MACH_SEND_INVALID_DEST ||
+         overflow != KERN_INVALID_ARGUMENT ||
+         unmapped != KERN_INVALID_ADDRESS || current_read || restore_write ||
+         set_read || lower_maximum ||
          raise_maximum != KERN_PROTECTION_FAILURE ||
          write_over_maximum != KERN_PROTECTION_FAILURE ||
          writable_after_lowering != -1 || writable_errno != EACCES ||

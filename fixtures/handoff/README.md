@@ -184,4 +184,4 @@ cmp "$out.native.status" "$out.runtime.status"
 ```
 
 The native control exits 0 with stdout
-`page=16384 current=0 restore=0/read=0 lower=0 raise=2 write=2 mprotect-rw=-1/13 read=0/0 middle=83 edges=0,0:50,116 dealloc=0 hole=-1/12 release=0,0` and empty stderr.
+`invalid=268435459 overflow=4 unmapped=1 page=16384 current=0 restore=0/read=0 lower=0 raise=2 write=2 mprotect-rw=-1/13 read=0/0 middle=83 edges=0,0:50,116 dealloc=0 hole=-1/12 release=0,0` and empty stderr. The invalid task result is `MACH_SEND_INVALID_DEST`; arithmetic overflow returns `KERN_INVALID_ARGUMENT`, and an unmapped target returns `KERN_INVALID_ADDRESS`.
