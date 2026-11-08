@@ -5460,6 +5460,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 195) {
+                hostRegisters[0] = guest_image_vmaddr_slide(
+                    imageRegistry, hostRegisters[0], image.image_slides);
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 101) {
                 hostRegisters[0] = static_cast<std::uint64_t>(::issetugid());
                 std::copy_n(hostRegisters.begin(), 36,

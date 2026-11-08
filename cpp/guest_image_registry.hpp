@@ -94,4 +94,16 @@ class GuestImageRegistry {
   std::unordered_map<std::uint64_t, std::size_t> indices_;
 };
 
+inline std::uint64_t guest_image_vmaddr_slide(
+    const GuestImageRegistry& registry, std::uint64_t index,
+    const std::unordered_map<std::uint64_t, std::uint64_t>& imageSlides) {
+  const auto header = registry.header_at(index);
+  if (!header) return 0;
+  const auto slide = imageSlides.find(*header);
+  if (slide == imageSlides.end()) {
+    throw std::logic_error("Published guest image has no slide metadata");
+  }
+  return slide->second;
+}
+
 }  // namespace arm64metal

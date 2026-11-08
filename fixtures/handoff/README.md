@@ -160,6 +160,9 @@ checks header/name bounds, verifies failed-load snapshot stability, and proves
 that a successful `dlopen` publishes its requested image before a new dependency.
 `make -C cpp verify-guest-image-registry` checks guest registry ordering,
 out-of-range results, deduplication and uncommitted transaction rollback.
+`make verify-dyld-image-slide-native` checks that every native image index
+returns the slide implied by its `__TEXT` vmaddr and that an out-of-range index
+returns zero.
 
 ## Generated-code permission and rewrite probe
 
