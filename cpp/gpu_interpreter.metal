@@ -1231,6 +1231,15 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     state[34] = 3;
                     return;
                 }
+                // Return to a typed caller continuation in this packet set
+                // without a host round trip. The next outer-loop iteration
+                // charges the normal block budget before executing it.
+                const int targetIndex = find_packet(packets, packetCount, target);
+                if (targetIndex >= 0 && (packets[targetIndex].flags & 1u) != 0u) {
+                    pc = target;
+                    leftBlock = true;
+                    break;
+                }
                 state[33] = target;
                 state[34] = 7;
                 return;
