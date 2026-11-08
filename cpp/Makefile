@@ -207,10 +207,13 @@ verify-af-unix-socket-native: $(AF_UNIX_SOCKET_NATIVE)
 
 $(AF_UNIX_CONNECT_NATIVE): ../fixtures/handoff/af-unix-connect.c
 	@mkdir -p "$(BUILD_DIR)"
-	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -fno-stack-protector \
+		-fno-builtin-memset "$<" -o "$@"
 
 verify-af-unix-connect-native: $(AF_UNIX_CONNECT_NATIVE)
-	"$(AF_UNIX_CONNECT_NATIVE)"
+	@set -eu; owned_dir=$$(mktemp -d /tmp/arm64-metal-connect.XXXXXX); \
+	trap 'rmdir "$$owned_dir"' EXIT; \
+	"$(AF_UNIX_CONNECT_NATIVE)" "$$owned_dir/absent"
 
 $(AF_UNIX_DATAGRAM_NATIVE): ../fixtures/handoff/af-unix-datagram.c
 	@mkdir -p "$(BUILD_DIR)"
