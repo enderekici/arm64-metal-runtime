@@ -193,6 +193,22 @@ Result Interpreter::dispatch(const Backend& backend,
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
                 throw std::invalid_argument("Interpreter pair-memory packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadUnscaledWriteback ||
+                   opcode == translate_core::Opcode::StoreUnscaledWriteback) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto mode = operation[4];
+            const auto offset = static_cast<std::int32_t>(operation[3]);
+            if (operation[1] > 31 || operation[2] > 31 ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                mode > 3 || mode == 2 || offset < -256 || offset > 255 ||
+                (mode != 0 && operation[2] != 31 &&
+                 operation[2] == operation[1]) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter scalar indexed-memory packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
@@ -207,7 +223,9 @@ Result Interpreter::dispatch(const Backend& backend,
         (initialOpcode == translate_core::Opcode::LoadUnsignedImmediate ||
          initialOpcode == translate_core::Opcode::StoreUnsignedImmediate ||
          initialOpcode == translate_core::Opcode::LoadPair ||
-         initialOpcode == translate_core::Opcode::StorePair) &&
+         initialOpcode == translate_core::Opcode::StorePair ||
+         initialOpcode == translate_core::Opcode::LoadUnscaledWriteback ||
+         initialOpcode == translate_core::Opcode::StoreUnscaledWriteback) &&
         initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
         throw std::invalid_argument(

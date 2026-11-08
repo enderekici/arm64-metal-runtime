@@ -84,6 +84,7 @@ INTERPRETER_TYPED_MEMORY_MAIN := $(BUILD_DIR)/interpreter-typed-memory-main
 INTERPRETER_TYPED_MEMORY_RO_MAIN := $(BUILD_DIR)/interpreter-typed-memory-ro-main
 INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-typed-memory-unmapped-main
 INTERPRETER_PAIR_MEMORY_MAIN := $(BUILD_DIR)/interpreter-pair-memory-stack-main
+INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN := $(BUILD_DIR)/interpreter-scalar-memory-indexed-main
 INTERPRETER_DEMAND_CACHE_GENERATOR := $(BUILD_DIR)/interpreter-demand-cache-address
 INTERPRETER_DEMAND_CACHE_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry.s
 INTERPRETER_DEMAND_CACHE_MAIN := $(BUILD_DIR)/interpreter-demand-cache-main
@@ -91,6 +92,9 @@ INTERPRETER_DEMAND_CACHE_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-native
 INTERPRETER_DEMAND_CACHE_SCALAR_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-scalar.s
 INTERPRETER_DEMAND_CACHE_SCALAR_MAIN := $(BUILD_DIR)/interpreter-demand-cache-scalar-main
 INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-scalar-native
+INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-indexed.s
+INTERPRETER_DEMAND_CACHE_INDEXED_MAIN := $(BUILD_DIR)/interpreter-demand-cache-indexed-main
+INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-indexed-native
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
@@ -183,6 +187,10 @@ $(INTERPRETER_PAIR_MEMORY_MAIN): ../fixtures/interpreter/pair-memory-stack-main.
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN): ../fixtures/interpreter/scalar-memory-indexed-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 $(INTERPRETER_CBZ_CBNZ_MAIN): ../fixtures/interpreter/cbz-cbnz-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -246,6 +254,16 @@ verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CH
 	python3 -c 'import struct, subprocess, sys; result = subprocess.run([sys.argv[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE); assert result.returncode == 77, result.returncode; assert result.stderr == b"", result.stderr; assert len(result.stdout) == 24, len(result.stdout); signum, code, pc, address = struct.unpack("<iiQQ", result.stdout); assert (signum, code) == (5, 0), (signum, code); assert pc != 0 and address != 0, (hex(pc), hex(address)); print("native SA_SIGINFO SIGTRAP: signal=5 code=0 controlled_exit=77 pc/address captured")' "$(MEMCPY_CHK_SIGINFO_NATIVE)"
 	"$(MEMCPY_CHK_DECODE_TEST)"
 
+$(INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" indexed >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN): $(INTERPRETER_DEMAND_CACHE_INDEXED_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 "$<" -lz -o "$@"
+
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
 
@@ -264,7 +282,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -465,9 +483,26 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/pair-memory.native.err" "$$run_dir/pair-memory.translated.err" && \
 		grep -q 'interpreter-block-ready.*detail=26' "$$run_dir/pair-memory.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=26' "$$run_dir/pair-memory.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN)" >"$$run_dir/scalar-indexed-memory.native.out" 2>"$$run_dir/scalar-indexed-memory.native.err"; indexed_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN)" >"$$run_dir/scalar-indexed-memory.translated.out" 2>"$$run_dir/scalar-indexed-memory.translated.err"; indexed_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN)" >"$$run_dir/scalar-indexed-memory.interpreter.out" 2>"$$run_dir/scalar-indexed-memory.interpreter.err"; indexed_interpreter_rc=$$?; \
+		printf '%s\n' "$$indexed_native_rc" >"$$run_dir/scalar-indexed-memory.native.rc"; \
+		printf '%s\n' "$$indexed_translated_rc" >"$$run_dir/scalar-indexed-memory.translated.rc"; \
+		printf '%s\n' "$$indexed_interpreter_rc" >"$$run_dir/scalar-indexed-memory.interpreter.rc"; \
+		set -e; \
+		test "$$indexed_native_rc" -eq 42 && test "$$indexed_translated_rc" -eq "$$indexed_native_rc" && \
+		test "$$indexed_interpreter_rc" -eq "$$indexed_native_rc" && \
+		cmp "$$run_dir/scalar-indexed-memory.native.out" "$$run_dir/scalar-indexed-memory.translated.out" && \
+		cmp "$$run_dir/scalar-indexed-memory.native.out" "$$run_dir/scalar-indexed-memory.interpreter.out" && \
+		cmp "$$run_dir/scalar-indexed-memory.native.err" "$$run_dir/scalar-indexed-memory.translated.err" && \
+		sed '/^arm64-metal trace /d' "$$run_dir/scalar-indexed-memory.interpreter.err" >"$$run_dir/scalar-indexed-memory.interpreter.no-trace.err" && \
+		cmp "$$run_dir/scalar-indexed-memory.native.err" "$$run_dir/scalar-indexed-memory.interpreter.no-trace.err" && \
+		grep -q 'interpreter-block-ready' "$$run_dir/scalar-indexed-memory.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/scalar-indexed-memory.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
-verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_METALLIB)
+verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache.XXXXXX"); \
 		set +e; \
@@ -514,6 +549,28 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/scalar.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE)" >"$$run_dir/indexed.native.out" 2>"$$run_dir/indexed.native.err"; indexed_native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN)" >"$$run_dir/indexed.translated.out" 2>"$$run_dir/indexed.translated.err"; indexed_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN)" >"$$run_dir/indexed.interpreter.out" 2>"$$run_dir/indexed.interpreter.err"; indexed_interpreter_rc=$$?; \
+		printf '%s\n' "$$indexed_native_rc" >"$$run_dir/indexed.native.rc"; \
+		printf '%s\n' "$$indexed_translated_rc" >"$$run_dir/indexed.translated.rc"; \
+		printf '%s\n' "$$indexed_interpreter_rc" >"$$run_dir/indexed.interpreter.rc"; \
+		set -e; \
+		test "$$indexed_native_rc" -eq 32; \
+		test "$$indexed_translated_rc" -eq "$$indexed_native_rc"; \
+		test "$$indexed_interpreter_rc" -eq "$$indexed_native_rc"; \
+		cmp "$$run_dir/indexed.native.out" "$$run_dir/indexed.translated.out"; \
+		cmp "$$run_dir/indexed.native.out" "$$run_dir/indexed.interpreter.out"; \
+		cmp "$$run_dir/indexed.native.err" "$$run_dir/indexed.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/indexed.interpreter.err" >"$$run_dir/indexed.interpreter.no-trace.err"; \
+		cmp "$$run_dir/indexed.native.err" "$$run_dir/indexed.interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/indexed.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
+		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
+		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
+		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/indexed.interpreter.err"; \
 		echo "verify-interpreter-demand-cache receipts: $$run_dir"
 $(MAP_JIT_POLICY_TEST): \
 	../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp \

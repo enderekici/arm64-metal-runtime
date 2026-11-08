@@ -208,7 +208,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       decodedOperation->opcode != translate_core::Opcode::LoadUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::StoreUnsignedImmediate &&
       decodedOperation->opcode != translate_core::Opcode::LoadPair &&
-      decodedOperation->opcode != translate_core::Opcode::StorePair) {
+      decodedOperation->opcode != translate_core::Opcode::StorePair &&
+      decodedOperation->opcode != translate_core::Opcode::LoadUnscaledWriteback &&
+      decodedOperation->opcode != translate_core::Opcode::StoreUnscaledWriteback) {
     const auto successors =
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
@@ -226,7 +228,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         (decodedOperation->opcode == translate_core::Opcode::LoadUnsignedImmediate ||
          decodedOperation->opcode == translate_core::Opcode::StoreUnsignedImmediate ||
          decodedOperation->opcode == translate_core::Opcode::LoadPair ||
-         decodedOperation->opcode == translate_core::Opcode::StorePair)) {
+         decodedOperation->opcode == translate_core::Opcode::StorePair ||
+         decodedOperation->opcode == translate_core::Opcode::LoadUnscaledWriteback ||
+         decodedOperation->opcode == translate_core::Opcode::StoreUnscaledWriteback)) {
       instruction.operation = *decodedOperation;
     }
     return instruction;

@@ -29,6 +29,8 @@ enum class Opcode : std::uint32_t {
   StorePair = 14,
   BranchCondition = 15,
   ConditionalSelect = 16,
+  LoadUnscaledWriteback = 17,
+  StoreUnscaledWriteback = 18,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -39,6 +41,9 @@ enum class Opcode : std::uint32_t {
 // The set-flags variants use Rd=31 for the CMP/CMN aliases and Rn=31 as SP.
 // Pair memory uses destination=Rt, source=Rn, immediate=signed byte offset,
 // shift=(addressing mode << 5) | Rt2 (1=post, 2=offset, 3=pre), and width=32 or 64.
+// Scalar unscaled/writeback memory uses destination=Rt, source=Rn,
+// immediate=signed byte offset, shift=addressing mode (0=unscaled, 1=post,
+// 3=pre), and width=32 or 64. Opcodes 17/18 select load/store.
 // BranchCondition uses source for the condition and immediate for byte offset.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.

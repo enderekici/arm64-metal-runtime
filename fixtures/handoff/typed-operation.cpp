@@ -161,6 +161,45 @@ int main() {
   assert(!decode_operation(0xa94103e0).has_value());
   assert(!decode_operation(0xa9c10821).has_value());
 
+  const auto loadXPre = decode_operation(0xf85f0c20);
+  assert(loadXPre.has_value());
+  assert(loadXPre->opcode == Opcode::LoadUnscaledWriteback);
+  assert(loadXPre->destination == 0 && loadXPre->source == 1);
+  assert(static_cast<std::int32_t>(loadXPre->immediate) == -16);
+  assert(loadXPre->shift == 3 && loadXPre->width == 64);
+  assert((serialize_operation(*loadXPre) ==
+          arm64metal::translate_core::OperationPacket{17, 0, 1, 0xfffffff0U, 3, 64}));
+
+  const auto loadXPreZero = decode_operation(0xf8400c20);
+  assert(loadXPreZero.has_value());
+  assert(loadXPreZero->opcode == Opcode::LoadUnscaledWriteback);
+  assert(loadXPreZero->destination == 0 && loadXPreZero->source == 1);
+  assert(loadXPreZero->immediate == 0 && loadXPreZero->shift == 3);
+  assert(loadXPreZero->width == 64);
+
+  const auto storeWPost = decode_operation(0xb80047e2);
+  assert(storeWPost.has_value());
+  assert(storeWPost->opcode == Opcode::StoreUnscaledWriteback);
+  assert(storeWPost->destination == 2 && storeWPost->source == 31);
+  assert(storeWPost->immediate == 4 && storeWPost->shift == 1);
+  assert(storeWPost->width == 32);
+
+  const auto loadWUnscaled = decode_operation(0xb85fc3e3);
+  assert(loadWUnscaled.has_value());
+  assert(loadWUnscaled->opcode == Opcode::LoadUnscaledWriteback);
+  assert(loadWUnscaled->destination == 3 && loadWUnscaled->source == 31);
+  assert(static_cast<std::int32_t>(loadWUnscaled->immediate) == -4);
+  assert(loadWUnscaled->shift == 0 && loadWUnscaled->width == 32);
+
+  const auto storeXzrUnscaled = decode_operation(0xf81f83ff);
+  assert(storeXzrUnscaled.has_value());
+  assert(storeXzrUnscaled->opcode == Opcode::StoreUnscaledWriteback);
+  assert(storeXzrUnscaled->destination == 31 && storeXzrUnscaled->source == 31);
+  assert(static_cast<std::int32_t>(storeXzrUnscaled->immediate) == -8);
+  assert(storeXzrUnscaled->shift == 0 && storeXzrUnscaled->width == 64);
+
+  assert(!decode_operation(0xf8408c00).has_value());
+
   const auto lowered = make_operation_instruction(
       *wide, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(lowered.operation.has_value());

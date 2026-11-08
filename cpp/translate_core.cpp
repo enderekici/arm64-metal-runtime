@@ -106,6 +106,30 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                        field(bits, 10, 12), width == 64 ? 3U : 2U, width};
     }
   }
+  const auto scalarIndexedMemory = bits & 0xffe00c00U;
+  const auto indexedMemoryWidths =
+      std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{
+          std::pair{0xb8400000U, 32U}, std::pair{0xb8000000U, 32U},
+          std::pair{0xf8400000U, 64U}, std::pair{0xf8000000U, 64U}};
+  for (const auto& [encoding, width] : indexedMemoryWidths) {
+    for (const auto mode : {0U, 1U, 3U}) {
+      if (scalarIndexedMemory == (encoding | (mode << 10U))) {
+        const auto target = field(bits, 0, 5);
+        const auto base = field(bits, 5, 5);
+        if (mode != 0 && base != 31 && target == base) {
+          return std::nullopt;
+        }
+        const bool load = (encoding & 0x00400000U) != 0;
+        return Operation{load ? Opcode::LoadUnscaledWriteback
+                              : Opcode::StoreUnscaledWriteback,
+                         target, base,
+                         static_cast<std::uint32_t>(
+                             static_cast<std::int32_t>(
+                                 signed_field(field(bits, 12, 9), 9))),
+                         mode, width};
+      }
+    }
+  }
   const auto pairEncoding = (bits & 0xffc00000U) & 0x7fffffffU;
   const bool integerPair =
       (pairEncoding == 0x29000000U || pairEncoding == 0x29400000U ||
@@ -298,7 +322,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation && operation->opcode != Opcode::LoadUnsignedImmediate &&
       operation->opcode != Opcode::StoreUnsignedImmediate &&
       operation->opcode != Opcode::LoadPair &&
-      operation->opcode != Opcode::StorePair) {
+      operation->opcode != Opcode::StorePair &&
+      operation->opcode != Opcode::LoadUnscaledWriteback &&
+      operation->opcode != Opcode::StoreUnscaledWriteback) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));
