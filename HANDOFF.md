@@ -318,3 +318,26 @@ Receipts: `/tmp/metal-shifted-release.hc5bf0`.
 An isolated SDK-bridge candidate changes the Java first stop from null access
 to raw `open_nocancel` syscall 398. Exact no-cache SDK replay is pending, so
 this is a narrowed diagnostic frontier, not an SDK compatibility result.
+
+## Narrow scalar-memory interpreter release
+
+Source `a72ef6c` adds the named byte/halfword scalar memory forms to the
+interpreter: W-register zero-extension and unsigned, unscaled, pre-indexed,
+and post-indexed accesses. Strict interpreter/demand-cache and full regression
+gates exited 0. The packaged scalar fixture returned 42 after one 67-packet
+interpreter dispatch without translated fallback. Byte and halfword demand-cache
+retry fixtures returned status 32 in native, translated, and interpreter modes
+at the same PC. This is limited to those widths, extension rules, addressing
+forms, and fixtures.
+
+Runtime SHA-256 before/after was
+`2e480f45aaea854e6febdbfb97a1d7bb0c9fa50e5df1dad02b197b004d5895fb`;
+interpreter metallib SHA-256 was
+`e60d90491149838020e228e93dd619097ce158f5ad94f0f4f27ebca8f5633fee`. The
+promoted archive SHA-256 is
+`2299873dd14638809461b549b0c0e02836d926ae65ae143c4b0e3c3a8141404d`.
+Receipts: `/tmp/metal-narrow-release.E4BUj0`.
+
+The isolated SDK bridge/read candidate advances the unchanged Java/libz stop
+from `open_nocancel` 398 to raw syscall 396. App replay remains pending; this is
+not a Java/libz compatibility result.
