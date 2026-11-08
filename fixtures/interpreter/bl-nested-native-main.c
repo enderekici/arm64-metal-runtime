@@ -1,7 +1,7 @@
 #include <stdint.h>
 
-extern uint64_t bl_nested(void);
+extern uint64_t guest_main(void);
 
 int main(void) {
-  return bl_nested() == 42 ? 42 : 99;
+  return (int)guest_main();
 }
