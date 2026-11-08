@@ -3519,18 +3519,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             [begin, end](const auto& item) {
                 return begin >= item.second.begin && end <= item.second.end;
             });
-        if (allocation == vmAllocations.end()) return kernInvalidAddress;
-
-        const auto& current = allocation->second;
-        std::uint64_t cursor = begin;
-        for (const auto& region : current.regions) {
-            if (region.end <= cursor || region.begin >= end) continue;
-            if (region.begin > cursor) return kernInvalidAddress;
-            if (region.jit || region.executable) return kernInvalidAddress;
-            cursor = std::min(end, region.end);
-            if (cursor == end) break;
+        const bool newAllocation = allocation == vmAllocations.end();
+        VmAllocation current = newAllocation
+            ? VmAllocation{begin, end, 0, {}}
+            : allocation->second;
+        if (newAllocation) {
+            for (const auto& [unused, existing] : vmAllocations) {
+                (void)unused;
+                if (begin < existing.end && existing.begin < end) return kernInvalidAddress;
+            }
+            for (std::size_t index = 0; index < resident[0]; ++index) {
+                const auto row = 1 + 4 * index;
+                if (begin < resident[row + 1] && resident[row] < end) {
+                    return kernInvalidAddress;
+                }
+            }
+            const auto offset = begin - guestMappingBase;
+            if (offset > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
+            current.backing = static_cast<std::size_t>(offset);
+        } else if (std::any_of(current.regions.begin(), current.regions.end(),
+                       [](const VmRegion& region) { return region.jit; })) {
+            return kernInvalidAddress;
         }
-        if (cursor != end) return kernInvalidAddress;
+        for (const auto& region : current.regions) {
+            if (region.end <= begin || region.begin >= end) continue;
+            if (region.jit || region.executable) return kernInvalidAddress;
+        }
         if ((currentProtection & 4U) != 0) return kernProtectionFailure;
 
         std::vector<VmRegion> replacement;
@@ -3565,11 +3580,35 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return kernNoSpace;
         }
 
+        std::optional<std::int64_t> reservedBacking;
+        if (newAllocation) {
+            if (pageSize > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
+            reservedBacking = mappingHeap.allocate_at(
+                static_cast<std::int64_t>(current.backing), end - begin,
+                static_cast<std::int64_t>(pageSize));
+            if (!reservedBacking) return kernNoSpace;
+            if (static_cast<std::size_t>(*reservedBacking) > memoryBuffer.size() ||
+                end - begin > memoryBuffer.size() -
+                    static_cast<std::size_t>(*reservedBacking)) {
+                mappingHeap.release(*reservedBacking);
+                return kernNoSpace;
+            }
+        }
         try {
             auto stagedAllocations = vmAllocations;
-            auto stagedAllocation = stagedAllocations.find(current.begin);
-            if (stagedAllocation == stagedAllocations.end()) return kernInvalidAddress;
-            stagedAllocation->second.regions = replacement;
+            if (newAllocation) {
+                auto [unused, inserted] = stagedAllocations.emplace(
+                    begin, VmAllocation{begin, end, backing, replacement});
+                (void)unused;
+                if (!inserted) throw std::runtime_error("Duplicate guest VM allocation address");
+            } else {
+                auto stagedAllocation = stagedAllocations.find(current.begin);
+                if (stagedAllocation == stagedAllocations.end()) {
+                    throw std::runtime_error("Missing guest VM allocation during overwrite");
+                }
+                stagedAllocation->second.regions = replacement;
+            }
             auto stagedResident = resident;
             std::vector<std::uint64_t> removedBegins;
             std::vector<GuestMemoryMapping> addedMappings;
@@ -3591,6 +3630,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             resident.swap(stagedResident);
             commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
+            if (reservedBacking) mappingHeap.release(*reservedBacking);
             return kernNoSpace;
         }
         std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,

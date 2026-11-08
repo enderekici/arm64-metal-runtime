@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -142,6 +142,7 @@ MEMCPY_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memcpy-chk-siginfo-native
 MEMCPY_CHK_DECODE_TEST := $(BUILD_DIR)/memcpy-chk-decode-test
 MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
 MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
+GUEST_HEAP_ALLOCATE_AT_TEST := $(BUILD_DIR)/guest-heap-allocate-at-test
 SHA256_NATIVE := $(BUILD_DIR)/sha256-instructions-native
 VECTOR_CRYPTO_LOWER_TEST := $(BUILD_DIR)/vector-crypto-lowering-test
 VECTOR_CRYPTO_MSL := $(BUILD_DIR)/vector-crypto.metal
@@ -359,6 +360,9 @@ $(MACH_VM_OVERWRITE_NATIVE): ../fixtures/handoff/mach-vm-map-overwrite.c
 $(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+$(GUEST_HEAP_ALLOCATE_AT_TEST): ../fixtures/handoff/guest-heap-allocate-at.cpp guest_state.cpp guest_state.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG "$<" guest_state.cpp -o "$@"
 
 verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"
@@ -369,6 +373,11 @@ verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIV
 	"$(MACH_VM_DEFERRED_RECLAMATION_NATIVE)" >"$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
 	printf '%s\n' 'mach_vm_deferred_reclamation valid=0x20004006 invalid=4 oversized=3 outputs=unchanged' >"$(BUILD_DIR)/mach-vm-deferred-reclamation.expected.out"
 	cmp "$(BUILD_DIR)/mach-vm-deferred-reclamation.expected.out" "$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"
+
+verify-guest-heap-allocate-at: $(GUEST_HEAP_ALLOCATE_AT_TEST)
+	"$(GUEST_HEAP_ALLOCATE_AT_TEST)" >"$(BUILD_DIR)/guest-heap-allocate-at.out"
+	printf '%s\n' 'guest heap allocate_at exact=ok collision=reject release=ok alignment=ok' >"$(BUILD_DIR)/guest-heap-allocate-at.expected.out"
+	cmp "$(BUILD_DIR)/guest-heap-allocate-at.expected.out" "$(BUILD_DIR)/guest-heap-allocate-at.out"
 
 verify-memcpy-chk: $(MEMCPY_CHK_NATIVE) $(MEMCPY_CHK_SIGINFO_NATIVE) $(MEMCPY_CHK_DECODE_TEST)
 	nm -u "$(MEMCPY_CHK_NATIVE)" | grep -q '___memcpy_chk'

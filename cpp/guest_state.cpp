@@ -85,6 +85,33 @@ std::optional<std::int64_t> GuestHeap::allocate(std::uint64_t size, std::int64_t
     return std::nullopt;
 }
 
+std::optional<std::int64_t> GuestHeap::allocate_at(
+    std::int64_t address, std::uint64_t size, std::int64_t alignment) {
+    if (address < 0 || !is_power_of_two(alignment) || address % alignment != 0 ||
+        size > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        return std::nullopt;
+    }
+    const auto count = std::max<std::int64_t>(1, static_cast<std::int64_t>(size));
+    if (count > std::numeric_limits<std::int64_t>::max() - 15) return std::nullopt;
+    const auto aligned = (count + 15) & ~std::int64_t{15};
+    if (address > std::numeric_limits<std::int64_t>::max() - aligned) return std::nullopt;
+    const auto end = address + aligned;
+
+    for (std::size_t index = 0; index < free_blocks_.size(); ++index) {
+        const auto block = free_blocks_[index];
+        if (address < block.begin || end > block.end) continue;
+        std::vector<GuestRange> leftovers;
+        if (block.begin < address) leftovers.push_back({block.begin, address});
+        if (end < block.end) leftovers.push_back({end, block.end});
+        free_blocks_.erase(free_blocks_.begin() + static_cast<std::ptrdiff_t>(index));
+        free_blocks_.insert(free_blocks_.begin() + static_cast<std::ptrdiff_t>(index),
+                            leftovers.begin(), leftovers.end());
+        allocations_.emplace(address, aligned);
+        return address;
+    }
+    return std::nullopt;
+}
+
 std::optional<std::int64_t> GuestHeap::size_of(std::int64_t address) const {
     const auto found = allocations_.find(address);
     if (found == allocations_.end()) return std::nullopt;
