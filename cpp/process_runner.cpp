@@ -8420,10 +8420,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (status == 3 || status == 14 || status == 15) {
             const auto address = status == 3 ? registers[guestFaultAddress] : registers[33];
+            const auto signal = status == 3 ? SIGSEGV : status == 14 ? SIGILL : SIGTRAP;
+            const auto signalCode = status == 3 ? SEGV_MAPERR :
+                status == 14 ? ILL_ILLTRP : 0;
             const GuestSynchronousFault fault{
-                status == 3 ? SIGSEGV : status == 14 ? SIGILL : SIGTRAP,
-                status == 3 ? SEGV_MAPERR : status == 14 ? ILL_ILLTRP : 0,
-                address, registers[33]};
+                signal, signalCode, address, registers[33]};
             std::vector<std::uint64_t> live(
                 registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
             const auto delivery = signalRuntime.deliver_synchronous(
