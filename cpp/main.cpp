@@ -1,5 +1,6 @@
 #include "function_runner.hpp"
 #include "gpu_interpreter.hpp"
+#include "interpreter_assets.hpp"
 #include "process_runner.hpp"
 #include "shared_cache.hpp"
 
@@ -106,7 +107,8 @@ void print_help() {
   std::cout <<
       "Usage:\n"
       "  arm64-metal launch EXECUTABLE [ARG ...]\n"
-      "    Set ARM64_METAL_INTERPRETER=1 to opt in for typed MOVZ/RET blocks.\n"
+      "    Packaged AOT_REQUIRED bundles enable typed AOT by default; set\n"
+      "    ARM64_METAL_INTERPRETER=0 to disable or =1 to opt in on source builds.\n"
       "  arm64-metal run BINARY SYMBOL [INPUT.json|-] [BLOCK_BUDGET]\n"
       "  arm64-metal verify TRUSTED_DYLIB SYMBOL\n"
       "  arm64-metal translate BINARY SYMBOL\n"
@@ -133,58 +135,13 @@ std::filesystem::path host_executable_path() {
 
 void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& options,
                                   const std::filesystem::path& executablePath) {
-  const char* configuredLibrary = std::getenv("ARM64_METAL_INTERPRETER_LIBRARY");
-  if (configuredLibrary != nullptr && configuredLibrary[0] != '\0') {
-    options.interpreterLibrary = configuredLibrary;
-    std::error_code error;
-    if (!std::filesystem::is_regular_file(options.interpreterLibrary, error) || error) {
-      throw std::runtime_error("Selected GPU interpreter library is missing or not a file: " +
-                               options.interpreterLibrary.string());
-    }
-    return;
-  }
-  const auto interpreterResources = executablePath.parent_path() / "resources/interpreter";
-  const auto packagedLibrary = interpreterResources / "runtime-interpreter.metallib";
-  const auto packageMarker = interpreterResources / "AOT_REQUIRED";
-  std::error_code error;
-  const bool packageMode = std::filesystem::exists(packageMarker, error);
-  if (error) {
-    throw std::runtime_error("Unable to inspect GPU interpreter package marker: " +
-                             packageMarker.string());
-  }
-  if (packageMode) {
-    if (!std::filesystem::is_regular_file(packagedLibrary, error) || error) {
-      throw std::runtime_error("Packaged GPU interpreter library is missing or not a file: " +
-                               packagedLibrary.string());
-    }
-    options.interpreterLibrary = packagedLibrary;
-    return;
-  }
-  const bool packagedLibraryExists = std::filesystem::exists(packagedLibrary, error);
-  if (error) {
-    throw std::runtime_error("Unable to inspect packaged GPU interpreter library: " +
-                             packagedLibrary.string());
-  }
-  if (packagedLibraryExists && !std::filesystem::is_regular_file(packagedLibrary, error)) {
-    throw std::runtime_error("Packaged GPU interpreter library is not a regular file: " +
-                             packagedLibrary.string());
-  }
-  if (error) {
-    throw std::runtime_error("Unable to inspect packaged GPU interpreter library: " +
-                             packagedLibrary.string());
-  }
-  if (packagedLibraryExists) {
-    options.interpreterLibrary = packagedLibrary;
-    return;
-  }
-  const char* configuredSource = std::getenv("ARM64_METAL_INTERPRETER_SOURCE");
-  if (configuredSource != nullptr && configuredSource[0] != '\0') {
-    options.interpreterSource = configuredSource;
-  } else {
-    options.interpreterSource = executablePath.parent_path() /
-        "../../cpp/gpu_interpreter.metal";
-    options.interpreterSource = options.interpreterSource.lexically_normal();
-  }
+  const auto selected = arm64metal::select_interpreter_assets(
+      executablePath, std::getenv("ARM64_METAL_INTERPRETER"),
+      std::getenv("ARM64_METAL_INTERPRETER_LIBRARY"),
+      std::getenv("ARM64_METAL_INTERPRETER_SOURCE"));
+  options.interpreter = selected.enabled;
+  options.interpreterLibrary = selected.library;
+  options.interpreterSource = selected.source;
 }
 
 int run_command(const std::vector<std::string>& args,
@@ -550,8 +507,7 @@ int run_command(const std::vector<std::string>& args,
     options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
-    options.interpreter = environment_enabled("ARM64_METAL_INTERPRETER");
-    if (options.interpreter) configure_interpreter_assets(options, executablePath);
+    configure_interpreter_assets(options, executablePath);
     return arm64metal::process_runner::launch_executable(args[1], arguments, options);
   }
 
