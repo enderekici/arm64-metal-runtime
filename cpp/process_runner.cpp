@@ -2255,6 +2255,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     struct GuestBsdthreadRegistration {
         std::uint64_t threadStart;
         std::uint64_t workqueueStart;
+        std::uint64_t pthreadSize;
     };
     std::optional<GuestBsdthreadRegistration> guestBsdthreadRegistration;
     hostServiceState.allocateGuestBootstrapSendRight = [&](std::uint32_t hostPort)
@@ -7665,46 +7666,102 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 366) {
                 constexpr std::uint64_t carryMask = 8U;
-                constexpr std::uint64_t registrationDataSize = 60;
-                constexpr std::uint64_t dispatchQueueOffset = 0xa0;
+                constexpr std::uint64_t maximumPthreadSize = 64U * 1024U;
+                struct GuestBsdthreadRegistrationData {
+                    std::uint64_t version;
+                    std::uint64_t dispatchQueueOffset;
+                    std::uint64_t mainQos;
+                    std::uint32_t tsdOffset;
+                    std::uint32_t returnToKernelOffset;
+                    std::uint32_t machThreadSelfOffset;
+                    std::uint64_t stackAddrHint;
+                    std::uint32_t mutexDefaultPolicy;
+                    std::uint32_t joinableOffsetBits;
+                    std::uint32_t workqueueQuantumExpiryOffset;
+                } __attribute__((packed));
+                static_assert(sizeof(GuestBsdthreadRegistrationData) == 56);
+                static_assert(offsetof(GuestBsdthreadRegistrationData, mainQos) == 16);
+                static_assert(offsetof(GuestBsdthreadRegistrationData, stackAddrHint) == 36);
                 std::uint64_t error = 0;
                 const auto pageSize = bootstrap.pageSize;
-                const auto minimumThreadSize = std::uint64_t{0x18e0};
-                if (pageSize == 0 || minimumThreadSize >
-                        std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+                GuestBsdthreadRegistrationData data{};
+                std::size_t copySize = 0;
+                if (registers[2] > maximumPthreadSize) {
                     error = EINVAL;
-                } else {
-                    const auto expectedThreadSize =
-                        ((minimumThreadSize + pageSize - 1) / pageSize) * pageSize;
-                    if (registers[2] != expectedThreadSize ||
-                        registers[4] != registrationDataSize ||
-                        registers[5] > registers[2] ||
-                        registers[5] % sizeof(std::uint64_t) != 0) {
-                        error = EINVAL;
-                    } else if (registers[3] < pageSize) {
+                } else if (registers[3] != 0 && registers[4] < sizeof(data.version)) {
+                    error = EINVAL;
+                } else if (registers[3] != 0 && registers[3] < pageSize) {
+                    error = EFAULT;
+                } else if (registers[3] != 0) {
+                    copySize = static_cast<std::size_t>(std::min<std::uint64_t>(
+                        registers[4], sizeof(data)));
+                    try {
+                        const auto* source = guestMemory.buffer(registers[3], copySize);
+                        std::memcpy(&data, source, copySize);
+                        if (data.version != registers[4]) {
+                            error = EINVAL;
+                        }
+                    } catch (const std::out_of_range&) {
                         error = EFAULT;
+                    }
+                } else {
+                    // Pre-versioned callers pass the dispatch queue offset directly.
+                    data.dispatchQueueOffset = registers[5];
+                }
+                if (error == 0 && guestBsdthreadRegistration) {
+                    error = EINVAL;
+                }
+                if (error == 0) {
+                    if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0) {
+                        error = EINVAL;
                     } else {
-                        try {
-                            const auto* data = guestMemory.buffer(
-                                registers[3], registrationDataSize);
-                            std::uint64_t version = 0;
-                            std::memcpy(&version, data, sizeof(version));
-                            if (version != registrationDataSize) {
+                        const auto pthreadSize = registers[2];
+                        constexpr std::uint64_t tsdSlotSize = sizeof(std::uint64_t);
+                        std::uint64_t maximumTsdOffset = 0;
+                        if (pthreadSize >= tsdSlotSize &&
+                            data.tsdOffset <= pthreadSize - tsdSlotSize) {
+                            maximumTsdOffset = pthreadSize - data.tsdOffset - tsdSlotSize;
+                        } else {
+                            data.tsdOffset = 0;
+                        }
+                        if (data.dispatchQueueOffset > maximumTsdOffset)
+                            data.dispatchQueueOffset = 0;
+                        if (data.returnToKernelOffset > maximumTsdOffset)
+                            data.returnToKernelOffset = 0;
+                        if (data.machThreadSelfOffset > maximumTsdOffset)
+                            data.machThreadSelfOffset = 0;
+                        if (data.workqueueQuantumExpiryOffset > maximumTsdOffset)
+                            data.workqueueQuantumExpiryOffset = 0;
+
+                        const auto stackAddressHint = static_cast<std::uint64_t>(
+                            bootstrap.stack.end) & ~(pageSize - 1);
+                        if (registers[3] != 0) {
+                            data.version = sizeof(data);
+                            // The guest kernel does not expose host thread QoS state.
+                            // Zero retains libpthread's documented unspecified fallback.
+                            data.mainQos = 0;
+                            data.stackAddrHint = stackAddressHint;
+                            data.mutexDefaultPolicy = 0;
+                        }
+
+                        // XNU records the registration before copyout; a copyout
+                        // failure returns EINVAL but leaves the registration installed.
+                        guestBsdthreadRegistration = GuestBsdthreadRegistration{
+                            registers[0], registers[1], pthreadSize};
+                        if (registers[3] != 0) {
+                            try {
+                                auto* destination = guestMemory.buffer(
+                                    registers[3], copySize, true);
+                                std::memcpy(destination, &data, copySize);
+                            } catch (const std::out_of_range&) {
                                 error = EINVAL;
-                            } else if (guestBsdthreadRegistration) {
-                                error = EINVAL;
-                            } else if (registers[5] != dispatchQueueOffset) {
-                                error = EINVAL;
-                            } else {
-                                guestBsdthreadRegistration = GuestBsdthreadRegistration{
-                                    registers[0], registers[1]};
                             }
-                        } catch (const std::out_of_range&) {
-                            error = EFAULT;
                         }
                     }
                 }
                 if (error == 0) {
+                    // Zero advertises no PTHREAD_FEATURE_* bits; operations are
+                    // implemented only as their guest-side handlers become available.
                     registers[0] = 0;
                     registers[32] &= ~carryMask;
                 } else {
@@ -7775,15 +7832,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                    (bootstrap.pageSize & (bootstrap.pageSize - 1)) != 0) {
                             error = EINVAL;
                         } else {
-                            constexpr std::uint64_t pthreadSize = 0x18e0;
+                            constexpr std::uint64_t minimumPthreadSize = 0x18e0;
                             constexpr std::uint64_t pthreadStackOffset = 12U * 1024U;
                             constexpr std::uint64_t stackSize = 512U * 1024U;
                             constexpr std::uint64_t errnoOffset = 172;
                             constexpr std::uint64_t threadIdOffset = 216;
                             constexpr std::uint64_t tsdOffset = 224;
                             const auto pageSize = bootstrap.pageSize;
-                            if (pthreadSize + pthreadStackOffset >
-                                std::numeric_limits<std::uint64_t>::max() - (pageSize - 1)) {
+                            const auto pthreadSize = guestBsdthreadRegistration->pthreadSize;
+                            if (pthreadSize < minimumPthreadSize || pthreadSize +
+                                pthreadStackOffset > std::numeric_limits<std::uint64_t>::max() -
+                                    (pageSize - 1)) {
                                 error = EINVAL;
                             } else {
                                 const auto pthreadTail = (pthreadSize + pthreadStackOffset +

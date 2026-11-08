@@ -1,4 +1,39 @@
-# Loader probes
+# Workqueue registration and worker probes
+
+`workq-worker-request.c` checks the packed 56-byte `_pthread_registration_data`
+ABI and directly issues raw 366 registration, 368 dispatch setup/request, and
+367 open. Its normal guest build expects libpthread startup to register first;
+the explicit duplicate then returns `EINVAL`, and the raw request must enter the
+existing authenticated libpthread workqueue trampoline and invoke the fixture
+callback. The native positive control prints
+`register=EINVAL raw_setup=open=request=ok callback_bits=7 arg=0x8ff`.
+
+The `WORKQ_GUEST_NO_INIT` build omits pthread APIs and uses only raw registration,
+setup, open, request, yield, and write. Run it with cached initializers disabled
+to test a first registration and require its own authenticated guest worker
+callback to publish all 10 ABI checks. This is a reduced no-init control; the
+normal build is the initialized-libpthread path.
+
+```sh
+src=fixtures/handoff/workq-worker-request.c
+xcrun clang -arch arm64e -Wall -Wextra -Werror -fno-stack-protector \
+  "$src" -o /tmp/workq-worker-request-native
+/tmp/workq-worker-request-native
+xcrun clang -arch arm64e -DWORKQ_GUEST_FIXTURE=1 -Wall -Wextra -Werror \
+  -fno-stack-protector "$src" -o /tmp/workq-worker-request-guest
+xcrun clang -arch arm64e -DWORKQ_GUEST_FIXTURE=1 -DWORKQ_GUEST_NO_INIT=1 \
+  -Wall -Wextra -Werror -fno-stack-protector "$src" \
+  -o /tmp/workq-worker-raw-noinit-guest
+```
+
+For the no-init guest control, use `ARM64_METAL_SHARED_CACHE=1
+ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_CACHE_INITIALIZERS=0` and require stdout
+`workq raw worker ABI ok`. For initialized startup, enable cache initializers
+and require `workq libpthread worker callback ok`. With
+`ARM64_METAL_TRACE_WORKQ=1`, registration diagnostics report only branch names,
+status, sizes, offsets, and nullness; they do not print pointers or payload.
+
+## Loader probes
 
 ## Late writable-TPRO rejection
 
