@@ -37,14 +37,13 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
             state[34] = 1;
             return;
         }
-        --state[36];
-
         const int firstIndex = find_packet(packets, packetCount, pc);
         if (firstIndex < 0 || (packets[firstIndex].flags & 1u) == 0u) {
             state[33] = pc;
             state[34] = 7;
             return;
         }
+        --state[36];
 
         bool leftBlock = false;
         for (uint index = uint(firstIndex); index < packetCount; ++index) {

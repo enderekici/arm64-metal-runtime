@@ -176,6 +176,8 @@ int run_command(const std::vector<std::string>& args,
         packet(0xd28000e0u, 0x5000, blockStart),
         packet(0x14000002u, 0x5004, blockEnd, 1, 0x500c),
         packet(0xd65f03c0u, 0x500c, blockStart | blockEnd)};
+    const std::vector<InstructionPacket> missingTargetProgram{
+        packet(0x14000002u, 0x6000, blockStart | blockEnd, 1, 0x6008)};
 
     auto backend = arm64metal::Backend::createDefault();
     const auto initialCompiles = backend.compiledPipelineCount();
@@ -227,8 +229,16 @@ int run_command(const std::vector<std::string>& args,
     const auto branch = interpreter.run(backend, branchProgram, branchState);
     branchState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
     const auto branchBudget = interpreter.run(backend, branchProgram, branchState);
+    ProcessState missingTargetState{};
+    missingTargetState[arm64metal::gpu_interpreter::resultRegisterIndex] = 99;
+    missingTargetState[arm64metal::gpu_interpreter::returnRegisterIndex] =
+        arm64metal::gpu_interpreter::noReturnAddress;
+    missingTargetState[33] = 0x6000;
+    missingTargetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 2;
+    const auto missingTarget = interpreter.run(
+        backend, missingTargetProgram, missingTargetState);
     const auto dispatches = backend.completedDispatchCount() - initialDispatches;
-    if (compiled != 1 || dispatches != 12 ||
+    if (compiled != 1 || dispatches != 13 ||
         first.state[34] != 0 || first.state[0] != 42 ||
         second.state[34] != 0 || second.state[0] != 0xbeef0000u ||
         moveWideResults[0].state[34] != 0 ||
@@ -247,7 +257,9 @@ int run_command(const std::vector<std::string>& args,
         zeroBudget.state[34] != 1 || zeroBudget.state[0] != 99 ||
         branch.state[34] != 0 || branch.state[0] != 7 || branch.state[36] != 0 ||
         branchBudget.state[34] != 1 || branchBudget.state[33] != 0x500c ||
-        branchBudget.state[0] != 7 || branchBudget.state[36] != 0) {
+        branchBudget.state[0] != 7 || branchBudget.state[36] != 0 ||
+        missingTarget.state[34] != 7 || missingTarget.state[33] != 0x6008 ||
+        missingTarget.state[0] != 99 || missingTarget.state[36] != 1) {
       throw std::runtime_error("Fixed GPU interpreter move-wide/block-flow probe mismatch");
     }
     std::cerr << "pipeline_compiles=" << compiled
