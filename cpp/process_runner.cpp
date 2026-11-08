@@ -782,6 +782,7 @@ std::uint64_t append_guest_pointer_token(ProcessBootstrapResult& bootstrap,
 struct DyldApisFacade {
     std::uint64_t object = 0;
     std::uint64_t initializeService = 0;
+    std::int64_t publicationCell = 0;
 };
 
 DyldApisFacade initialize_dyld_apis(
@@ -793,8 +794,21 @@ DyldApisFacade initialize_dyld_apis(
     if (!cell) throw std::runtime_error("Cached libdyld has no __dyld_apis publication cell");
     const auto cellOffset = memory_backing_offset(image,
         static_cast<std::uint64_t>(cell->address), cell->size, bootstrap.memory.size());
-    if (!cellOffset) throw std::runtime_error("Cached __dyld_apis cell is not guest mapped");
-    if (load_u64(bootstrap.memory, *cellOffset) != 0) {
+    const bool deferred = std::any_of(image.deferred_cache.begin(), image.deferred_cache.end(),
+        [&](const DeferredCacheSegment& segment) {
+            if (segment.logical_start < 0 || segment.logical_end < segment.logical_start) return false;
+            const auto begin = static_cast<std::uint64_t>(segment.logical_start);
+            const auto end = static_cast<std::uint64_t>(segment.logical_end);
+            const auto address = static_cast<std::uint64_t>(cell->address);
+            return address >= begin && address <= end && cell->size <= end - address;
+        });
+    if (!cellOffset && !deferred) {
+        throw std::runtime_error("Cached __dyld_apis cell is neither resident nor deferred");
+    }
+    const auto rawCell = image.cache_reader->bytes(
+        image.cache_reader->originalAddress(cell->address), cell->size);
+    if (std::any_of(rawCell.begin(), rawCell.end(), [](std::uint8_t value) { return value != 0; }) ||
+        (cellOffset && load_u64(bootstrap.memory, *cellOffset) != 0)) {
         throw std::runtime_error("Cached __dyld_apis cell is already populated");
     }
     const auto method = image.cache_reader->resolveExport(
@@ -837,9 +851,9 @@ DyldApisFacade initialize_dyld_apis(
     const auto initializeModifier = (initializeSlot & addressMask) | 0x8379000000000000ULL;
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, service, 0, initializeModifier));
-    store_u64(bootstrap.memory, *cellOffset, object);
+    if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
     bootstrap.heap.begin += reservation;
-    return {object, service};
+    return {object, service, cell->address};
 }
 
 void initialize_cached_globals(const ExecutableImage& image,
@@ -3191,6 +3205,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 memory[offset + byte] = static_cast<std::uint8_t>(value >> (byte * 8U));
             }
         };
+        if (dyldApis.publicationCell != 0) {
+            patchWord(static_cast<std::uint64_t>(dyldApis.publicationCell),
+                      dyldApis.object, sizeof(std::uint64_t));
+        }
         if (image.cached_task_port) patchWord(*image.cached_task_port, guestMachTaskPort, 4);
         if (const auto locale = image.cache_reader->localeKeyAddress()) patchWord(*locale, 10, 8);
         if (image.cached_dispatch_main_queue) {
