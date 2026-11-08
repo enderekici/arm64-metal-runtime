@@ -1689,6 +1689,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         guestTlvRuntime.release_thread(static_cast<std::uint64_t>(threadTsd),
                                        guestTlvRelease, guestTlvWrite);
         auto completion = guestScheduler.complete_current(result);
+        liveThreadStacks.erase(completion.thread);
         if (completion.joined) {
             if (completion.joined->outputAddress != 0) {
                 auto* output = guestMemory.buffer(completion.joined->outputAddress,
@@ -1697,7 +1698,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         }
         if (completion.reapedThread) {
-            liveThreadStacks.erase(completion.reapedThread->id);
             if (completion.reapedThread->allocation) {
                 hostServiceState.heap->release(*completion.reapedThread->allocation);
             }
