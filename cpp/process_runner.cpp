@@ -2643,11 +2643,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             timeSliceThread = threadId;
             dispatchesInTimeSlice = 0;
         }
-        if (signalRuntime.has_frames(threadId)) {
-            // Keep a handler and its saved execution context on the same thread.
-            dispatchesInTimeSlice = 0;
-            return false;
-        }
         if (guestScheduler.ready_queue().empty()) {
             dispatchesInTimeSlice = 0;
             return false;
