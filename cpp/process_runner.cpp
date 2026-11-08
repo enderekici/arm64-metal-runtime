@@ -1788,6 +1788,36 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return monotonicNow + std::min(
             remaining, std::numeric_limits<std::uint64_t>::max() - monotonicNow);
     };
+    struct GuestMachBlockedReceive {
+        std::uint32_t port;
+        std::uint64_t buffer;
+        std::uint32_t capacity;
+    };
+    std::map<std::uint32_t, std::deque<std::uint64_t>> guestMachReceiveWaiters;
+    std::map<std::uint64_t, GuestMachBlockedReceive> guestMachBlockedReceives;
+    const auto pruneGuestMachReceiveWaiters = [&]() {
+        for (auto waiters = guestMachReceiveWaiters.begin();
+             waiters != guestMachReceiveWaiters.end();) {
+            const auto port = waiters->first;
+            auto& queue = waiters->second;
+            queue.erase(std::remove_if(queue.begin(), queue.end(), [&](std::uint64_t threadId) {
+                const auto blocked = guestMachBlockedReceives.find(threadId);
+                const auto* thread = guestScheduler.find(threadId);
+                const auto* wait = thread != nullptr && thread->wait.has_value()
+                    ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+                const bool stale = blocked == guestMachBlockedReceives.end() || wait == nullptr ||
+                    blocked->second.port != port || wait->port != port;
+                if (stale && blocked != guestMachBlockedReceives.end() &&
+                    blocked->second.port == port) {
+                    progressTrace.event("mach-receive-stale", threadId, port);
+                    guestMachBlockedReceives.erase(blocked);
+                }
+                return stale;
+            }), queue.end());
+            if (queue.empty()) waiters = guestMachReceiveWaiters.erase(waiters);
+            else ++waiters;
+        }
+    };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
         std::vector<std::uint64_t> globalTail;
         if (live.size() >= guestTokenCount) {
@@ -1823,6 +1853,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 guestScheduler.wake(interruption->thread, -1);
             }
             (void)guestScheduler.expire_waiters(now);
+            pruneGuestMachReceiveWaiters();
             if (activeWasWaiting) {
                 const auto* activeAfterWake = guestScheduler.find(activeId);
                 if (activeAfterWake != nullptr && !activeAfterWake->wait.has_value()) {
@@ -1840,6 +1871,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             const auto deadline = guestScheduler.earliest_deadline();
             if (!deadline) {
+                progressTrace.event("threads-blocked-no-deadline", activeId);
                 throw std::runtime_error("All guest threads are blocked with no deadline or runnable thread");
             }
             if (*deadline > now) {
@@ -1943,13 +1975,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::uint8_t> body;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
-    struct GuestMachBlockedReceive {
-        std::uint32_t port;
-        std::uint64_t buffer;
-        std::uint32_t capacity;
-    };
-    std::map<std::uint32_t, std::deque<std::uint64_t>> guestMachReceiveWaiters;
-    std::map<std::uint64_t, GuestMachBlockedReceive> guestMachBlockedReceives;
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
     constexpr std::uint32_t machReceiveInvalidData = 0x1000400e;
     constexpr std::uint32_t machReceivePortChanged = 0x10004006;
@@ -1997,6 +2022,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 wait->port != port || blocked->second.port != port) continue;
             const auto result = copyGuestMachMessage(queue->second.front(), port,
                 blocked->second.buffer, blocked->second.capacity);
+            progressTrace.event("mach-message-wake", threadId, port);
             guestMachBlockedReceives.erase(blocked);
             if (result == 0) queue->second.pop_front();
             guestScheduler.wake(threadId, static_cast<std::int32_t>(result));
@@ -6162,11 +6188,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                 GuestMachBlockedReceive{receiveName, registers[0],
                                                                         receiveSize};
                                             guestMachReceiveWaiters[receiveName].push_back(threadId);
+                                            progressTrace.event("mach-receive-wait", threadId,
+                                                                receiveName);
                                             std::vector<std::uint64_t> liveRegisters(
                                                 registers, registers + stateBuffer.size() /
                                                     sizeof(std::uint64_t));
                                             (void)syncThreadSwitch(false, liveRegisters);
-                                            guestMachBlockedReceives.erase(threadId);
                                             continue;
                                         }
                                     }
@@ -6182,11 +6209,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             GuestMachBlockedReceive{receiveName, registers[0],
                                                                     receiveSize};
                                         guestMachReceiveWaiters[receiveName].push_back(threadId);
+                                        progressTrace.event("mach-receive-wait", threadId,
+                                                            receiveName);
                                         std::vector<std::uint64_t> liveRegisters(
                                             registers, registers + stateBuffer.size() /
                                                 sizeof(std::uint64_t));
                                         (void)syncThreadSwitch(false, liveRegisters);
-                                        guestMachBlockedReceives.erase(threadId);
                                         continue;
                                     }
                                 }
@@ -6652,6 +6680,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
                                 if (blocked != guestMachBlockedReceives.end() &&
                                     receiveWait != nullptr && receiveWait->port == name) {
+                                    progressTrace.event("mach-receive-destroy-wake",
+                                                        threadId, name);
                                     guestMachBlockedReceives.erase(blocked);
                                     guestScheduler.wake(threadId,
                                         static_cast<std::int32_t>(machReceivePortChanged));
