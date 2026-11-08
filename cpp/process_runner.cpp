@@ -1253,10 +1253,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t backing;
         std::size_t width;
     };
-    const std::array<ReadOnlyCommpageField, 3> readOnlyCommpageFields{{
+    const std::array<ReadOnlyCommpageField, 6> readOnlyCommpageFields{{
         {0xfffff4025ULL, quiescentBacking + 56, 1},
         {0xfffff4037ULL, quiescentBacking + 57, 1},
         {0xfffff4084ULL, quiescentBacking + 60, sizeof(std::uint32_t)},
+        {0xfffffc02fULL, quiescentBacking + 64, 1},
+        {0xfffffc035ULL, quiescentBacking + 65, 1},
+        {0xfffffc036ULL, quiescentBacking + 66, 1},
     }};
     for (const auto& field : readOnlyCommpageFields) {
         std::uint64_t value = 0;

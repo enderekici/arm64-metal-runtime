@@ -63,6 +63,7 @@ xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
 xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-dev-firm.c" -o "$out/commpage-dev-firm"
+xcrun clang -Wall -Wextra -Werror "$src/commpage-cpu-fields.c" -o "$out/commpage-cpu-fields"
 xcrun clang -Wall -Wextra -Werror "$src/mach-vm-partial-deallocate.c" \
   -o "$out/mach-vm-partial-deallocate"
 xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/darwin" \
@@ -82,6 +83,7 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/mach-port-namespace"
 "$out/commpage-page-shift"
 "$out/commpage-dev-firm"
+"$out/commpage-cpu-fields"
 "$out/mach-vm-partial-deallocate"
 "$out/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
 ```
