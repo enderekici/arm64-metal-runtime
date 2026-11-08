@@ -19,6 +19,7 @@ if [ "$#" -eq 1 ] && [ "$1" = all ]; then
 fi
 [ -x "$runtime" ] || { printf 'Runtime is not executable: %s\n' "$runtime" >&2; exit 2; }
 mkdir -p "$results_root"
+results_root=$(cd "$results_root" && pwd -P)
 run_dir=$(mktemp -d "$results_root/run.XXXXXX")
 probe_dir=$run_dir/probes
 mkdir -p "$probe_dir"
@@ -42,10 +43,17 @@ run_bounded() {
     (
         sleep "$timeout_seconds"
         if kill -0 "$run_command_pid" 2>/dev/null; then
-            : > "$marker"
-            kill -TERM "$run_command_pid" 2>/dev/null || :
-            sleep 1
-            kill -KILL "$run_command_pid" 2>/dev/null || :
+            run_state=$(ps -p "$run_command_pid" -o stat= 2>/dev/null || :)
+            case "$run_state" in
+                *Z*) ;;
+                '') ;;
+                *)
+                    : > "$marker"
+                    kill -TERM "$run_command_pid" 2>/dev/null || :
+                    sleep 1
+                    kill -KILL "$run_command_pid" 2>/dev/null || :
+                    ;;
+            esac
         fi
     ) &
     run_watchdog_pid=$!
@@ -64,12 +72,18 @@ run_bounded() {
 
 compare() {
     cmp_label=$1
-    cmp_binary=$2
-    shift 2
+    cmp_expected_status=$2
+    cmp_binary=$3
+    shift 3
     cmp_native_status=0
     cmp_guest_status=0
     run_bounded "$cmp_label.native" "$cmp_binary" "$@" || return 1
     cmp_native_status=$(cat "$run_dir/$cmp_label.native.status")
+    if [ "$cmp_native_status" != "$cmp_expected_status" ]; then
+        printf '%s positive control failed: native status %s, expected %s\n' \
+            "$cmp_label" "$cmp_native_status" "$cmp_expected_status" >&2
+        return 1
+    fi
     run_bounded "$cmp_label.guest" env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
         ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
         "$runtime" launch "$cmp_binary" "$@" || return 1
@@ -96,8 +110,8 @@ PLIST
             cat > "$probe_dir/malformed.plist" <<'PLIST'
 <?xml version="1.0"?><plist version="1.0"><dict><key>broken</dict></plist>
 PLIST
-            compare plutil-valid "$plutil" -lint "$probe_dir/valid.plist"
-            compare plutil-malformed "$plutil" -lint "$probe_dir/malformed.plist"
+            compare plutil-valid 0 "$plutil" -lint "$probe_dir/valid.plist"
+            compare plutil-malformed 1 "$plutil" -lint "$probe_dir/malformed.plist"
             ;;
         tar)
             tar=/usr/bin/tar
@@ -106,7 +120,8 @@ PLIST
             printf 'metal runtime\n' > "$probe_dir/tar-input/readme.txt"
             printf '\000\001\377\n' > "$probe_dir/tar-input/subdir/payload.bin"
             (cd "$probe_dir" && "$tar" -cf "$probe_dir/input.tar" tar-input)
-            compare tar-list "$tar" -tf "$probe_dir/input.tar"
+            test -s "$probe_dir/input.tar"
+            compare tar-list 0 "$tar" -tf "$probe_dir/input.tar"
             ;;
         libz-root|libz-provider)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
@@ -114,9 +129,9 @@ PLIST
             xcrun clang -Wall -Wextra -Werror -dynamiclib fixtures/handoff/cache-provider.c -lz -o "$probe_dir/libprovider.dylib"
             xcrun clang -Wall -Wextra -Werror fixtures/handoff/cache-provider-main.c -o "$probe_dir/cache-provider"
             if [ "$case_name" = libz-root ]; then
-                compare libz-root "$probe_dir/cache-root"
+                compare libz-root 0 "$probe_dir/cache-root"
             else
-                compare libz-provider "$probe_dir/cache-provider" "$probe_dir/libprovider.dylib"
+                compare libz-provider 0 "$probe_dir/cache-provider" "$probe_dir/libprovider.dylib"
             fi
             ;;
         jni)
@@ -125,7 +140,7 @@ PLIST
             [ -f "$JDK_HOME/lib/server/libjvm.dylib" ] || { printf 'Missing libjvm under %s\n' "$JDK_HOME" >&2; exit 2; }
             xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/darwin" \
                 fixtures/handoff/jni-entry.c -o "$probe_dir/jni-entry"
-            compare jni-entry "$probe_dir/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
+            compare jni-entry 0 "$probe_dir/jni-entry" "$JDK_HOME/lib/server/libjvm.dylib"
             ;;
         *)
             printf 'Unknown case: %s\n' "$case_name" >&2
