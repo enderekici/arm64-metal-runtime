@@ -36,6 +36,7 @@
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <mach/mach.h>
+#include <mach/kern_return.h>
 #include <mach/host_info.h>
 #include <mach/mach_host.h>
 #include <mach/clock.h>
@@ -5219,7 +5220,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-33)) ||
                 syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-36)) ||
                 syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-38))) {
-                constexpr std::uint32_t kernInvalidValue = 17;
                 std::optional<std::uint64_t> deadline;
                 const auto operation = static_cast<std::int64_t>(syscall);
                 const auto timeoutSeconds = static_cast<std::uint32_t>(registers[1]);
@@ -5229,7 +5229,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     timeoutSeconds == 0 && timeoutNanoseconds == 0;
                 if (operation == -38) {
                     if (timeoutNanoseconds < 0 || timeoutNanoseconds >= 1'000'000'000) {
-                        registers[0] = kernInvalidValue;
+                        registers[0] = KERN_INVALID_VALUE;
                         registers[34] = 0;
                         continue;
                     }
@@ -5249,17 +5249,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto name = static_cast<std::uint32_t>(registers[0]);
                     const auto right = guestSendRightUrefs.find(name);
                     registers[0] = right == guestSendRightUrefs.end() || right->second == 0
-                        ? 15U
+                        ? KERN_INVALID_NAME
                         : guestSemaphoreNames.find(name) == guestSemaphoreNames.end()
-                            ? 20U : static_cast<std::uint32_t>(
+                            ? KERN_INVALID_CAPABILITY : static_cast<std::uint32_t>(
                                 guestScheduler.signal_semaphore(name));
                 } else {
                     const auto name = static_cast<std::uint32_t>(registers[0]);
                     const auto right = guestSendRightUrefs.find(name);
                     const auto result = right == guestSendRightUrefs.end() || right->second == 0
-                        ? GuestSemaphoreWaitResult{15, false}
+                        ? GuestSemaphoreWaitResult{KERN_INVALID_NAME, false}
                         : guestSemaphoreNames.find(name) == guestSemaphoreNames.end()
-                            ? GuestSemaphoreWaitResult{20, false}
+                            ? GuestSemaphoreWaitResult{KERN_INVALID_CAPABILITY, false}
                             : guestScheduler.wait_semaphore(name, deadline, nonblocking);
                     if (result.waiting) {
                         registers[0] = 0;

@@ -1,5 +1,7 @@
 #include "guest_scheduler.hpp"
 
+#include <mach/kern_return.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <limits>
@@ -406,22 +408,19 @@ std::int32_t GuestScheduler::signal_condition(std::uint64_t condition,
 std::int32_t GuestScheduler::create_semaphore(std::uint64_t name,
                                               std::int32_t policy,
                                               std::int32_t value) {
-    constexpr std::int32_t kernInvalidArgument = 4;
     if (name == 0 || value < 0 || (policy != 0 && policy != 2)) {
-        return kernInvalidArgument;
+        return KERN_INVALID_ARGUMENT;
     }
     if (!semaphores_.emplace(name, SemaphoreState{
             policy, static_cast<std::uint64_t>(value), {}}).second) {
-        return kernInvalidArgument;
+        return KERN_INVALID_ARGUMENT;
     }
-    return 0;
+    return KERN_SUCCESS;
 }
 
 std::int32_t GuestScheduler::destroy_semaphore(std::uint64_t name) {
-    constexpr std::int32_t kernInvalidCapability = 20;
-    constexpr std::int32_t kernTerminated = 37;
     const auto found = semaphores_.find(name);
-    if (found == semaphores_.end()) return kernInvalidCapability;
+    if (found == semaphores_.end()) return KERN_INVALID_CAPABILITY;
     const auto waiters = found->second.waiters;
     semaphores_.erase(found);
     for (const auto id : waiters) {
@@ -433,34 +432,30 @@ std::int32_t GuestScheduler::destroy_semaphore(std::uint64_t name) {
         if (wait == nullptr || wait->semaphore != name) {
             throw std::logic_error("Guest semaphore waiter state does not match queue");
         }
-        wake(id, kernTerminated);
+        wake(id, KERN_TERMINATED);
     }
-    return 0;
+    return KERN_SUCCESS;
 }
 
 GuestSemaphoreWaitResult GuestScheduler::wait_semaphore(
     std::uint64_t name, std::optional<std::uint64_t> deadline, bool nonblocking) {
-    constexpr std::int32_t kernInvalidCapability = 20;
-    constexpr std::int32_t kernOperationTimedOut = 49;
     const auto found = semaphores_.find(name);
-    if (found == semaphores_.end()) return {kernInvalidCapability, false};
+    if (found == semaphores_.end()) return {KERN_INVALID_CAPABILITY, false};
     if (found->second.value > 0) {
         --found->second.value;
-        return {0, false};
+        return {KERN_SUCCESS, false};
     }
-    if (nonblocking) return {kernOperationTimedOut, false};
+    if (nonblocking) return {KERN_OPERATION_TIMED_OUT, false};
     auto& thread = current();
-    if (thread.wait.has_value()) return {kernInvalidCapability, false};
+    if (thread.wait.has_value()) return {KERN_ALREADY_WAITING, false};
     found->second.waiters.push_back(currentId_);
     thread.wait = GuestSemaphoreWait{name, deadline};
-    return {0, true};
+    return {KERN_SUCCESS, true};
 }
 
 std::int32_t GuestScheduler::signal_semaphore(std::uint64_t name) {
-    constexpr std::int32_t kernInvalidCapability = 20;
-    constexpr std::int32_t kernResourceShortage = 6;
     const auto found = semaphores_.find(name);
-    if (found == semaphores_.end()) return kernInvalidCapability;
+    if (found == semaphores_.end()) return KERN_INVALID_CAPABILITY;
     auto& semaphore = found->second;
     if (!semaphore.waiters.empty()) {
         const auto index = (semaphore.policy & 2) != 0
@@ -476,15 +471,15 @@ std::int32_t GuestScheduler::signal_semaphore(std::uint64_t name) {
         }
         semaphore.waiters.erase(semaphore.waiters.begin() +
                                  static_cast<std::ptrdiff_t>(index));
-        wake(id, 0);
-        return 0;
+        wake(id, KERN_SUCCESS);
+        return KERN_SUCCESS;
     }
     if (semaphore.value == static_cast<std::uint64_t>(
             std::numeric_limits<std::int32_t>::max())) {
-        return kernResourceShortage;
+        return KERN_RESOURCE_SHORTAGE;
     }
     ++semaphore.value;
-    return 0;
+    return KERN_SUCCESS;
 }
 
 bool GuestScheduler::sleep_current(std::uint64_t deadline,
@@ -517,7 +512,7 @@ std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
                 waiters.erase(std::remove(waiters.begin(), waiters.end(), thread.id),
                               waiters.end());
             }
-            wake(thread.id, 49);
+            wake(thread.id, KERN_OPERATION_TIMED_OUT);
             ++expired;
             continue;
         }
