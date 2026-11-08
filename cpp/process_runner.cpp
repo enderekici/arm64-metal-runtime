@@ -2006,6 +2006,29 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::set<std::uint64_t> guestWorkqueueThreadIds;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
+    const auto acquireGuestFixedSendRight = [&](std::uint32_t name) {
+        auto& references = guestSendRightUrefs[name];
+        if (references == 0) references = 1;
+        else if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
+        return name;
+    };
+    const auto acquireGuestThreadSendRight = [&](std::uint64_t threadId) {
+        auto threadPort = guestThreadPortNames.find(threadId);
+        if (threadPort == guestThreadPortNames.end()) {
+            if (nextGuestThreadPortName >=
+                std::numeric_limits<std::uint32_t>::max() - 4) {
+                return std::uint32_t{0};
+            }
+            const auto name = nextGuestThreadPortName;
+            nextGuestThreadPortName += 4;
+            threadPort = guestThreadPortNames.emplace(threadId, name).first;
+            guestSendRightUrefs.emplace(name, 0);
+        }
+        auto& references = guestSendRightUrefs[threadPort->second];
+        if (references == std::numeric_limits<std::uint32_t>::max()) return std::uint32_t{0};
+        ++references;
+        return threadPort->second;
+    };
     const auto finishGuestThread = [&](std::uint64_t result,
                                        std::vector<std::uint64_t>& live) {
         const auto completedId = guestScheduler.current_id();
@@ -4946,6 +4969,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 193) {
+                hostRegisters[0] = acquireGuestFixedSendRight(
+                    static_cast<std::uint32_t>(guestMachHostPort));
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service == 194) {
+                hostRegisters[0] = acquireGuestThreadSendRight(guestScheduler.current_id());
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 180 || service == 181) {
                 const auto threadId = hostRegisters[0];
                 const auto* thread = guestScheduler.find(threadId);
@@ -7019,36 +7055,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     static_cast<std::int64_t>(-28))
                     ? static_cast<std::uint32_t>(guestMachTaskPort)
                     : static_cast<std::uint32_t>(guestMachHostPort);
-                auto& references = guestSendRightUrefs[port];
-                if (references == 0) references = 1;
-                else if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
-                registers[0] = port;
+                registers[0] = acquireGuestFixedSendRight(port);
                 registers[34] = 0;
                 continue;
             }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-27))) {
-                constexpr std::uint64_t machPortNull = 0;
                 const auto threadId = guestScheduler.current_id();
-                auto threadPort = guestThreadPortNames.find(threadId);
-                if (threadPort == guestThreadPortNames.end()) {
-                    if (nextGuestThreadPortName >=
-                        std::numeric_limits<std::uint32_t>::max() - 4) {
-                        registers[0] = machPortNull;
-                        registers[34] = 0;
-                        continue;
-                    }
-                    const auto name = nextGuestThreadPortName;
-                    nextGuestThreadPortName += 4;
-                    threadPort = guestThreadPortNames.emplace(threadId, name).first;
-                    guestSendRightUrefs.emplace(name, 0);
-                }
-                auto& references = guestSendRightUrefs[threadPort->second];
-                if (references == std::numeric_limits<std::uint32_t>::max()) {
-                    registers[0] = machPortNull;
-                } else {
-                    ++references;
-                    registers[0] = threadPort->second;
-                }
+                registers[0] = acquireGuestThreadSendRight(threadId);
                 registers[34] = 0;
                 continue;
             }

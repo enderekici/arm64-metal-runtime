@@ -509,5 +509,23 @@ sentinels null_send=0:1 dead_send=0:1 null_receive_invalid=1 dead_name_invalid=1
 errors unknown=1 invalid_task=1 host_task=1 right=1 send_once=0:0 port_set=0:0
 ```
 
-Status is 0. The strict guest error precedence and the no-cache public
-`_mach_host_self` import boundary remain separate from this MIG message.
+## Public Mach host and thread self wrappers
+
+`mach-public-self.c` calls the executable-imported `_mach_host_self` and
+`_mach_thread_self` wrappers, then checks that each returns the stable guest
+name and increments the same guest send-right reference state used by raw
+traps. It releases a baseline right before checking the net reference delta.
+`_mach_task_self_` remains a modeled data symbol. This is local namespace
+coverage; it makes no host service connection.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-public-self.c -o /tmp/mach-public-self
+/tmp/mach-public-self
+```
+
+Native normalized output is
+`host_same=1 host_delta=1 thread_same=1 thread_delta=1`; status is 0.
+
+Status is 0. The strict guest error precedence is separate from this MIG
+message; public self wrappers have their own control below.

@@ -214,6 +214,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_jit_write_protect_np", 182, true, true},
     {"_bootstrap_look_up", 183, true, true},
     {"___memcpy_chk", kMemcpyChkFailureService, true, true},
+    {"_mach_host_self", 193, true, true},
+    {"_mach_thread_self", 194, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {
