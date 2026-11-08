@@ -456,6 +456,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::IntegerMultiplyAccumulate;
             const bool bitfieldOpcode =
                 opcode == translate_core::Opcode::Bitfield;
+            const bool scalarFPOpcode =
+                opcode == translate_core::Opcode::ScalarFloatingPoint;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const bool adrOpcode = opcode == translate_core::Opcode::Adr;
@@ -584,6 +586,16 @@ ProcessKernelPlan plan_process_kernel(
                  operation.immediate < operation.width &&
                  bitfieldEnd < operation.width && bitfieldVariant <= 2U &&
                  (operation.shift & ~0xffU) == 0);
+            const auto scalarFPKind = operation.shift >> 2U;
+            const bool validScalarFP =
+                !scalarFPOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 255 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 (scalarFPKind == 0U ? operation.shift <= 3U :
+                  scalarFPKind == 1U ? operation.shift == 4U :
+                  scalarFPKind == 2U ? operation.shift == 8U : false) &&
+                 (scalarFPKind == 1U || operation.immediate == 0));
             const bool validAdr =
                 !adrOpcode ||
                 (operation.destination <= 31 && operation.source <= 1 &&
@@ -594,7 +606,7 @@ ProcessKernelPlan plan_process_kernel(
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
                  !logicalVariableShiftOpcode && !multiplyAccumulateOpcode &&
-                 !bitfieldOpcode && !adrOpcode) ||
+                 !bitfieldOpcode && !scalarFPOpcode && !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -603,7 +615,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validAddSubCarryRegister ||
                 !validLogicalShiftedRegister || !validLogicalImmediate ||
                 !validLogicalVariableShift || !validMultiplyAccumulate ||
-                !validBitfield || !validAdr ||
+                !validBitfield || !validScalarFP || !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

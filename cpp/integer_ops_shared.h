@@ -252,6 +252,95 @@ inline ulong bitfield_apply(uint variant, ulong destination, ulong source,
     }
     return extracted & valueMask;
 }
+struct ScalarFPResult { ulong value; uint fpsrFlags; };
+inline ScalarFPResult scalar_fp_integer_to_float(
+    ulong raw, uint sourceWidth, uint signedInput, uint floatWidth, uint fpcr) {
+    const ulong sourceMask = sourceWidth == 32u ? 0xfffffffful : ~0ul;
+    raw &= sourceMask;
+    const bool negative = signedInput != 0u &&
+        ((raw & (sourceWidth == 32u ? 0x80000000ul : 0x8000000000000000ul)) != 0ul);
+    const ulong magnitude = negative
+        ? (sourceWidth == 32u ? ulong(0u - uint(raw)) : 0ul - raw)
+        : raw;
+    if (magnitude == 0ul) return ScalarFPResult{0ul, 0u};
+    const uint fraction = floatWidth == 64u ? 52u : 23u;
+    uint exponent = 63u - metal::clz(magnitude);
+    ulong significand;
+    uint fpsrFlags = 0u;
+    if (exponent <= fraction) {
+        significand = magnitude << (fraction - exponent);
+    } else {
+        const uint shift = exponent - fraction;
+        significand = magnitude >> shift;
+        const ulong remainder = magnitude & ((1ul << shift) - 1ul);
+        if (remainder != 0ul) {
+            fpsrFlags |= 16u;
+            const ulong halfway = 1ul << (shift - 1u);
+            const uint mode = (fpcr >> 22u) & 3u;
+            const bool roundUp = (mode == 1u && !negative) ||
+                (mode == 2u && negative) ||
+                (mode == 0u && (remainder > halfway ||
+                    (remainder == halfway && (significand & 1ul) != 0ul)));
+            significand += ulong(roundUp);
+        }
+    }
+    const uint bias = floatWidth == 64u ? 1023u : 127u;
+    const uint signPosition = floatWidth == 64u ? 63u : 31u;
+    const ulong value = (ulong(negative) << signPosition) |
+        ((ulong(exponent + bias - 1u) << fraction) + significand);
+    return ScalarFPResult{value, fpsrFlags};
+}
+inline ulong scalar_fp_expand_immediate(uint immediate, uint floatWidth) {
+    const uint fraction = floatWidth == 64u ? 52u : 23u;
+    const uint exponentBits = floatWidth == 64u ? 11u : 8u;
+    const uint repeated = (immediate >> 6u) & 1u;
+    const ulong exponent = (ulong(repeated ^ 1u) << (exponentBits - 1u)) |
+        (repeated != 0u ? ((1ul << (exponentBits - 1u)) - 4ul) : 0ul) |
+        ulong((immediate >> 4u) & 3u);
+    return (ulong((immediate >> 7u) & 1u) << (fraction + exponentBits)) |
+        (exponent << fraction) |
+        (ulong(immediate & 15u) << (fraction - 4u));
+}
+inline ScalarFPResult scalar_fp_round_positive(
+    ulong value, uint floatWidth, uint fpcr) {
+    const uint fraction = floatWidth == 64u ? 52u : 23u;
+    const uint exponentBits = floatWidth == 64u ? 11u : 8u;
+    const uint signPosition = fraction + exponentBits;
+    const ulong signMask = 1ul << signPosition;
+    const ulong fractionMask = (1ul << fraction) - 1ul;
+    const ulong exponentLimit = (1ul << exponentBits) - 1ul;
+    const ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful;
+    value &= valueMask;
+    const ulong sign = value & signMask;
+    const ulong exponent = (value >> fraction) & exponentLimit;
+    const ulong significand = value & fractionMask;
+    if (exponent == exponentLimit) {
+        if (significand == 0ul) return ScalarFPResult{value, 0u};
+        const ulong quietBit = 1ul << (fraction - 1u);
+        const uint flags = (significand & quietBit) == 0ul ? 1u : 0u;
+        if ((fpcr & (1u << 25u)) != 0u)
+            return ScalarFPResult{(exponentLimit << fraction) | quietBit, flags};
+        return ScalarFPResult{(value | quietBit) & valueMask, flags};
+    }
+    if (exponent == 0ul && significand != 0ul && (fpcr & (1u << 24u)) != 0u)
+        return ScalarFPResult{sign, 128u};
+    if (exponent == 0ul && significand == 0ul) return ScalarFPResult{sign, 0u};
+    const int unbiased = exponent == 0ul
+        ? (floatWidth == 64u ? -1022 : -126)
+        : int(exponent) - (floatWidth == 64u ? 1023 : 127);
+    if (unbiased >= int(fraction)) return ScalarFPResult{value, 0u};
+    if (unbiased < 0) {
+        if (sign != 0ul) return ScalarFPResult{sign, 0u};
+        return ScalarFPResult{floatWidth == 64u ? 0x3ff0000000000000ul : 0x3f800000ul, 0u};
+    }
+    const uint fractionalBits = fraction - uint(unbiased);
+    const ulong discardedMask = (1ul << fractionalBits) - 1ul;
+    const ulong discarded = value & discardedMask;
+    if (discarded == 0ul) return ScalarFPResult{value, 0u};
+    ulong rounded = value & ~discardedMask;
+    if (sign == 0ul) rounded += 1ul << fractionalBits;
+    return ScalarFPResult{rounded & valueMask, 0u};
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -413,6 +502,105 @@ inline constexpr std::uint64_t bitfield_apply(
   }
   return extracted & valueMask;
 }
+struct ScalarFPResult {
+  std::uint64_t value;
+  std::uint32_t fpsrFlags;
+};
+inline constexpr ScalarFPResult scalar_fp_integer_to_float(
+    std::uint64_t raw, std::uint32_t sourceWidth, std::uint32_t signedInput,
+    std::uint32_t floatWidth, std::uint32_t fpcr) {
+  const auto sourceMask = sourceWidth == 32U
+      ? std::uint64_t{0xffffffffU} : ~std::uint64_t{0};
+  raw &= sourceMask;
+  const bool negative = signedInput != 0U &&
+      ((raw & (sourceWidth == 32U ? 0x80000000ULL : 0x8000000000000000ULL)) != 0U);
+  const auto magnitude = negative
+      ? (sourceWidth == 32U
+             ? static_cast<std::uint64_t>(std::uint32_t{0U} -
+                                          static_cast<std::uint32_t>(raw))
+             : std::uint64_t{0U} - raw)
+      : raw;
+  if (magnitude == 0U) return {0U, 0U};
+  const std::uint32_t fraction = floatWidth == 64U ? 52U : 23U;
+  std::uint32_t exponent = 0U;
+  for (auto remaining = magnitude; remaining > 1U; remaining >>= 1U) ++exponent;
+  std::uint64_t significand = 0;
+  std::uint32_t fpsrFlags = 0U;
+  if (exponent <= fraction) {
+    significand = magnitude << (fraction - exponent);
+  } else {
+    const auto shift = exponent - fraction;
+    significand = magnitude >> shift;
+    const auto remainder = magnitude & ((std::uint64_t{1} << shift) - 1U);
+    if (remainder != 0U) {
+      fpsrFlags |= 16U;
+      const auto halfway = std::uint64_t{1} << (shift - 1U);
+      const auto mode = (fpcr >> 22U) & 3U;
+      const bool roundUp = (mode == 1U && !negative) ||
+          (mode == 2U && negative) ||
+          (mode == 0U && (remainder > halfway ||
+              (remainder == halfway && (significand & 1U) != 0U)));
+      significand += static_cast<std::uint64_t>(roundUp);
+    }
+  }
+  const std::uint32_t bias = floatWidth == 64U ? 1023U : 127U;
+  const std::uint32_t signPosition = floatWidth == 64U ? 63U : 31U;
+  const auto value = (std::uint64_t{negative} << signPosition) |
+      ((std::uint64_t{exponent + bias - 1U} << fraction) + significand);
+  return {value, fpsrFlags};
+}
+inline constexpr std::uint64_t scalar_fp_expand_immediate(
+    std::uint32_t immediate, std::uint32_t floatWidth) {
+  const std::uint32_t fraction = floatWidth == 64U ? 52U : 23U;
+  const std::uint32_t exponentBits = floatWidth == 64U ? 11U : 8U;
+  const auto repeated = (immediate >> 6U) & 1U;
+  const auto exponent = (std::uint64_t{repeated ^ 1U} << (exponentBits - 1U)) |
+      (repeated != 0U ? ((std::uint64_t{1} << (exponentBits - 1U)) - 4U) : 0U) |
+      ((immediate >> 4U) & 3U);
+  return (std::uint64_t{(immediate >> 7U) & 1U} << (fraction + exponentBits)) |
+      (exponent << fraction) |
+      (std::uint64_t{immediate & 15U} << (fraction - 4U));
+}
+inline constexpr ScalarFPResult scalar_fp_round_positive(
+    std::uint64_t value, std::uint32_t floatWidth, std::uint32_t fpcr) {
+  const std::uint32_t fraction = floatWidth == 64U ? 52U : 23U;
+  const std::uint32_t exponentBits = floatWidth == 64U ? 11U : 8U;
+  const std::uint32_t signPosition = fraction + exponentBits;
+  const auto signMask = std::uint64_t{1} << signPosition;
+  const auto fractionMask = (std::uint64_t{1} << fraction) - 1U;
+  const auto exponentLimit = (std::uint64_t{1} << exponentBits) - 1U;
+  const auto valueMask = floatWidth == 64U ? ~std::uint64_t{0} : std::uint64_t{0xffffffffU};
+  value &= valueMask;
+  const auto sign = value & signMask;
+  const auto exponent = (value >> fraction) & exponentLimit;
+  const auto significand = value & fractionMask;
+  if (exponent == exponentLimit) {
+    if (significand == 0U) return {value, 0U};
+    const auto quietBit = std::uint64_t{1} << (fraction - 1U);
+    const auto flags = (significand & quietBit) == 0U ? 1U : 0U;
+    if ((fpcr & (1U << 25U)) != 0U)
+      return {(exponentLimit << fraction) | quietBit, flags};
+    return {(value | quietBit) & valueMask, flags};
+  }
+  if (exponent == 0U && significand != 0U && (fpcr & (1U << 24U)) != 0U)
+    return {sign, 128U};
+  if (exponent == 0U && significand == 0U) return {sign, 0U};
+  const int unbiased = exponent == 0U
+      ? (floatWidth == 64U ? -1022 : -126)
+      : static_cast<int>(exponent) - (floatWidth == 64U ? 1023 : 127);
+  if (unbiased >= static_cast<int>(fraction)) return {value, 0U};
+  if (unbiased < 0) {
+    if (sign != 0U) return {sign, 0U};
+    return {floatWidth == 64U ? 0x3ff0000000000000ULL : 0x3f800000ULL, 0U};
+  }
+  const auto fractionalBits = fraction - static_cast<std::uint32_t>(unbiased);
+  const auto discardedMask = (std::uint64_t{1} << fractionalBits) - 1U;
+  const auto discarded = value & discardedMask;
+  if (discarded == 0U) return {value, 0U};
+  auto rounded = value & ~discardedMask;
+  if (sign == 0U) rounded += std::uint64_t{1} << fractionalBits;
+  return {rounded & valueMask, 0U};
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -561,6 +749,69 @@ inline constexpr char typed_integer_msl_source[] =
     "extracted |= extensionMask; } if (variant == 1u) "
     "return ((destination & ~fieldMask) | extracted) & valueMask; "
     "return extracted & valueMask; }\n"
+    "struct ScalarFPResult { ulong value; uint fpsrFlags; };\n"
+    "inline ScalarFPResult scalar_fp_integer_to_float(ulong raw, "
+    "uint sourceWidth, uint signedInput, uint floatWidth, uint fpcr) { "
+    "ulong sourceMask = sourceWidth == 32u ? 0xfffffffful : ~0ul; "
+    "raw &= sourceMask; bool negative = signedInput != 0u && "
+    "(raw & (sourceWidth == 32u ? 0x80000000ul : "
+    "0x8000000000000000ul)) != 0ul; "
+    "ulong magnitude = negative ? (sourceWidth == 32u ? "
+    "ulong(0u - uint(raw)) : 0ul - raw) : raw; "
+    "if (magnitude == 0ul) return ScalarFPResult{0ul, 0u}; "
+    "uint fraction = floatWidth == 64u ? 52u : 23u; "
+    "uint exponent = 63u - metal::clz(magnitude); ulong significand; uint flags = 0u; "
+    "if (exponent <= fraction) significand = magnitude << (fraction - exponent); "
+    "else { uint shift = exponent - fraction; significand = magnitude >> shift; "
+    "ulong remainder = magnitude & ((1ul << shift) - 1ul); "
+    "if (remainder != 0ul) { flags |= 16u; ulong halfway = 1ul << (shift - 1u); "
+    "uint mode = (fpcr >> 22u) & 3u; bool up = (mode == 1u && !negative) || "
+    "(mode == 2u && negative) || (mode == 0u && (remainder > halfway || "
+    "(remainder == halfway && (significand & 1ul) != 0ul))); "
+    "significand += ulong(up); } } uint bias = floatWidth == 64u ? 1023u : 127u; "
+    "uint signPosition = floatWidth == 64u ? 63u : 31u; "
+    "ulong value = (ulong(negative) << signPosition) | "
+    "((ulong(exponent + bias - 1u) << fraction) + significand); "
+    "return ScalarFPResult{value, flags}; }\n"
+    "inline ulong scalar_fp_expand_immediate(uint immediate, uint floatWidth) { "
+    "uint fraction = floatWidth == 64u ? 52u : 23u; "
+    "uint exponentBits = floatWidth == 64u ? 11u : 8u; "
+    "uint repeated = (immediate >> 6u) & 1u; "
+    "ulong exponent = (ulong(repeated ^ 1u) << (exponentBits - 1u)) | "
+    "(repeated != 0u ? ((1ul << (exponentBits - 1u)) - 4ul) : 0ul) | "
+    "ulong((immediate >> 4u) & 3u); "
+    "return (ulong((immediate >> 7u) & 1u) << (fraction + exponentBits)) | "
+    "(exponent << fraction) | (ulong(immediate & 15u) << (fraction - 4u)); }\n"
+    "inline ScalarFPResult scalar_fp_round_positive(ulong value, "
+    "uint floatWidth, uint fpcr) { uint fraction = floatWidth == 64u ? 52u : 23u; "
+    "uint exponentBits = floatWidth == 64u ? 11u : 8u; "
+    "uint signPosition = fraction + exponentBits; ulong signMask = 1ul << signPosition; "
+    "ulong fractionMask = (1ul << fraction) - 1ul; "
+    "ulong exponentLimit = (1ul << exponentBits) - 1ul; "
+    "ulong valueMask = floatWidth == 64u ? ~0ul : 0xfffffffful; value &= valueMask; "
+    "ulong sign = value & signMask; ulong exponent = (value >> fraction) & exponentLimit; "
+    "ulong significand = value & fractionMask; "
+    "if (exponent == exponentLimit) { if (significand == 0ul) "
+    "return ScalarFPResult{value, 0u}; ulong quietBit = 1ul << (fraction - 1u); "
+    "uint flags = (significand & quietBit) == 0ul ? 1u : 0u; "
+    "if ((fpcr & (1u << 25u)) != 0u) return ScalarFPResult{"
+    "(exponentLimit << fraction) | quietBit, flags}; "
+    "return ScalarFPResult{(value | quietBit) & valueMask, flags}; } "
+    "if (exponent == 0ul && significand != 0ul && (fpcr & (1u << 24u)) != 0u) "
+    "return ScalarFPResult{sign, 128u}; "
+    "if (exponent == 0ul && significand == 0ul) return ScalarFPResult{sign, 0u}; "
+    "int unbiased = exponent == 0ul ? (floatWidth == 64u ? -1022 : -126) : "
+    "int(exponent) - (floatWidth == 64u ? 1023 : 127); "
+    "if (unbiased >= int(fraction)) return ScalarFPResult{value, 0u}; "
+    "if (unbiased < 0) { if (sign != 0ul) return ScalarFPResult{sign, 0u}; "
+    "return ScalarFPResult{floatWidth == 64u ? 0x3ff0000000000000ul : "
+    "0x3f800000ul, 0u}; } uint fractionalBits = fraction - uint(unbiased); "
+    "ulong discardedMask = (1ul << fractionalBits) - 1ul; "
+    "ulong discarded = value & discardedMask; "
+    "if (discarded == 0ul) return ScalarFPResult{value, 0u}; "
+    "ulong rounded = value & ~discardedMask; "
+    "if (sign == 0ul) rounded += 1ul << fractionalBits; "
+    "return ScalarFPResult{rounded & valueMask, 0u}; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

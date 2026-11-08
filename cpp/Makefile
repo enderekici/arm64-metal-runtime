@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-datagram-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-datagram-native verify-vector-crypto verify-mach-vm-overwrite-native verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -140,6 +140,7 @@ INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
 INTERPRETER_TBZ_TBNZ_MAIN := $(BUILD_DIR)/interpreter-tbz-tbnz-main
 INTERPRETER_ADR_ADRP_MAIN := $(BUILD_DIR)/interpreter-adr-adrp-main
 INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
+INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 ADC_SBC_CARRY_DECODE_TEST := $(BUILD_DIR)/adc-sbc-carry-decode-test
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
 GUEST_FORMAT_TEST := $(BUILD_DIR)/guest-format-test
@@ -391,6 +392,35 @@ $(INTERPRETER_ADR_ADRP_MAIN): ../fixtures/interpreter/adr-adrp-main.s
 $(INTERPRETER_ADC_SBC_CARRY_MAIN): ../fixtures/interpreter/adc-sbc-carry-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_SCALAR_FP_MAIN): ../fixtures/interpreter/scalar-fp-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+verify-scalar-fp-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_MAIN)
+	@set -eu; \
+		"$(INTERPRETER_TYPED_NATIVE)"; \
+		set +e; "$(INTERPRETER_SCALAR_FP_MAIN)"; status=$$?; set -e; \
+		test "$$status" -eq 42; \
+		echo "scalar-fp native guest exit=$$status"
+
+verify-scalar-fp-interpreter: $(APP) $(INTERPRETER_SCALAR_FP_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/scalar-fp-interpreter.XXXXXX"); \
+		set +e; \
+		"$(INTERPRETER_SCALAR_FP_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_SCALAR_FP_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_SCALAR_FP_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq 42 && test "$$interpreter_rc" -eq 42 && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/interpreter.err" && \
+		test "$$(grep -c 'event=interpreter-dispatch' "$$run_dir/interpreter.err")" -eq 1 && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/interpreter.err" && \
+		echo "scalar-fp native/translated/interpreter verified: $$run_dir"
 
 $(ADC_SBC_CARRY_DECODE_TEST): ../fixtures/handoff/adc-sbc-carry-decode.cpp process_decoder.cpp process_decoder.hpp translate_core.cpp translate_core.hpp integer_ops_shared.h guest_strings.cpp guest_strings.hpp guest_vector_crypto.cpp guest_vector_crypto.hpp
 	@mkdir -p "$(BUILD_DIR)"

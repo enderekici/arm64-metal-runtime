@@ -359,6 +359,29 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::Bitfield, field(bits, 0, 5), field(bits, 5, 5),
                      rotation, (variant << 6U) | end, width};
   }
+  if ((bits & 0x7f3efc00U) == 0x1e220000U) {
+    const auto floatWidth = field(bits, 22, 1) != 0 ? 64U : 32U;
+    const auto sourceWidth = field(bits, 31, 1) != 0 ? 64U : 32U;
+    const auto signedSource = field(bits, 16, 1) == 0 ? 1U : 0U;
+    return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5),
+                     field(bits, 5, 5), 0,
+                     ((sourceWidth == 64U ? 1U : 0U) << 1U) | signedSource,
+                     floatWidth};
+  }
+  if ((bits & 0xff201fe0U) == 0x1e201000U) {
+    const auto format = field(bits, 22, 2);
+    if (format > 1U) return std::nullopt;
+    const auto floatWidth = format == 1U ? 64U : 32U;
+    return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5), 0,
+                     field(bits, 13, 8), 4U, floatWidth};
+  }
+  if ((bits & 0xff3ffc00U) == 0x1e24c000U) {
+    const auto format = field(bits, 22, 2);
+    if (format > 1U) return std::nullopt;
+    const auto floatWidth = format == 1U ? 64U : 32U;
+    return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5),
+                     field(bits, 5, 5), 0, 8U, floatWidth};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -661,6 +684,49 @@ Instruction make_operation_instruction(Operation operation,
                      ", " + reg(operation.immediate, operation.width == 64) +
                      ", " + reg(accumulator, operation.width == 64) + ", " +
                      std::to_string(operation.width) + "u);");
+    }
+  } else if (operation.opcode == Opcode::ScalarFloatingPoint) {
+    const auto kind = operation.shift >> 2U;
+    const auto scalarRegister = [](std::uint32_t index) {
+      return std::to_string(806U + 2U * index);
+    };
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 255 ||
+        (operation.width != 32 && operation.width != 64) ||
+        (kind == 0U && operation.shift > 3U) ||
+        (kind == 1U && operation.shift != 4U) ||
+        (kind == 2U && operation.shift != 8U) || kind > 2U ||
+        (kind != 1U && operation.immediate != 0)) {
+      throw std::invalid_argument("Typed scalar FP operands are invalid");
+    }
+    const auto destination = scalarRegister(operation.destination);
+    std::string result;
+    if (kind == 0U) {
+      const auto sourceWidth = (operation.shift & 2U) != 0 ? 64U : 32U;
+      const auto signedSource = operation.shift & 1U;
+      result = "scalar_fp_integer_to_float(" +
+          reg(operation.source, sourceWidth == 64U) + ", " +
+          std::to_string(sourceWidth) + "u, " +
+          std::to_string(signedSource) + "u, " +
+          std::to_string(operation.width) + "u, uint(x[870]))";
+      code.push_back("{ const ScalarFPResult fp_result = " + result + "; " +
+                     "x[" + destination + "] = fp_result.value; x[" +
+                     std::to_string(807U + 2U * operation.destination) +
+                     "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+    } else if (kind == 1U) {
+      code.push_back("{ x[" + destination + "] = scalar_fp_expand_immediate(" +
+                     std::to_string(operation.immediate) + "u, " +
+                     std::to_string(operation.width) + "u); x[" +
+                     std::to_string(807U + 2U * operation.destination) +
+                     "] = 0ul; }");
+    } else {
+      result = "scalar_fp_round_positive(x[" +
+          scalarRegister(operation.source) + "], " +
+          std::to_string(operation.width) + "u, uint(x[870]))";
+      code.push_back("{ const ScalarFPResult fp_result = " + result + "; " +
+                     "x[" + destination + "] = fp_result.value; x[" +
+                     std::to_string(807U + 2U * operation.destination) +
+                     "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
     }
   } else if (operation.opcode == Opcode::Return) {
     if (mode == LoweringMode::Function) {

@@ -373,29 +373,69 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
-            if (opcode == 33u) {
-                const uint rd = instruction.operation[1];
-                const uint rn = instruction.operation[2];
-                const uint rotation = instruction.operation[3];
-                const uint packed = instruction.operation[4];
-                const uint variant = packed >> 6u;
-                const uint end = packed & 63u;
-                const uint width = instruction.operation[5];
+            if (opcode == 33u || opcode == 32u) {
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
-                if (rd > 31u || rn > 31u ||
-                    (width != 32u && width != 64u) || rotation >= width ||
-                    end >= width || variant > 2u || (packed & ~0xffu) != 0u ||
-                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                if (instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
                     state[33] = pc;
                     state[34] = 7;
                     return;
                 }
-                const ulong destination = rd == 31u ? 0ul : state[rd];
-                const ulong source = rn == 31u ? 0ul : state[rn];
-                const ulong result = bitfield_apply(
-                    variant, destination, source, rotation, end, width);
-                if (rd != 31u) state[rd] = result;
+                if (opcode == 33u) {
+                    const uint rd = instruction.operation[1];
+                    const uint rn = instruction.operation[2];
+                    const uint rotation = instruction.operation[3];
+                    const uint packed = instruction.operation[4];
+                    const uint variant = packed >> 6u;
+                    const uint end = packed & 63u;
+                    const uint width = instruction.operation[5];
+                    if (rd > 31u || rn > 31u ||
+                        (width != 32u && width != 64u) || rotation >= width ||
+                        end >= width || variant > 2u || (packed & ~0xffu) != 0u) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    const ulong destination = rd == 31u ? 0ul : state[rd];
+                    const ulong source = rn == 31u ? 0ul : state[rn];
+                    const ulong result = bitfield_apply(
+                        variant, destination, source, rotation, end, width);
+                    if (rd != 31u) state[rd] = result;
+                } else {
+                    const uint rd = instruction.operation[1];
+                    const uint rn = instruction.operation[2];
+                    const uint immediate = instruction.operation[3];
+                    const uint packed = instruction.operation[4];
+                    const uint width = instruction.operation[5];
+                    const uint kind = packed >> 2u;
+                    if (rd > 31u || rn > 31u || immediate > 255u ||
+                        (width != 32u && width != 64u) ||
+                        (kind == 0u ? packed > 3u :
+                         kind == 1u ? packed != 4u :
+                         kind == 2u ? packed != 8u : true) ||
+                        (kind != 1u && immediate != 0u)) {
+                        state[33] = pc;
+                        state[34] = 7;
+                        return;
+                    }
+                    ScalarFPResult result;
+                    if (kind == 0u) {
+                        const uint sourceWidth = (packed & 2u) != 0u ? 64u : 32u;
+                        const uint signedInput = packed & 1u;
+                        const ulong raw = rn == 31u ? 0ul : state[rn];
+                        result = scalar_fp_integer_to_float(
+                            raw, sourceWidth, signedInput, width, uint(state[870]));
+                    } else if (kind == 1u) {
+                        result = ScalarFPResult{
+                            scalar_fp_expand_immediate(immediate, width), 0u};
+                    } else {
+                        result = scalar_fp_round_positive(
+                            state[806u + 2u * rn], width, uint(state[870]));
+                    }
+                    state[806u + 2u * rd] = result.value;
+                    state[807u + 2u * rd] = 0ul;
+                    state[871] |= result.fpsrFlags;
+                }
                 if (blockEnd) {
                     pc = instruction.successor0;
                     leftBlock = true;

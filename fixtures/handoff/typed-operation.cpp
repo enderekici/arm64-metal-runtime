@@ -447,6 +447,9 @@ int main() {
          std::string_view::npos);
   assert(logicalMsl.find("inline bool arm64_condition_holds") !=
          std::string_view::npos);
+  assert(logicalMsl.find("return extracted & valueMask; }\n"
+                         "struct ScalarFPResult") !=
+         std::string_view::npos);
   assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==
          std::string_view::npos);
 
@@ -585,6 +588,66 @@ int main() {
   assert(multiply_accumulate_apply(1, 0, 0x1234, 0, 64) == 0);
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "multiply_accumulate_apply") != std::string_view::npos);
+
+  using arm64metal::scalar_fp_expand_immediate;
+  using arm64metal::scalar_fp_integer_to_float;
+  using arm64metal::scalar_fp_round_positive;
+  const auto ucvtf = decode_operation(0x9e630100U);  // ucvtf d0, x8
+  assert(ucvtf.has_value() && ucvtf->opcode == Opcode::ScalarFloatingPoint &&
+         ucvtf->destination == 0 && ucvtf->source == 8 && ucvtf->shift == 2 &&
+         ucvtf->width == 64);
+  assert((serialize_operation(*ucvtf) ==
+          arm64metal::translate_core::OperationPacket{32, 0, 8, 0, 2, 64}));
+  const auto scvtf = decode_operation(0x1e2200a3U);  // scvtf s3, w5
+  assert(scvtf.has_value() && scvtf->opcode == Opcode::ScalarFloatingPoint &&
+         scvtf->destination == 3 && scvtf->source == 5 && scvtf->shift == 1 &&
+         scvtf->width == 32);
+  const auto fmovImmediate = decode_operation(0x1e6d1001U);  // fmov d1, #0.75
+  assert(fmovImmediate.has_value() &&
+         fmovImmediate->opcode == Opcode::ScalarFloatingPoint &&
+         fmovImmediate->destination == 1 && fmovImmediate->immediate == 0x68 &&
+         fmovImmediate->shift == 4 && fmovImmediate->width == 64);
+  const auto frintp = decode_operation(0x1e64c000U);  // frintp d0, d0
+  assert(frintp.has_value() && frintp->opcode == Opcode::ScalarFloatingPoint &&
+         frintp->destination == 0 && frintp->source == 0 &&
+         frintp->shift == 8 && frintp->width == 64);
+  assert(make_operation_instruction(*ucvtf, {0x1000}, LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code[0].find("scalar_fp_integer_to_float(") != std::string::npos);
+  assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0).value ==
+         0x4340000000000000ULL);
+  assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64, 0)
+             .fpsrFlags == 16U);
+  assert(scalar_fp_integer_to_float(0x0020000000000001ULL, 64, 0, 64,
+                                    1U << 22U).value ==
+         0x4340000000000001ULL);
+  assert(scalar_fp_integer_to_float(0xffdfffffffffffffULL, 64, 1, 64,
+                                    2U << 22U).value ==
+         0xc340000000000001ULL);
+  assert(scalar_fp_integer_to_float(0xffffffffU, 32, 1, 32, 0).value ==
+         0xbf800000U);
+  assert(scalar_fp_integer_to_float(0xffffffffU, 32, 0, 32, 0).value ==
+         0x4f800000U);
+  assert(scalar_fp_integer_to_float(0x8000000000000000ULL, 64, 1, 64, 0).value ==
+         0xc3e0000000000000ULL);
+  assert(scalar_fp_expand_immediate(0x68, 64) == 0x3fe8000000000000ULL);
+  assert(scalar_fp_expand_immediate(0xe0, 32) == 0xbf000000U);
+  assert(scalar_fp_round_positive(0x3fe8000000000000ULL, 64, 0).value ==
+         0x3ff0000000000000ULL);
+  assert(scalar_fp_round_positive(0x3fe8000000000000ULL, 64, 0).fpsrFlags == 0U);
+  assert(scalar_fp_round_positive(0xbfd0000000000000ULL, 64, 0).value ==
+         0x8000000000000000ULL);
+  assert(scalar_fp_round_positive(0x8000000000000000ULL, 64, 0).value ==
+         0x8000000000000000ULL);
+  assert(scalar_fp_round_positive(0x7ff8000000001234ULL, 64, 0).value ==
+         0x7ff8000000001234ULL);
+  assert(scalar_fp_round_positive(0x7ff0000000001234ULL, 64, 0).value ==
+         0x7ff8000000001234ULL);
+  assert(scalar_fp_round_positive(0x0000000000000001ULL, 64, 1U << 24U).value == 0);
+  assert(scalar_fp_round_positive(0x0000000000000001ULL, 64, 1U << 24U)
+             .fpsrFlags == 128U);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "scalar_fp_round_positive") != std::string_view::npos);
 
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};

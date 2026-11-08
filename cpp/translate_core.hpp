@@ -43,6 +43,7 @@ enum class Opcode : std::uint32_t {
   LogicalVariableShiftRegister = 29,
   BranchRegister = 30,
   IntegerMultiplyAccumulate = 31,
+  ScalarFloatingPoint = 32,
   Bitfield = 33,
 };
 
@@ -103,6 +104,11 @@ enum class Opcode : std::uint32_t {
 // shift=(variant << 6) | imms (0=unsigned, 1=merge, 2=signed), and width
 // 32 or 64. Register 31 is ZR; BFM reads the prior destination as its merge
 // value.
+// Scalar FP uses destination=Fd, source=Rn/Fn, immediate=FMOV imm8,
+// shift=(kind << 2) | (integer-source-is-X << 1) | signed-source, and
+// width=32 or 64 for the FP format. Kinds are integer conversion, FMOV
+// immediate, and FRINTP. Scalar FP registers use their low 64-bit lane; the
+// upper lane is cleared. Integer source register 31 is ZR.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;

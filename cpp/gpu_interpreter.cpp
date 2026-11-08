@@ -278,6 +278,20 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter bitfield packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::ScalarFloatingPoint) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto kind = operation[4] >> 2U;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 255 ||
+                (operation[5] != 32 && operation[5] != 64) ||
+                (kind == 0U ? operation[4] > 3U :
+                 kind == 1U ? operation[4] != 4U :
+                 kind == 2U ? operation[4] != 8U : true) ||
+                (kind != 1U && operation[3] != 0U) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter scalar-FP packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::Adr) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             if (operation[1] > 31 || operation[2] > 1 ||
