@@ -8,6 +8,7 @@ _main:
     cmp x0, #42
     b .Lcheck_flags
 .Lcheck_flags:
+    madd x12, xzr, xzr, xzr
     b.ne .Lwrong_flags
     ret
 .Lwrong_flags:
