@@ -238,3 +238,24 @@ See [Current wave](#current-wave) and the ISA sections above for latest
 interpreter/VM proof, exact hashes, receipts, and remaining syscall boundaries. The
 full compatibility matrix and its proof limits are in
 [COMPATIBILITY.md](COMPATIBILITY.md).
+
+## Fortified memcpy and SIGTRAP handler package proof
+
+Release source `0a32d1f` was integrated as `f8ad262`. The regression,
+interpreter, and demand-cache gates exited 0. From the extracted package, the
+valid `__memcpy_chk` fixture matched native with status 0 and output
+`copy=fort result=1`. The overflow fixture's installed `SA_SIGINFO` handler
+received SIGTRAP (signal 5, code 0), recorded a nonzero PC equal to `si_addr`
+in each process, and exited 77 in both native and guest runs. Addresses are
+process-local; byte-for-byte address equality is not expected. Exit 77 is the
+fixture handler's explicit exit, not proof of default unhandled-signal wait
+semantics or general signal parity.
+
+Regression, interpreter, and exact package receipts are under
+`/tmp/metal-memcpy-pair-release.wiQMMa` and
+`/tmp/metal-memcpy-pair-exact.kG8S2R`. Runtime SHA-256 before and after was
+`a5004f55fdafc10f8b7418ea8e1f2a1e97dd748cb70a4afb3dc89af59bf87f4c`;
+metallib SHA-256 was
+`55f6b96e9288afa3ac88b3d0291393a452607aa75c1e65c1bc221fc513fa933c`. The
+copied tested archive SHA-256 is
+`787ce90ad393c4b123c44b4e94481f4eaf3f22d66d63d13455ae3e6623956c8f`.
