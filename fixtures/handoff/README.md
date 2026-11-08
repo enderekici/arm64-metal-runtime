@@ -58,6 +58,7 @@ xcrun clang -Wall -Wextra -Werror "$src/raw-sysctl.c" -o "$out/raw-sysctl"
 xcrun clang -Wall -Wextra -Werror "$src/sysctl-usrstack.c" -o "$out/sysctl-usrstack"
 xcrun clang -Wall -Wextra -Werror "$src/pthread-stackaddr.c" -o "$out/pthread-stackaddr"
 xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
+xcrun clang -Wall -Wextra -Werror "$src/mach-port-namespace.c" -o "$out/mach-port-namespace"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-dev-firm.c" -o "$out/commpage-dev-firm"
 xcrun clang -Wall -Wextra -Werror "$src/mach-vm-partial-deallocate.c" \
@@ -74,6 +75,7 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/raw-sysctl"
 "$out/sysctl-usrstack"
 "$out/mach-self-pid"
+"$out/mach-port-namespace"
 "$out/commpage-page-shift"
 "$out/commpage-dev-firm"
 "$out/mach-vm-partial-deallocate"
@@ -85,6 +87,11 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 sysctl parity run.
 
 For a Metal comparison, prefix each invocation with `env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 .build/cpp/arm64-metal launch`. Keep these runs separate from the unchanged application replays.
+
+`mach-port-namespace.c` covers receive allocation (`-16`), reply-port name
+generation (`-26`), MAKE_SEND insertion (`-21`), send-right deallocation
+(`-18`), and receive destruction (`-25`). Its normalized native output is
+`task=1 allocated=1 names_distinct=1 inserted=1 send_deallocated=1 receive_only_invalid_right=1 destroyed=1 destroy_reply=1 destroy_again_invalid_name=1 invalid_right=18 wrong_task_invalid_dest=1`.
 
 ## Unchanged application parity gate
 

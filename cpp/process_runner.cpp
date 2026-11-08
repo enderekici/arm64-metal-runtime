@@ -6211,6 +6211,65 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-16))) {
+                constexpr std::uint64_t kernSuccess = 0;
+                constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t kernInvalidAddress = 1;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint32_t receiveRight = 1;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                std::uint64_t result = kernSuccess;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else if (registers[1] != receiveRight) {
+                    result = kernInvalidValue;
+                } else if (nextGuestReceiveName >=
+                           std::numeric_limits<std::uint32_t>::max() - 4) {
+                    result = 3; // KERN_NO_SPACE
+                } else {
+                    try {
+                        auto* output = guestMemory.buffer(registers[2], sizeof(std::uint32_t), true);
+                        const auto name = nextGuestReceiveName;
+                        nextGuestReceiveName += 4;
+                        guestReceiveRights.emplace(name, GuestReceiveRight{0, 0});
+                        std::memcpy(output, &name, sizeof(name));
+                    } catch (const std::exception&) {
+                        result = kernInvalidAddress;
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-21))) {
+                constexpr std::uint64_t kernSuccess = 0;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint32_t makeSend = 20;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                const auto poly = static_cast<std::uint32_t>(registers[2]);
+                std::uint64_t result = kernSuccess;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else if (registers[3] != makeSend) {
+                    result = kernInvalidValue;
+                } else if (poly != name || guestReceiveRights.find(name) ==
+                           guestReceiveRights.end()) {
+                    result = kernInvalidRight;
+                } else {
+                    auto& references = guestSendRightUrefs[name];
+                    if (references < std::numeric_limits<std::uint32_t>::max()) ++references;
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-26))) {
                 constexpr std::uint32_t replyPortFlag = 0x00001000;
                 if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
@@ -6354,7 +6413,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 const auto name = static_cast<std::uint32_t>(registers[1]);
                 std::uint64_t result = kernSuccess;
-                if (target != guestMachTaskPort) {
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
                     result = machSendInvalidDest;
                 } else if (name == 0 || name == std::numeric_limits<std::uint32_t>::max()) {
                     result = kernInvalidName;
