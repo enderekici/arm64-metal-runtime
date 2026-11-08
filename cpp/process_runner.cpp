@@ -55,6 +55,7 @@
 #include <unordered_map>
 #include <utility>
 #include <unistd.h>
+#include <vector>
 
 extern char** environ;
 
@@ -2835,6 +2836,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::set<std::uint32_t> guestSemaphoreNames;
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
+    struct GuestLocalPortRightTransfer {
+        std::uint32_t name;
+        std::uint32_t disposition;
+    };
     struct GuestLocalMessage {
         std::uint32_t size;
         std::uint32_t bits;
@@ -2842,8 +2847,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t voucherPort;
         std::int32_t messageId;
         std::vector<std::uint8_t> body;
-        std::optional<std::uint32_t> transferredSendName;
-        std::uint32_t transferredSendDisposition = 0;
+        std::vector<GuestLocalPortRightTransfer> transferredSendRights;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
@@ -2874,9 +2878,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (!message.body.empty()) {
                 std::memcpy(output + sizeof(header), message.body.data(), message.body.size());
             }
-            if (message.transferredSendName) {
-                constexpr auto descriptorOffset = sizeof(mach_msg_header_t) +
-                    sizeof(mach_msg_body_t);
+            for (std::size_t index = 0; index < message.transferredSendRights.size(); ++index) {
+                const auto descriptorOffset = sizeof(mach_msg_header_t) +
+                    sizeof(mach_msg_body_t) + index * sizeof(mach_msg_port_descriptor_t);
                 mach_msg_port_descriptor_t descriptor{};
                 std::memcpy(&descriptor, output + descriptorOffset, sizeof(descriptor));
                 descriptor.disposition = MACH_MSG_TYPE_MOVE_SEND;
@@ -2960,19 +2964,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         guestUnixReceiveWaiters.erase(waiters);
     };
     const auto restoreGuestTransferredSendRight = [&](const GuestLocalMessage& message) {
-        if (!message.transferredSendName) return true;
-        const auto receive = guestReceiveRights.find(*message.transferredSendName);
-        const auto send = guestSendRightUrefs.find(*message.transferredSendName);
-        if (receive == guestReceiveRights.end() || send == guestSendRightUrefs.end()) {
-            return false;
+        for (const auto& transfer : message.transferredSendRights) {
+            if (guestReceiveRights.find(transfer.name) == guestReceiveRights.end() ||
+                guestSendRightUrefs.find(transfer.name) == guestSendRightUrefs.end()) {
+                return false;
+            }
         }
-        if (send->second < maxGuestPortUrefs) ++send->second;
+        for (const auto& transfer : message.transferredSendRights) {
+            auto& references = guestSendRightUrefs.at(transfer.name);
+            if (references < maxGuestPortUrefs) ++references;
+        }
         return true;
     };
     const auto restoreTransferredRightAfterInvalidReceive =
         [&](const GuestLocalMessage& message) {
-            return message.transferredSendDisposition != MACH_MSG_TYPE_MOVE_SEND ||
-                restoreGuestTransferredSendRight(message);
+            for (const auto& transfer : message.transferredSendRights) {
+                if (transfer.disposition == MACH_MSG_TYPE_MOVE_SEND &&
+                    (guestReceiveRights.find(transfer.name) == guestReceiveRights.end() ||
+                     guestSendRightUrefs.find(transfer.name) == guestSendRightUrefs.end())) {
+                    return false;
+                }
+            }
+            for (const auto& transfer : message.transferredSendRights) {
+                if (transfer.disposition != MACH_MSG_TYPE_MOVE_SEND) continue;
+                auto& references = guestSendRightUrefs.at(transfer.name);
+                if (references < maxGuestPortUrefs) ++references;
+            }
+            return true;
         };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
         expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
@@ -9714,8 +9732,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (localSend || localReceive) {
                     constexpr std::uint32_t kernInvalidArgument = 4;
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
-                    constexpr std::uint32_t machSendInvalidRight = 0x10000004;
-                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    constexpr std::uint32_t machSendInvalidRight = 0x1000000a;
+                    constexpr std::uint32_t machSendInvalidData = 0x10000002;
                     constexpr std::uint32_t machSendMessageTooSmall = 0x10000008;
                     constexpr std::uint32_t machReceiveInvalidName = 0x10004002;
                     constexpr std::uint32_t machReceiveTimedOut = 0x10004003;
@@ -9729,7 +9747,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         machReceiveMessage | machReceiveTimeout | mach64SendAny;
                     std::uint64_t result = 0;
                     if ((options & ~allowedOptions) != 0 ||
-                        descriptorCount > 1 || (!sendRequested && descriptorCount != 0) ||
+                        (!sendRequested && descriptorCount != 0) ||
                         registers[6] >> 32 != 0) {
                         result = kernInvalidArgument;
                     } else if (sendRequested) {
@@ -9747,21 +9765,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             const auto sendSize = registers[2] >> 32;
                             const auto bits = static_cast<std::uint32_t>(registers[2]);
                             const bool complex = (bits & machMsgComplex) != 0;
+                            constexpr auto descriptorStart = sizeof(mach_msg_header_t) +
+                                sizeof(mach_msg_body_t);
                             if (sendSize < sizeof(mach_msg_header_t) || (sendSize & 3) != 0) {
                                 result = machSendMessageTooSmall;
-                            } else if (complex != (descriptorCount == 1)) {
+                            } else if (complex != (descriptorCount != 0)) {
                                 result = machSendInvalidData;
-                            } else if (complex && sendSize < sizeof(mach_msg_header_t) +
-                                        sizeof(mach_msg_body_t) +
-                                        sizeof(mach_msg_port_descriptor_t)) {
-                                result = machSendInvalidData;
+                            } else if (complex &&
+                                       (sendSize < descriptorStart ||
+                                        descriptorCount >
+                                            (sendSize - descriptorStart) /
+                                                sizeof(mach_msg_port_descriptor_t))) {
+                                result = machSendMessageTooSmall;
                             } else {
                                 try {
                                     const auto* bytes = guestMemory.buffer(registers[0], sendSize);
                                     mach_msg_header_t header{};
                                     std::memcpy(&header, bytes, sizeof(header));
-                                    std::optional<std::uint32_t> transferredSendName;
-                                    std::uint32_t transferredSendDisposition = 0;
+                                    std::vector<GuestLocalPortRightTransfer> transferredSendRights;
+                                    transferredSendRights.reserve(descriptorCount);
                                     if (header.msgh_bits != bits || header.msgh_size != sendSize ||
                                         header.msgh_remote_port != remote ||
                                         header.msgh_local_port != 0 ||
@@ -9770,33 +9792,49 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         result = machSendInvalidData;
                                     } else if (complex) {
                                         mach_msg_body_t body{};
-                                        mach_msg_port_descriptor_t descriptor{};
                                         std::memcpy(&body, bytes + sizeof(header), sizeof(body));
-                                        std::memcpy(&descriptor,
-                                            bytes + sizeof(header) + sizeof(body),
-                                            sizeof(descriptor));
-                                        const auto descriptorRight =
-                                            guestSendRightUrefs.find(descriptor.name);
-                                        if (body.msgh_descriptor_count != 1 ||
-                                            descriptor.pad1 != 0 || descriptor.pad2 != 0 ||
-                                            (descriptor.disposition != machMsgTypeMoveSend &&
-                                             descriptor.disposition != machMsgTypeCopySend) ||
-                                            descriptor.type != machPortDescriptorType ||
-                                            descriptor.name == 0 ||
-                                            descriptor.name ==
-                                                std::numeric_limits<std::uint32_t>::max()) {
+                                        if (body.msgh_descriptor_count != descriptorCount) {
                                             result = machSendInvalidData;
-                                        } else if (descriptorRight == guestSendRightUrefs.end() ||
-                                            descriptorRight->second == 0 ||
-                                            guestReceiveRights.find(descriptor.name) ==
-                                                guestReceiveRights.end()) {
-                                            result = machSendInvalidRight;
                                         } else {
-                                            // This local namespace can preserve a transferred
-                                            // name only while its receive right remains live.
-                                            transferredSendName = descriptor.name;
-                                            transferredSendDisposition =
-                                                descriptor.disposition;
+                                            for (std::uint32_t index = 0;
+                                                 index < descriptorCount; ++index) {
+                                                mach_msg_port_descriptor_t descriptor{};
+                                                const auto descriptorOffset = sizeof(header) +
+                                                    sizeof(body) + static_cast<std::size_t>(index) *
+                                                        sizeof(descriptor);
+                                                std::memcpy(&descriptor, bytes + descriptorOffset,
+                                                            sizeof(descriptor));
+                                                if (descriptor.pad1 != 0 || descriptor.pad2 != 0 ||
+                                                    (descriptor.disposition != machMsgTypeMoveSend &&
+                                                     descriptor.disposition != machMsgTypeCopySend) ||
+                                                    descriptor.name == 0 ||
+                                                    descriptor.name ==
+                                                        std::numeric_limits<std::uint32_t>::max()) {
+                                                    result = machSendInvalidData;
+                                                    break;
+                                                }
+                                                if (descriptor.type != machPortDescriptorType) {
+                                                    result = machSendMessageTooSmall;
+                                                    break;
+                                                }
+                                                transferredSendRights.push_back({descriptor.name,
+                                                    descriptor.disposition});
+                                            }
+                                        }
+                                    }
+                                    if (result == 0) {
+                                        for (const auto& transfer : transferredSendRights) {
+                                            const auto right = guestSendRightUrefs.find(transfer.name);
+                                            if (right == guestSendRightUrefs.end() ||
+                                                right->second == 0 ||
+                                                guestReceiveRights.find(transfer.name) ==
+                                                    guestReceiveRights.end()) {
+                                                result = machSendInvalidRight;
+                                                break;
+                                            }
+                                            if (transfer.disposition == machMsgTypeMoveSend) {
+                                                --right->second;
+                                            }
                                         }
                                     }
                                     if (result != 0) {
@@ -9805,19 +9843,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         continue;
                                     }
                                     GuestLocalMessage message{
-                                        static_cast<std::uint32_t>(sendSize),
-                                        bits,
+                                        static_cast<std::uint32_t>(sendSize), bits,
                                         static_cast<std::uint32_t>(registers[3] >> 32),
                                         static_cast<std::uint32_t>(registers[4]),
                                         static_cast<std::int32_t>(messageId), {},
-                                        transferredSendName, transferredSendDisposition};
+                                        std::move(transferredSendRights)};
                                     message.body.assign(bytes + sizeof(mach_msg_header_t),
                                                         bytes + sendSize);
                                     guestMachMessageQueues[remote].push_back(std::move(message));
-                                    if (transferredSendName &&
-                                        transferredSendDisposition == machMsgTypeMoveSend) {
-                                        --guestSendRightUrefs.at(*transferredSendName);
-                                    }
                                     progressTrace.event("mach-message-send",
                                         guestScheduler.current_id(),
                                         static_cast<std::uint32_t>(messageId));

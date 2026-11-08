@@ -176,15 +176,24 @@ send classification selected by libSystem. Native normalized output is
 `task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
 `mach-local-move-send.c` uses raw traps `-16`, `-21`, `-18`, `-19`, `-76`, and
-`-47` to cover one local complex port descriptor with `MOVE_SEND` or
+`-47` to cover one-, two-, and three-port complex messages using `MOVE_SEND` and
 `COPY_SEND`. It checks MOVE_SEND leaves only the source receive right while
 queued, COPY_SEND preserves the source send right, and successful receive
-normalizes either descriptor to MOVE_SEND. The controls also cover too-small
-receive (message and transferred right are discarded), invalid receive buffer
-(message is consumed and MOVE_SEND is restored), and destination destruction
-(queue contents are dropped). This first slice is limited to one send right on
-a live receive name in the same guest namespace; it does not implement
-multi-descriptor, MOVE_RECEIVE, send-once, or cross-namespace name allocation.
+normalizes each descriptor to MOVE_SEND. Two-descriptor coverage includes a
+successful mixed MOVE/COPY transfer and an invalid second right. Native Mach
+validates descriptor structure before copying rights, then processes rights in
+order: an invalid second right prevents message enqueue, preserves earlier
+COPY_SEND refs, and leaves an earlier MOVE_SEND consumed. The invalid right
+returns `MACH_SEND_INVALID_RIGHT` (`0x1000000a`). A malformed second descriptor
+is rejected before right copyin, so an earlier MOVE_SEND remains in the source
+namespace; it returns `MACH_SEND_MSG_TOO_SMALL` (`0x10000008`). The controls also cover
+too-small receive (message and transferred right are discarded), invalid
+receive buffer (message is consumed and MOVE_SEND is restored), and destination
+destruction (queue contents are dropped). The guest bounds descriptor traversal
+by the declared message size and validates the full descriptor array before
+processing any rights. This slice supports send rights on live receive names in
+the same guest namespace; it does not implement MOVE_RECEIVE, send-once, or
+cross-namespace name allocation.
 The binary imports only `_mach_task_self_` and `printf`; it has no bootstrap or
 host-service contact.
 
@@ -197,7 +206,7 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 Native output is status 0:
 
 ```text
-move=0 pending=0/0 receive=0 descriptor=1 copy=0 pending_send=1 receive=0 descriptor=1 too_large=268451844/0 dropped_send=1 retry=268451843 bad_buffer=268451848 restored_send=1 retry=268451843 destroy_move=0/0 dropped_send=1 destroy_copy=0/0 kept_send=1
+move=0 pending=0/0 receive=0 descriptor=1 copy=0 pending_send=1 receive=0 descriptor=1 too_large=268451844/0 dropped_send=1 retry=268451843 bad_buffer=268451848 restored_send=1 retry=268451843 destroy_move=0/0 dropped_send=1 destroy_copy=0/0 kept_send=1 mixed=0 pending=0/0+1 receive=0 descriptors=1 three=0 receive=0 descriptors=1 truncated=268435464 kept_first=1 receive=268451843 malformed_second=268435464 kept_first=1 receive=268451843 partial_move=268435466 pending=0/0 receive=268451843 partial_copy=268435466/268451843 retained_send=1
 cleanup=1
 ```
 
