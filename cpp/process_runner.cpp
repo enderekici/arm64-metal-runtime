@@ -3766,7 +3766,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 diskKey == 0
                                     ? (diskV1 ? "disk-v1-key-zero-no-assignment"
                                               : "cache-v2-disk-v1-key-zero-no-assignment")
-                                    : "cache-v2-resident-key-zero-disk-key-nonzero");
+                                    : (diskV1 ? "cache-v1-resident-key-zero-disk-key-nonzero"
+                                              : "cache-v2-resident-key-zero-disk-key-nonzero"));
                             throw std::runtime_error("Cached initial-image TLV has no key");
                         }
                         key = assignedFallback->second;
