@@ -5486,19 +5486,36 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == 397) {
-                std::vector<std::uint64_t> writeRegisters(registers, registers + 36);
-                (void)dispatch_guest_host_service(writeRegisters, guestMemory, bootstrap,
-                                                  hostServiceState, 2);
-                if (writeRegisters[0] == std::numeric_limits<std::uint64_t>::max()) {
-                    std::uint32_t error = 0;
-                    std::memcpy(&error, guestMemory.buffer(bootstrap.errnoSlot,
-                        sizeof(error)), sizeof(error));
+            if (syscall == 396 || syscall == 397 || syscall == 399) {
+                constexpr std::uint64_t carryMask = 8U;
+                const std::uint64_t service = syscall == 396 ? 23U
+                    : syscall == 397 ? 2U : 22U;
+                auto* errnoBytes = guestMemory.buffer(bootstrap.errnoSlot,
+                    sizeof(std::uint32_t), true);
+                std::uint32_t savedErrno = 0;
+                std::memcpy(&savedErrno, errnoBytes, sizeof(savedErrno));
+                auto callRegisters = std::vector<std::uint64_t>(registers, registers + 36);
+                std::uint32_t error = 0;
+                bool failed = false;
+                try {
+                    (void)dispatch_guest_host_service(callRegisters, guestMemory, bootstrap,
+                                                      hostServiceState, service);
+                    if (callRegisters[0] == std::numeric_limits<std::uint64_t>::max()) {
+                        std::memcpy(&error, errnoBytes, sizeof(error));
+                        if (error == 0) error = EIO;
+                        failed = true;
+                    }
+                } catch (const std::out_of_range&) {
+                    error = EFAULT;
+                    failed = true;
+                }
+                std::memcpy(errnoBytes, &savedErrno, sizeof(savedErrno));
+                if (failed) {
                     registers[0] = error;
-                    registers[32] |= 8U;
+                    registers[32] |= carryMask;
                 } else {
-                    registers[0] = writeRegisters[0];
-                    registers[32] &= ~std::uint64_t{8};
+                    registers[0] = callRegisters[0];
+                    registers[32] &= ~carryMask;
                 }
                 registers[34] = 0;
                 continue;
