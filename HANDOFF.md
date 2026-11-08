@@ -123,6 +123,36 @@ verified archive SHA-256 is
 This qualifies only the named synchronous-fault oracle and its corrected
 packaged launch, not general Darwin signal delivery.
 
+## Guest service registry, pthread metadata, and printf
+
+Source candidate `7409b52` centralizes the host-service registry, adds integer
+`printf` formats, and covers width/flag behavior. Regression and interpreter
+gates both exited 0. The independent interpreter receipt audit checked all
+seven native/translated/interpreter status triples, stdout and traces, both
+negative diagnostics, and the 29-operation probe. Runtime SHA-256 before and
+after was `246bfec54dc3a6101fc15b8f5b896505d1b4ab16a60289a54dcfc1aad0a27be0`;
+interpreter metallib SHA-256 was
+`0925cb290eb76c041c1821ac29cc6f588fc5f7d4f376ad344d4368d5bc838b15`.
+
+The base host-service dispatch map matched exactly; the newly added dual-view
+pthread stack getter IDs 180/181 are excluded from that base-map parity claim.
+A separate focused GPU fixture on pre-combined source `f320b4d` matched native
+for `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` across main and
+worker threads. This covers those queried stack bounds only.
+
+The printf fixture's native, translated, and guest output matched for its
+recorded integer conversions, widths, and flags; the packaged printf exited 0.
+The mixed packaged interpreter case exited 42 after AOT dispatch and translated
+fallback. The exact archive SHA-256 is
+`d20849525c4e1b1d3a3574de46faa8b38c78438d80c22f05eaf931408d4ae04f`; copied to
+`.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
+`/tmp/metal-format-gate.wQXVyM` and `/tmp/metal-stack-registry-gate.zgf0Ez`.
+
+The separate demand-cache candidate now passes 32 cases in all three modes
+with same-PC trace verification. It remains pending integration and is not in
+the packaged archive described here. No broad application compatibility claim
+follows from these service and formatting fixtures.
+
 ## Evidence locations
 
 The [loader probe sources](fixtures/handoff/README.md) are included in the repository.
