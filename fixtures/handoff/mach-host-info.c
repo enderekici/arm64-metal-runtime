@@ -26,6 +26,18 @@ int main(void) {
   const kern_return_t short_result = host_info(
       mach_host_self(), HOST_PRIORITY_INFO, (host_info_t)&short_info, &short_count);
 
+  const mach_port_t released_host = mach_host_self();
+  const kern_return_t release_results[] = {
+      mach_port_deallocate(mach_task_self(), released_host),
+      mach_port_deallocate(mach_task_self(), released_host),
+      mach_port_deallocate(mach_task_self(), released_host),
+      mach_port_deallocate(mach_task_self(), released_host),
+  };
+  host_priority_info_data_t released_info = {0};
+  mach_msg_type_number_t released_count = HOST_PRIORITY_INFO_COUNT;
+  const kern_return_t released_result = host_info(
+      released_host, HOST_PRIORITY_INFO, (host_info_t)&released_info, &released_count);
+
   printf("priority=%d,%d,%d,%d,%d,%d,%d,%d count=%u result=%d\n",
          priority.kernel_priority, priority.system_priority,
          priority.server_priority, priority.user_priority,
@@ -35,11 +47,16 @@ int main(void) {
   printf("invalid-host=%d invalid-flavor=%d flavor-count=%u short-count=%d count=%u\n",
          invalid_host_result, invalid_flavor_result, invalid_flavor_count,
          short_result, short_count);
+  printf("released-host=%d release-results=%d,%d,%d,%d\n", released_result,
+         release_results[0], release_results[1], release_results[2], release_results[3]);
 
   return priority_result != KERN_SUCCESS ||
          priority_count != HOST_PRIORITY_INFO_COUNT ||
          invalid_host_result != MACH_SEND_INVALID_DEST ||
          invalid_flavor_result != KERN_INVALID_ARGUMENT ||
          invalid_flavor_count != HOST_PRIORITY_INFO_COUNT ||
-         short_result != KERN_FAILURE || short_count != 0;
+         short_result != KERN_FAILURE || short_count != 0 ||
+         released_result != MACH_SEND_INVALID_DEST || release_results[0] != KERN_SUCCESS ||
+         release_results[1] != KERN_SUCCESS || release_results[2] != KERN_SUCCESS ||
+         release_results[3] != KERN_SUCCESS;
 }

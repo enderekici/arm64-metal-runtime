@@ -5326,7 +5326,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;
                     const auto remote = static_cast<std::uint32_t>(registers[3]);
-                    if (remote != guestMachHostPort) {
+                    const auto hostSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachHostPort ||
+                        hostSendRight == guestSendRightUrefs.end() ||
+                        hostSendRight->second == 0) {
                         registers[0] = machSendInvalidDestination;
                         registers[34] = 0;
                         continue;
