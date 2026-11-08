@@ -1848,6 +1848,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
         {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
+    std::set<std::uint32_t> guestSemaphoreNames;
+    std::uint32_t nextGuestSemaphoreName = 0x20000003U;
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
@@ -5214,6 +5216,63 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-33)) ||
+                syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-36)) ||
+                syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-38))) {
+                constexpr std::uint32_t kernInvalidValue = 17;
+                std::optional<std::uint64_t> deadline;
+                const auto operation = static_cast<std::int64_t>(syscall);
+                const bool nonblocking = operation == -38 &&
+                    registers[1] == 0 && registers[2] == 0;
+                if (operation == -38) {
+                    const auto seconds = registers[1];
+                    const auto nanoseconds = registers[2];
+                    if (seconds > std::numeric_limits<std::uint32_t>::max() ||
+                        nanoseconds >= 1'000'000'000ULL) {
+                        registers[0] = kernInvalidValue;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto now = monotonicNanoseconds();
+                    const auto requested = seconds >
+                            (std::numeric_limits<std::uint64_t>::max() - nanoseconds) /
+                                1'000'000'000ULL
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : seconds * 1'000'000'000ULL + nanoseconds;
+                    deadline = now + std::min(
+                        requested, std::numeric_limits<std::uint64_t>::max() - now);
+                }
+                if (operation == -33) {
+                    (void)guestScheduler.expire_waiters(monotonicNanoseconds());
+                    const auto name = static_cast<std::uint32_t>(registers[0]);
+                    const auto right = guestSendRightUrefs.find(name);
+                    registers[0] = right == guestSendRightUrefs.end() || right->second == 0
+                        ? 15U
+                        : guestSemaphoreNames.find(name) == guestSemaphoreNames.end()
+                            ? 20U : static_cast<std::uint32_t>(
+                                guestScheduler.signal_semaphore(name));
+                } else {
+                    const auto name = static_cast<std::uint32_t>(registers[0]);
+                    const auto right = guestSendRightUrefs.find(name);
+                    const auto result = right == guestSendRightUrefs.end() || right->second == 0
+                        ? GuestSemaphoreWaitResult{15, false}
+                        : guestSemaphoreNames.find(name) == guestSemaphoreNames.end()
+                            ? GuestSemaphoreWaitResult{20, false}
+                            : guestScheduler.wait_semaphore(name, deadline, nonblocking);
+                    if (result.waiting) {
+                        registers[0] = 0;
+                        auto live = std::vector<std::uint64_t>(registers, registers + 36);
+                        if (!syncThreadSwitch(false, live)) {
+                            throw std::runtime_error(
+                                "Guest semaphore wait has no runnable thread");
+                        }
+                        continue;
+                    }
+                    registers[0] = static_cast<std::uint32_t>(result.error);
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 177) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto outputAddress = registers[0];
@@ -5414,6 +5473,157 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
+                if (messageId == 3418 || messageId == 3419) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    constexpr std::uint32_t machMessageComplex = 0x80000000;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto taskSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachTaskPort || taskSendRight == guestSendRightUrefs.end() ||
+                        taskSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const bool isCreate = messageId == 3418;
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) !=
+                            (isCreate ? 0x1513U : 0x80001513U) ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        static_cast<std::uint32_t>(registers[5]) != (isCreate ? 0U : 1U) ||
+                        (registers[5] >> 32) != reply ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if ((registers[2] >> 32) != 40 || registers[6] < 40) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    struct SemaphoreCreateRequest {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        std::int32_t policy;
+                        std::int32_t value;
+                    };
+                    struct SemaphoreDestroyRequest {
+                        mach_msg_header_t header;
+                        mach_msg_body_t body;
+                        mach_msg_port_descriptor_t semaphore;
+                    };
+                    struct SemaphoreErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct SemaphoreCreateReply {
+                        mach_msg_header_t header;
+                        mach_msg_body_t body;
+                        mach_msg_port_descriptor_t semaphore;
+                    };
+                    static_assert(sizeof(SemaphoreCreateRequest) == 40);
+                    static_assert(sizeof(SemaphoreDestroyRequest) == 40);
+                    static_assert(sizeof(SemaphoreErrorReply) == 36);
+                    static_assert(sizeof(SemaphoreCreateReply) == 40);
+                    const auto prepareHeader = [reply](mach_msg_header_t& header,
+                                                       std::uint32_t size,
+                                                       std::uint32_t bits,
+                                                       std::uint32_t id) {
+                        header.msgh_bits = bits;
+                        header.msgh_size = size;
+                        header.msgh_remote_port = MACH_PORT_NULL;
+                        header.msgh_local_port = reply;
+                        header.msgh_voucher_port = MACH_PORT_NULL;
+                        header.msgh_id = id;
+                    };
+                    const auto* requestBytes = guestMemory.buffer(registers[0], 40);
+                    SemaphoreErrorReply errorReply{};
+                    prepareHeader(errorReply.header, sizeof(errorReply), 0x1200,
+                                  messageId + 100);
+                    errorReply.ndr = NDR_record;
+                    errorReply.returnCode = KERN_INVALID_ARGUMENT;
+                    std::uint32_t result = KERN_INVALID_ARGUMENT;
+                    if (isCreate) {
+                        SemaphoreCreateRequest request{};
+                        std::memcpy(&request, requestBytes, sizeof(request));
+                        if (request.header.msgh_bits != 0x1513 ||
+                            request.header.msgh_size != sizeof(request) ||
+                            request.header.msgh_remote_port != guestMachTaskPort ||
+                            request.header.msgh_local_port != reply ||
+                            request.header.msgh_voucher_port != MACH_PORT_NULL ||
+                            static_cast<std::uint32_t>(request.header.msgh_id) != messageId ||
+                            std::memcmp(&request.ndr, &NDR_record, sizeof(request.ndr)) != 0) {
+                            registers[0] = machSendInvalidData;
+                            registers[34] = 0;
+                            continue;
+                        }
+                        if (nextGuestSemaphoreName == 0 ||
+                            nextGuestSemaphoreName == std::numeric_limits<std::uint32_t>::max()) {
+                            result = KERN_RESOURCE_SHORTAGE;
+                        } else {
+                            const auto name = nextGuestSemaphoreName++;
+                            result = static_cast<std::uint32_t>(guestScheduler.create_semaphore(
+                                name, request.policy, request.value));
+                            if (result == KERN_SUCCESS) {
+                                guestSendRightUrefs.emplace(name, 1U);
+                                guestSemaphoreNames.insert(name);
+                                auto* replyBuffer = guestMemory.buffer(registers[0],
+                                    sizeof(SemaphoreCreateReply), true);
+                                SemaphoreCreateReply response{};
+                                prepareHeader(response.header, sizeof(response),
+                                    machMessageComplex | 0x1200, messageId + 100);
+                                response.body.msgh_descriptor_count = 1;
+                                response.semaphore.name = name;
+                                response.semaphore.disposition = MACH_MSG_TYPE_MOVE_SEND;
+                                response.semaphore.type = MACH_MSG_PORT_DESCRIPTOR;
+                                std::memcpy(replyBuffer, &response, sizeof(response));
+                                registers[0] = 0;
+                                registers[34] = 0;
+                                continue;
+                            }
+                        }
+                    } else {
+                        SemaphoreDestroyRequest request{};
+                        std::memcpy(&request, requestBytes, sizeof(request));
+                        if (request.header.msgh_bits !=
+                                (machMessageComplex | 0x1513) ||
+                            request.header.msgh_size != sizeof(request) ||
+                            request.header.msgh_remote_port != guestMachTaskPort ||
+                            request.header.msgh_local_port != reply ||
+                            request.header.msgh_voucher_port != MACH_PORT_NULL ||
+                            static_cast<std::uint32_t>(request.header.msgh_id) != messageId ||
+                            request.body.msgh_descriptor_count != 1 ||
+                            request.semaphore.type != MACH_MSG_PORT_DESCRIPTOR ||
+                            request.semaphore.disposition != MACH_MSG_TYPE_MOVE_SEND) {
+                            registers[0] = machSendInvalidData;
+                            registers[34] = 0;
+                            continue;
+                        }
+                        const auto name = request.semaphore.name;
+                        const auto right = guestSendRightUrefs.find(name);
+                        if (right == guestSendRightUrefs.end() || right->second == 0 ||
+                            guestSemaphoreNames.find(name) == guestSemaphoreNames.end()) {
+                            result = KERN_INVALID_CAPABILITY;
+                        } else {
+                            result = static_cast<std::uint32_t>(
+                                guestScheduler.destroy_semaphore(name));
+                            if (result == KERN_SUCCESS) {
+                                guestSemaphoreNames.erase(name);
+                                guestSendRightUrefs.erase(right);
+                            }
+                        }
+                    }
+                    errorReply.returnCode = static_cast<kern_return_t>(result);
+                    std::memcpy(guestMemory.buffer(registers[0], sizeof(errorReply), true),
+                                &errorReply, sizeof(errorReply));
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 206) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;

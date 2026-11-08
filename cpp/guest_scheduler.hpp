@@ -47,6 +47,11 @@ struct GuestConditionWaitResult {
     bool waiting = false;
 };
 
+struct GuestSemaphoreWaitResult {
+    std::int32_t error = 0;
+    bool waiting = false;
+};
+
 struct GuestSleepInterruption {
     std::uint64_t thread = 0;
     std::uint64_t errnoAddress = 0;
@@ -121,6 +126,14 @@ public:
     [[nodiscard]] std::int32_t signal_condition(std::uint64_t condition,
                                                bool broadcast,
                                                std::size_t* transferred = nullptr);
+    [[nodiscard]] std::int32_t create_semaphore(std::uint64_t name,
+                                                std::int32_t policy,
+                                                std::int32_t value);
+    [[nodiscard]] std::int32_t destroy_semaphore(std::uint64_t name);
+    [[nodiscard]] GuestSemaphoreWaitResult wait_semaphore(
+        std::uint64_t name, std::optional<std::uint64_t> deadline = std::nullopt,
+        bool nonblocking = false);
+    [[nodiscard]] std::int32_t signal_semaphore(std::uint64_t name);
     [[nodiscard]] bool sleep_current(std::uint64_t deadline,
                                     std::optional<std::uint64_t> remainder = std::nullopt);
     [[nodiscard]] std::size_t expire_waiters(std::uint64_t nowNanoseconds);
@@ -142,6 +155,12 @@ private:
     std::optional<std::uint64_t> retireCurrent_;
     std::map<std::uint64_t, GuestMutex> mutexes_;
     std::map<std::uint64_t, std::deque<std::uint64_t>> conditionWaiters_;
+    struct SemaphoreState {
+        std::int32_t policy = 0;
+        std::uint64_t value = 0;
+        std::deque<std::uint64_t> waiters;
+    };
+    std::map<std::uint64_t, SemaphoreState> semaphores_;
 };
 
 } // namespace arm64metal

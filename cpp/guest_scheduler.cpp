@@ -403,6 +403,93 @@ std::int32_t GuestScheduler::signal_condition(std::uint64_t condition,
     return 0;
 }
 
+std::int32_t GuestScheduler::create_semaphore(std::uint64_t name,
+                                              std::int32_t policy,
+                                              std::int32_t value) {
+    constexpr std::int32_t kernInvalidArgument = 4;
+    constexpr std::int32_t kernNotSupported = 46;
+    if (name == 0 || value < 0 || (policy != 0 && policy != 1 &&
+        policy != 2 && policy != 3)) return kernInvalidArgument;
+    // Fixed-priority queues require per-thread base priorities, which the
+    // cooperative guest scheduler does not currently model.
+    if (policy == 1) return kernNotSupported;
+    if (!semaphores_.emplace(name, SemaphoreState{
+            policy, static_cast<std::uint64_t>(value), {}}).second) {
+        return kernInvalidArgument;
+    }
+    return 0;
+}
+
+std::int32_t GuestScheduler::destroy_semaphore(std::uint64_t name) {
+    constexpr std::int32_t kernInvalidCapability = 20;
+    constexpr std::int32_t kernTerminated = 37;
+    const auto found = semaphores_.find(name);
+    if (found == semaphores_.end()) return kernInvalidCapability;
+    const auto waiters = found->second.waiters;
+    semaphores_.erase(found);
+    for (const auto id : waiters) {
+        const auto* thread = find(id);
+        if (thread == nullptr || !thread->wait.has_value()) {
+            throw std::logic_error("Invalid guest semaphore waiter");
+        }
+        const auto* wait = std::get_if<GuestSemaphoreWait>(&*thread->wait);
+        if (wait == nullptr || wait->semaphore != name) {
+            throw std::logic_error("Guest semaphore waiter state does not match queue");
+        }
+        wake(id, kernTerminated);
+    }
+    return 0;
+}
+
+GuestSemaphoreWaitResult GuestScheduler::wait_semaphore(
+    std::uint64_t name, std::optional<std::uint64_t> deadline, bool nonblocking) {
+    constexpr std::int32_t kernInvalidCapability = 20;
+    constexpr std::int32_t kernOperationTimedOut = 49;
+    const auto found = semaphores_.find(name);
+    if (found == semaphores_.end()) return {kernInvalidCapability, false};
+    if (found->second.value > 0) {
+        --found->second.value;
+        return {0, false};
+    }
+    if (nonblocking) return {kernOperationTimedOut, false};
+    auto& thread = current();
+    if (thread.wait.has_value()) return {kernInvalidCapability, false};
+    found->second.waiters.push_back(currentId_);
+    thread.wait = GuestSemaphoreWait{name, deadline};
+    return {0, true};
+}
+
+std::int32_t GuestScheduler::signal_semaphore(std::uint64_t name) {
+    constexpr std::int32_t kernInvalidCapability = 20;
+    constexpr std::int32_t kernResourceShortage = 6;
+    const auto found = semaphores_.find(name);
+    if (found == semaphores_.end()) return kernInvalidCapability;
+    auto& semaphore = found->second;
+    if (!semaphore.waiters.empty()) {
+        const auto index = (semaphore.policy & 2) != 0
+            ? semaphore.waiters.size() - 1 : 0;
+        const auto id = semaphore.waiters[index];
+        auto* thread = find(id);
+        if (thread == nullptr || !thread->wait.has_value()) {
+            throw std::logic_error("Invalid guest semaphore waiter");
+        }
+        const auto* wait = std::get_if<GuestSemaphoreWait>(&*thread->wait);
+        if (wait == nullptr || wait->semaphore != name) {
+            throw std::logic_error("Guest semaphore waiter state does not match queue");
+        }
+        semaphore.waiters.erase(semaphore.waiters.begin() +
+                                 static_cast<std::ptrdiff_t>(index));
+        wake(id, 0);
+        return 0;
+    }
+    if (semaphore.value == static_cast<std::uint64_t>(
+            std::numeric_limits<std::int32_t>::max())) {
+        return kernResourceShortage;
+    }
+    ++semaphore.value;
+    return 0;
+}
+
 bool GuestScheduler::sleep_current(std::uint64_t deadline,
                                    std::optional<std::uint64_t> remainder) {
     auto& thread = current();
@@ -423,8 +510,21 @@ std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
             continue;
         }
         const auto* condition = std::get_if<GuestConditionWait>(&*thread.wait);
-        if (condition == nullptr || !condition->deadline.has_value() ||
-            *condition->deadline > nowNanoseconds) continue;
+        if (condition == nullptr) {
+            const auto* semaphore = std::get_if<GuestSemaphoreWait>(&*thread.wait);
+            if (semaphore == nullptr || !semaphore->deadline.has_value() ||
+                *semaphore->deadline > nowNanoseconds) continue;
+            const auto found = semaphores_.find(semaphore->semaphore);
+            if (found != semaphores_.end()) {
+                auto& waiters = found->second.waiters;
+                waiters.erase(std::remove(waiters.begin(), waiters.end(), thread.id),
+                              waiters.end());
+            }
+            wake(thread.id, 49);
+            ++expired;
+            continue;
+        }
+        if (!condition->deadline.has_value() || *condition->deadline > nowNanoseconds) continue;
         const auto address = condition->address;
         const auto lockAddress = condition->mutexAddress;
         const auto queue = conditionWaiters_.find(address);
@@ -447,6 +547,8 @@ std::optional<std::uint64_t> GuestScheduler::earliest_deadline() const noexcept 
             deadline = sleep->deadline;
         } else if (const auto* condition = std::get_if<GuestConditionWait>(&*entry.second.wait)) {
             deadline = condition->deadline;
+        } else if (const auto* semaphore = std::get_if<GuestSemaphoreWait>(&*entry.second.wait)) {
+            deadline = semaphore->deadline;
         }
         if (deadline.has_value() && (!earliest.has_value() || *deadline < *earliest)) {
             earliest = deadline;

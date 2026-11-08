@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -67,6 +67,7 @@ APP_SOURCES := \
 	main.cpp
 APP_HEADERS := $(wildcard *.h *.hpp)
 APP := $(BUILD_DIR)/arm64-metal
+SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
 INTERPRETER_MOVE_WIDE_NATIVE := $(BUILD_DIR)/interpreter-move-wide-native
@@ -116,6 +117,13 @@ INTERPRETER_AIR := $(BUILD_DIR)/interpreter/gpu_interpreter.air
 INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
 app: $(APP)
+
+$(SEMAPHORE_NATIVE): ../fixtures/handoff/mach-semaphore-lifecycle.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -pthread "$<" -o "$@"
+
+verify-semaphore-native: $(SEMAPHORE_NATIVE)
+	"$(SEMAPHORE_NATIVE)"
 
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }

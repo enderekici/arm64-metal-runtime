@@ -67,7 +67,12 @@ struct GuestSleepWait {
     std::uint64_t deadline = 0;
     std::optional<std::uint64_t> remainder;
 };
-using GuestWait = std::variant<GuestJoinWait, GuestMutexWait, GuestConditionWait, GuestSleepWait>;
+struct GuestSemaphoreWait {
+    std::uint64_t semaphore = 0;
+    std::optional<std::uint64_t> deadline;
+};
+using GuestWait = std::variant<GuestJoinWait, GuestMutexWait, GuestConditionWait,
+                               GuestSleepWait, GuestSemaphoreWait>;
 
 // Guest thread bookkeeping only. `stack` and addresses are guest virtual
 // offsets; the runtime owns register save/restore and backing memory access.
