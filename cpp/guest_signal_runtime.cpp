@@ -102,7 +102,7 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
     std::uint32_t& threadPending, std::uint32_t& threadMask,
     std::vector<std::uint64_t>& registers,
     std::uint64_t authenticationDepth, std::uint64_t executionContext,
-    GuestMemory* memory) {
+    std::uint64_t threadId, GuestMemory* memory) {
     validate_registers(registers);
     signals.set_mask_value(threadMask);
     while (true) {
@@ -128,9 +128,10 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
                 throw std::runtime_error("Guest SA_SIGINFO delivery requires guest memory");
             return deliver_synchronous(signals, threadMask, registers, *memory,
                 GuestSynchronousFault{signal, SI_USER, 0, registers[guestSignalPC]},
-                authenticationDepth, executionContext, &action);
+                authenticationDepth, executionContext, threadId, &action);
         }
-        if (frames_.size() >= guestSignalFrameLimit) {
+        auto& frames = framesByThread_[threadId];
+        if (frames.size() >= guestSignalFrameLimit) {
             throw std::runtime_error("Guest signal nesting limit exceeded");
         }
 
@@ -141,7 +142,7 @@ GuestSignalDelivery GuestSignalRuntime::deliver(
         frame.signalMask = signals.mask();
         frame.authenticationDepth = authenticationDepth;
         frame.executionContext = executionContext;
-        frames_.push_back(std::move(frame));
+        frames.push_back(std::move(frame));
 
         signals.enter(signal, action);
         threadMask = signals.mask();
@@ -156,7 +157,8 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
     GuestSignals& signals, std::uint32_t& threadMask,
     std::vector<std::uint64_t>& registers, GuestMemory& memory,
     const GuestSynchronousFault& fault, std::uint64_t authenticationDepth,
-    std::uint64_t executionContext, const GuestSignals::Action* selectedAction) {
+    std::uint64_t executionContext, std::uint64_t threadId,
+    const GuestSignals::Action* selectedAction) {
     validate_registers(registers);
     if (!GuestSignals::valid(fault.signal))
         throw std::invalid_argument("Invalid synchronous guest signal");
@@ -174,10 +176,12 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
         std::uint32_t processPending = 0;
         std::uint32_t threadPending = 0;
         auto delivered = deliver(signals, processPending, threadPending, threadMask,
-                                 registers, authenticationDepth, executionContext);
+                                 registers, authenticationDepth, executionContext,
+                                 threadId);
         return delivered;
     }
-    if (frames_.size() >= guestSignalFrameLimit)
+    auto& frames = framesByThread_[threadId];
+    if (frames.size() >= guestSignalFrameLimit)
         throw std::runtime_error("Guest signal nesting limit exceeded");
 
     constexpr auto faultStateSize = kGuestSiginfoSize + kGuestUcontextSize +
@@ -231,7 +235,7 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
     frame.authenticationDepth = authenticationDepth;
     frame.executionContext = executionContext;
     frame.synchronousContext = ucontextAddress;
-    frames_.push_back(std::move(frame));
+    frames.push_back(std::move(frame));
 
     if ((action.flags & SA_RESETHAND) != 0) {
         signals.set_action(GuestSignals::Action{}, fault.signal);
@@ -251,12 +255,15 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
     GuestSignals& signals, std::uint32_t& threadMask,
     std::vector<std::uint64_t>& registers,
     std::uint64_t authenticationDepth,
+    std::uint64_t threadId,
     const std::function<std::optional<std::uint64_t>(std::uint64_t)>&
         restartableRecovery, GuestMemory* memory) {
-    if (frames_.empty()) return std::nullopt;
+    const auto stack = framesByThread_.find(threadId);
+    if (stack == framesByThread_.end() || stack->second.empty()) return std::nullopt;
     validate_registers(registers);
-    Frame frame = std::move(frames_.back());
-    frames_.pop_back();
+    Frame frame = std::move(stack->second.back());
+    stack->second.pop_back();
+    if (stack->second.empty()) framesByThread_.erase(stack);
     if (authenticationDepth != frame.authenticationDepth) {
         throw std::runtime_error("Guest signal handler left its authentication stack unbalanced");
     }
@@ -300,6 +307,20 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
         }
     }
     return GuestSignalResume{registers[guestSignalPC], frame.executionContext, recompile};
+}
+
+bool GuestSignalRuntime::has_frames(std::uint64_t threadId) const noexcept {
+    const auto found = framesByThread_.find(threadId);
+    return found != framesByThread_.end() && !found->second.empty();
+}
+
+std::size_t GuestSignalRuntime::frame_depth(std::uint64_t threadId) const noexcept {
+    const auto found = framesByThread_.find(threadId);
+    return found == framesByThread_.end() ? 0 : found->second.size();
+}
+
+void GuestSignalRuntime::discard_thread(std::uint64_t threadId) noexcept {
+    framesByThread_.erase(threadId);
 }
 
 } // namespace arm64metal

@@ -2643,9 +2643,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             timeSliceThread = threadId;
             dispatchesInTimeSlice = 0;
         }
-        if (signalRuntime.has_frames()) {
-            // Signal frames are still process-global. Do not switch guest threads
-            // until frame state is associated with an individual GuestThread.
+        if (signalRuntime.has_frames(threadId)) {
+            // Keep a handler and its saved execution context on the same thread.
             dispatchesInTimeSlice = 0;
             return false;
         }
@@ -2731,6 +2730,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (threadTsd <= 0) throw std::runtime_error("Guest thread has no TSD for TLV teardown");
         guestTlvRuntime.release_thread(static_cast<std::uint64_t>(threadTsd),
                                        guestTlvRelease, guestTlvWrite);
+        signalRuntime.discard_thread(completedId);
         auto completion = guestScheduler.complete_current(result);
         liveThreadStacks.erase(completion.thread);
         if (completion.joined) {
@@ -5842,7 +5842,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             static_cast<const std::uint64_t*>(stateBuffer.data()) +
                 stateBuffer.size() / sizeof(std::uint64_t));
         const auto resumed = signalRuntime.resume(hostServiceState.signals,
-            hostServiceState.threadSignalMask, live, live[37], {}, &guestMemory);
+            hostServiceState.threadSignalMask, live, live[37],
+            guestScheduler.current_id(), {}, &guestMemory);
         if (!resumed) return false;
         std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
         const auto entry = resumed->recompile
@@ -5860,7 +5861,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto delivery = signalRuntime.deliver(
             hostServiceState.signals, hostServiceState.queuedProcessSignals,
             hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
-            live, live[37], static_cast<std::uint64_t>(activeEntry), &guestMemory);
+            live, live[37], static_cast<std::uint64_t>(activeEntry),
+            guestScheduler.current_id(), &guestMemory);
         if (delivery.outcome == GuestSignalOutcome::ProcessExit) return delivery.exitStatus;
         if (delivery.outcome == GuestSignalOutcome::UnsupportedStop) {
             throw std::runtime_error("Guest stop and continue signals are unsupported");
@@ -6330,7 +6332,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             continue;
         }
         if (status == 0) {
-            if (signalRuntime.has_frames() && resumeSignalFrame()) continue;
+            if (signalRuntime.has_frames(guestScheduler.current_id()) && resumeSignalFrame()) continue;
             if (!callbackFrames.empty() && registers[30] == kNoFault &&
                 (!callbackFrames.back().exitDso ||
                  callbackFrames.back().exitThread == guestScheduler.current_id())) {
@@ -6502,7 +6504,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto delivery = signalRuntime.deliver_synchronous(
                     hostServiceState.signals, hostServiceState.threadSignalMask,
                     hostRegisters, guestMemory, fault, hostRegisters[37],
-                    static_cast<std::uint64_t>(activeEntry));
+                    static_cast<std::uint64_t>(activeEntry),
+                    guestScheduler.current_id());
                 if (delivery.outcome == GuestSignalOutcome::ProcessExit)
                     return delivery.exitStatus;
                 if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
@@ -7124,7 +7127,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
-            if (service == 52 && !signalRuntime.has_frames()) {
+            if (service == 52 && !signalRuntime.has_frames(guestScheduler.current_id())) {
                 timespec request{};
                 const auto* requestBytes = guestMemory.buffer(
                     hostRegisters[0], sizeof(request));
@@ -7810,7 +7813,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             if (service == 125) {
-                if (signalRuntime.has_frames()) {
+                if (signalRuntime.has_frames(guestScheduler.current_id())) {
                     throw std::runtime_error("Guest Objective-C registration inside a signal handler is unsupported");
                 }
                 const auto tableAddress = hostRegisters[0];
@@ -7970,7 +7973,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 static_cast<std::uint64_t*>(stateBuffer.data()));
                     continue;
                 }
-                if (signalRuntime.has_frames()) {
+                if (signalRuntime.has_frames(guestScheduler.current_id())) {
                     throw std::runtime_error("Guest class enumeration inside a signal handler is unsupported");
                 }
                 const auto name = guest_cstring(guestMemory, hostRegisters[0]);
@@ -8288,7 +8291,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         static_cast<std::uint64_t*>(stateBuffer.data()));
             if (result.exited) return result.exitStatus;
             if (hostRegisters[33] == kNoFault && callbackFrames.empty()) {
-                if (signalRuntime.has_frames() && resumeSignalFrame()) continue;
+                if (signalRuntime.has_frames(guestScheduler.current_id()) && resumeSignalFrame()) continue;
                 if (advanceStartup()) continue;
             }
             continue;
@@ -8374,7 +8377,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto delivery = signalRuntime.deliver_synchronous(
                 hostServiceState.signals, hostServiceState.threadSignalMask,
                 live, guestMemory, fault, live[37],
-                static_cast<std::uint64_t>(activeEntry));
+                static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
                 if (hostServiceState.signals.action(fault.signal).handler == 0) {
                     std::cerr << "arm64-metal: Guest process memory access fault at 0x"
@@ -8408,7 +8411,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto delivery = signalRuntime.deliver_synchronous(
                 hostServiceState.signals, hostServiceState.threadSignalMask,
                 live, guestMemory, fault, live[37],
-                static_cast<std::uint64_t>(activeEntry));
+                static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
                 if (status == 3 &&
                     hostServiceState.signals.action(fault.signal).handler == 0) {
@@ -10622,7 +10625,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         const auto delivery = signalRuntime.deliver_synchronous(
                             hostServiceState.signals, hostServiceState.threadSignalMask,
                             live, guestMemory, fault, live[37],
-                            static_cast<std::uint64_t>(activeEntry));
+                            static_cast<std::uint64_t>(activeEntry),
+                            guestScheduler.current_id());
                         if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
                             return delivery.exitStatus;
                         }

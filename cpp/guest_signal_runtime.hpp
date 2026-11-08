@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -46,8 +47,9 @@ struct GuestSynchronousFault {
     std::uint64_t programCounter = 0;
 };
 
-// Owns signal frames only. GuestSignals owns process actions/pending state;
-// the scheduler owns thread masks, Metal execution, and executable regions.
+// Owns signal frames keyed by guest thread ID. GuestSignals owns process
+// actions/pending state; the scheduler owns thread masks, Metal execution,
+// and executable regions.
 class GuestSignalRuntime final {
 public:
     // Merge host-raised bits into GuestSignals and return bits that the caller
@@ -66,13 +68,13 @@ public:
         std::uint32_t& threadPending, std::uint32_t& threadMask,
         std::vector<std::uint64_t>& registers,
         std::uint64_t authenticationDepth, std::uint64_t executionContext,
-        GuestMemory* memory = nullptr);
+        std::uint64_t threadId, GuestMemory* memory = nullptr);
 
     [[nodiscard]] GuestSignalDelivery deliver_synchronous(
         GuestSignals& signals, std::uint32_t& threadMask,
         std::vector<std::uint64_t>& registers, GuestMemory& memory,
         const GuestSynchronousFault& fault, std::uint64_t authenticationDepth,
-        std::uint64_t executionContext,
+        std::uint64_t executionContext, std::uint64_t threadId,
         const GuestSignals::Action* selectedAction = nullptr);
 
     // Call when the Metal runner reports the handler's sentinel return.
@@ -81,11 +83,13 @@ public:
         GuestSignals& signals, std::uint32_t& threadMask,
         std::vector<std::uint64_t>& registers,
         std::uint64_t authenticationDepth,
+        std::uint64_t threadId,
         const std::function<std::optional<std::uint64_t>(std::uint64_t)>&
             restartableRecovery = {}, GuestMemory* memory = nullptr);
 
-    [[nodiscard]] bool has_frames() const noexcept { return !frames_.empty(); }
-    [[nodiscard]] std::size_t frame_depth() const noexcept { return frames_.size(); }
+    [[nodiscard]] bool has_frames(std::uint64_t threadId) const noexcept;
+    [[nodiscard]] std::size_t frame_depth(std::uint64_t threadId) const noexcept;
+    void discard_thread(std::uint64_t threadId) noexcept;
 
 private:
     struct Frame {
@@ -96,7 +100,7 @@ private:
         std::uint64_t executionContext = 0;
         std::uint64_t synchronousContext = 0;
     };
-    std::vector<Frame> frames_;
+    std::map<std::uint64_t, std::vector<Frame>> framesByThread_;
 };
 
 } // namespace arm64metal
