@@ -2926,6 +2926,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bool jit = false;
         std::uint32_t inheritance = 1;
         std::uint32_t tag = 0;
+        bool tpro = false;
     };
     struct VmBackingLease {
         std::int64_t backing;
@@ -4493,7 +4494,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         table[row] = region.begin;
         table[row + 1] = region.end;
         table[row + 2] = region.backing;
-        table[row + 3] = (region.writable ? 1U : 0U) | (region.readable ? 0U : 2U);
+        table[row + 3] = (region.writable ? 1U : 0U) |
+                         (region.readable ? 0U : 2U) | (region.tpro ? 4U : 0U);
         table[0] += 1;
     };
     const auto publishVmRegion = [&](const VmRegion& region) {
@@ -4633,6 +4635,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             throw std::runtime_error("Invalid guest cache metadata range");
         }
         const auto end = static_cast<std::uint64_t>(address) + length;
+        struct ExistingRange {
+            VmRegion region;
+            std::uint64_t flags;
+            std::uint64_t overlapBegin;
+            std::uint64_t overlapEnd;
+        };
+        std::vector<ExistingRange> overlaps;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> unmapped{{
+            static_cast<std::uint64_t>(address), end}};
         for (std::size_t index = 0; index < resident[0]; ++index) {
             const auto row = 1 + 4 * index;
             const auto begin = resident[row];
@@ -4640,26 +4651,138 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto flags = resident[row + 3];
             const bool readable = (flags & 2U) == 0;
             const bool currentWritable = (flags & 1U) != 0;
-            if (readable && currentWritable == writable &&
-                static_cast<std::uint64_t>(address) >= begin && end <= currentEnd) return;
-            if (static_cast<std::uint64_t>(address) < currentEnd && begin < end) {
-                throw std::runtime_error("Cannot map overlapping guest cache metadata");
+            const auto overlapBegin = std::max(begin, static_cast<std::uint64_t>(address));
+            const auto overlapEnd = std::min(currentEnd, end);
+            if (overlapBegin >= overlapEnd) continue;
+            if (!readable || (writable && !currentWritable)) {
+                throw std::runtime_error(
+                    "Cannot satisfy guest cache metadata range [0x" +
+                    hexadecimal(static_cast<std::uint64_t>(address)) + ",0x" +
+                    hexadecimal(end) + "): resident overlap [0x" +
+                    hexadecimal(overlapBegin) + ",0x" + hexadecimal(overlapEnd) +
+                    ") has flags=0x" + hexadecimal(flags) +
+                    " requested-writable=" + (writable ? "true" : "false"));
+            }
+            const bool tpro = (flags & 4U) != 0;
+            const auto backing = resident[row + 2];
+            overlaps.push_back({{begin, currentEnd, static_cast<std::size_t>(backing),
+                                 readable, currentWritable, false, 0, false, 1, 0, tpro},
+                                flags, overlapBegin, overlapEnd});
+            std::vector<std::pair<std::uint64_t, std::uint64_t>> remaining;
+            remaining.reserve(unmapped.size() + 1);
+            for (const auto& [gapBegin, gapEnd] : unmapped) {
+                if (overlapEnd <= gapBegin || gapEnd <= overlapBegin) {
+                    remaining.emplace_back(gapBegin, gapEnd);
+                    continue;
+                }
+                if (gapBegin < overlapBegin)
+                    remaining.emplace_back(gapBegin, overlapBegin);
+                if (overlapEnd < gapEnd)
+                    remaining.emplace_back(overlapEnd, gapEnd);
+            }
+            unmapped.swap(remaining);
+        }
+        if (overlaps.size() == 1 && overlaps.front().region.begin <=
+                static_cast<std::uint64_t>(address) && end <= overlaps.front().region.end) {
+            return;
+        }
+        bool mergedWritable = writable;
+        bool mergedTpro = false;
+        auto mergedBegin = static_cast<std::uint64_t>(address);
+        auto mergedEnd = end;
+        if (!overlaps.empty()) {
+            mergedWritable = overlaps.front().region.writable;
+            mergedTpro = overlaps.front().region.tpro;
+            for (const auto& overlap : overlaps) {
+                mergedBegin = std::min(mergedBegin, overlap.region.begin);
+                mergedEnd = std::max(mergedEnd, overlap.region.end);
+                if (overlap.region.writable != mergedWritable ||
+                    overlap.region.tpro != mergedTpro) {
+                    throw std::runtime_error(
+                        "Cannot consolidate guest cache metadata range [0x" +
+                        hexadecimal(static_cast<std::uint64_t>(address)) + ",0x" +
+                        hexadecimal(end) + "): resident overlap [0x" +
+                        hexadecimal(overlap.overlapBegin) + ",0x" +
+                        hexadecimal(overlap.overlapEnd) + ") has flags=0x" +
+                        hexadecimal(overlap.flags) +
+                        " with incompatible mapping permissions");
+                }
+            }
+            if (!unmapped.empty() &&
+                (mergedWritable != writable || mergedTpro)) {
+                throw std::runtime_error(
+                    "Cannot consolidate guest cache metadata range [0x" +
+                    hexadecimal(static_cast<std::uint64_t>(address)) + ",0x" +
+                    hexadecimal(end) + "): cache-backed holes would change resident " +
+                    "writability or TPRO state");
+            }
+            for (const auto& [unused, allocation] : vmAllocations) {
+                (void)unused;
+                const auto ownedOverlap = std::find_if(
+                    allocation.regions.begin(), allocation.regions.end(),
+                    [mergedBegin, mergedEnd](const VmRegion& region) {
+                        return mergedBegin < region.end && region.begin < mergedEnd;
+                    });
+                if (ownedOverlap != allocation.regions.end()) {
+                    throw std::runtime_error(
+                        "Cannot consolidate guest cache metadata range [0x" +
+                        hexadecimal(mergedBegin) + ",0x" + hexadecimal(mergedEnd) +
+                        "): overlaps a VM allocation with an active backing lease");
+                }
             }
         }
-        if (resident[0] >= residentCapacity) {
-            throw std::runtime_error("Guest resident map capacity exceeded by cache metadata");
-        }
-        const auto allocated = mappingHeap.allocate(length, 16);
-        if (!allocated) throw std::runtime_error("Guest cache metadata backing is exhausted");
-        const auto backing = static_cast<std::size_t>(*allocated);
-        if (backing > memoryBuffer.size() || length > memoryBuffer.size() - backing) {
-            mappingHeap.release(*allocated);
+        const auto mergedLength = static_cast<std::size_t>(mergedEnd - mergedBegin);
+        const auto backingAllocation = mappingHeap.allocate(
+            static_cast<std::int64_t>(mergedLength), 16);
+        if (!backingAllocation)
+            throw std::runtime_error("Guest cache metadata backing is exhausted");
+        const auto backing = static_cast<std::size_t>(*backingAllocation);
+        if (backing > memoryBuffer.size() || mergedLength > memoryBuffer.size() - backing) {
+            mappingHeap.release(*backingAllocation);
             throw std::runtime_error("Guest cache metadata exceeds process memory");
         }
-        const auto bytes = cache.bytes(cache.originalAddress(address), length);
-        std::copy(bytes.begin(), bytes.end(),
-                  static_cast<std::uint8_t*>(memoryBuffer.data()) + backing);
-        publishVmRegion({static_cast<std::uint64_t>(address), end, backing, true, writable, false});
+        try {
+            auto* destination = static_cast<std::uint8_t*>(memoryBuffer.data()) + backing;
+            const auto cacheBytes = cache.bytes(cache.originalAddress(address), length);
+            std::copy(cacheBytes.begin(), cacheBytes.end(),
+                      destination + (static_cast<std::uint64_t>(address) - mergedBegin));
+            for (const auto& overlap : overlaps) {
+                const auto sourceOffset = overlap.region.backing;
+                const auto rowLength = overlap.region.end - overlap.region.begin;
+                if (sourceOffset > memoryBuffer.size() ||
+                    rowLength > memoryBuffer.size() - sourceOffset) {
+                    throw std::runtime_error("Guest cache metadata overlap backing is invalid");
+                }
+                std::memcpy(destination + (overlap.region.begin - mergedBegin),
+                            static_cast<const std::uint8_t*>(memoryBuffer.data()) + sourceOffset,
+                            static_cast<std::size_t>(rowLength));
+            }
+            if (overlaps.empty()) {
+                if (resident[0] >= residentCapacity) {
+                    throw std::runtime_error("Guest resident map capacity exceeded by cache metadata");
+                }
+                publishVmRegion({mergedBegin, mergedEnd, backing,
+                                 true, mergedWritable, false, 0, false, 1, 0, mergedTpro});
+            } else {
+                std::vector<std::uint64_t> removedBegins;
+                std::vector<GuestMemoryMapping> addedMappings;
+                auto stagedResident = resident;
+                for (const auto& overlap : overlaps) {
+                    removedBegins.push_back(overlap.region.begin);
+                    removeVmRegionFromResident(stagedResident, overlap.region);
+                }
+                const VmRegion merged{mergedBegin, mergedEnd, backing,
+                    true, mergedWritable, false, 0, false, 1, 0, mergedTpro};
+                appendVmRegionToResident(stagedResident, merged);
+                addedMappings.push_back({merged.begin, merged.end, merged.backing,
+                                         merged.writable, merged.readable});
+                guestMemory.replace_mappings(removedBegins, addedMappings);
+                resident.swap(stagedResident);
+            }
+        } catch (...) {
+            mappingHeap.release(*backingAllocation);
+            throw;
+        }
         syncResidentTable();
     };
     const auto publishGuestImageHeader = [&](std::size_t index) {
