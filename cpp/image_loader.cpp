@@ -624,7 +624,9 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
   };
   load(root, true, {});
   loaded_image_graph.reserve(loaded.size());
+  loaded_image_order.reserve(loaded.size());
   for (const auto& item : loaded) {
+    loaded_image_order.push_back({item.base, item.path, false});
     LoadedImageGraphRecord record;
     record.guest_header = item.base;
     record.canonical_path = item.path;
@@ -1267,6 +1269,21 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
       }
     }
   }
+  std::set<std::uint64_t> localHeaders;
+  for (const auto& local : loaded_image_order) localHeaders.insert(local.header);
+  std::set<std::uint64_t> mappedCacheHeaders;
+  for (const auto& segment : mapped_image_segments) {
+    if (localHeaders.find(segment.guest_header) == localHeaders.end())
+      mappedCacheHeaders.insert(segment.guest_header);
+  }
+  std::set<std::uint64_t> recordedHeaders = localHeaders;
+  for (const auto header : global_scope_headers) {
+    if (localHeaders.find(header) != localHeaders.end() ||
+        mappedCacheHeaders.find(header) == mappedCacheHeaders.end() ||
+        !recordedHeaders.insert(header).second) continue;
+    const auto path = image_paths.find(header);
+    if (path != image_paths.end()) loaded_image_order.push_back({header, path->second, true});
+  }
   std::unordered_map<std::uint64_t, const LoadedImageGraphRecord*> localGraphByHeader;
   for (const auto& record : loaded_image_graph)
     localGraphByHeader.emplace(record.guest_header, &record);
@@ -1855,6 +1872,10 @@ void ExecutableImage::activate_named_cache_reader() {
   if (cache_reader || !named_load_cache_reader_) return;
   cache_reader.emplace(std::move(*named_load_cache_reader_));
   named_load_cache_reader_.reset();
+}
+const SharedCache* ExecutableImage::metadata_cache_reader() const noexcept {
+  if (cache_reader) return &*cache_reader;
+  return named_load_cache_reader_ ? &*named_load_cache_reader_ : nullptr;
 }
 std::size_t ExecutableImage::cache_backing_start() const noexcept { return (memory.size() + 15U) & ~std::size_t(15U); }
 std::size_t ExecutableImage::cache_backing_end() const noexcept {

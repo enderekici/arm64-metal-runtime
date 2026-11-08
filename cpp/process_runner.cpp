@@ -1436,6 +1436,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::unordered_map<std::string, std::uint64_t> imageHeaders;
     for (const auto& [header, path] : image.image_paths) imageHeaders.emplace(path, header);
     GuestImageHandles imageHandles(std::move(imageHeaders), executable);
+    GuestImageRegistry imageRegistry(image.loaded_image_order);
     std::set<std::uint64_t> activatedLazyHeaders;
     std::set<std::uint64_t> loadedImageHeaders(
         image.startup_eager_headers.begin(), image.startup_eager_headers.end());
@@ -2915,6 +2916,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         }
         return initializers;
+    };
+    const auto stagedImageEnumerationOrder = [](const StagedNamedLoad& plan) {
+        std::vector<GuestLoadedImage> result;
+        std::map<std::uint64_t, std::size_t> localByHeader;
+        std::map<std::string, std::size_t> cacheByName;
+        std::map<std::uint64_t, std::size_t> cacheByHeader;
+        for (std::size_t index = 0; index < plan.images.size(); ++index)
+            localByHeader.emplace(plan.images[index].guest_header, index);
+        for (std::size_t index = 0; index < plan.cache_images.size(); ++index) {
+            cacheByName.emplace(plan.cache_images[index].install_name, index);
+            cacheByHeader.emplace(plan.cache_images[index].guest_header, index);
+        }
+        std::set<std::size_t> visitedLocal;
+        std::set<std::size_t> visitedCache;
+        std::function<void(std::size_t)> visitLocal;
+        std::function<void(std::size_t)> visitCache;
+        visitCache = [&](std::size_t index) {
+            if (!visitedCache.insert(index).second) return;
+            const auto& staged = plan.cache_images[index];
+            result.push_back({staged.guest_header, staged.install_name, true});
+            for (const auto& dependency : staged.image.dependencies) {
+                if (const auto child = cacheByName.find(dependency.name);
+                    child != cacheByName.end()) visitCache(child->second);
+            }
+        };
+        visitLocal = [&](std::size_t index) {
+            if (!visitedLocal.insert(index).second) return;
+            const auto& staged = plan.images[index];
+            result.push_back({staged.guest_header, staged.canonical_path, false});
+            for (const auto& dependency : staged.dependencies) {
+                if (dependency.staged_image_index &&
+                    *dependency.staged_image_index < plan.images.size()) {
+                    visitLocal(*dependency.staged_image_index);
+                } else if (const auto child = cacheByName.find(dependency.declaration.name);
+                           child != cacheByName.end()) {
+                    visitCache(child->second);
+                }
+            }
+        };
+        if (const auto local = localByHeader.find(plan.requested_header);
+            local != localByHeader.end()) {
+            visitLocal(local->second);
+        } else if (const auto cached = cacheByHeader.find(plan.requested_header);
+                   cached != cacheByHeader.end()) {
+            visitCache(cached->second);
+        }
+        for (std::size_t index = 0; index < plan.cache_images.size(); ++index)
+            visitCache(index);
+        for (std::size_t index = 0; index < plan.images.size(); ++index)
+            visitLocal(index);
+        return result;
     };
     const auto mapSelectorWindow = [&](std::uint64_t address,
                                        std::size_t length) -> bool {
@@ -4682,6 +4734,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 cacheInitializers.insert(cacheInitializers.end(),
                                     initializers.begin(), initializers.end());
                                 initializers = std::move(cacheInitializers);
+                                auto imageTransaction = imageRegistry.begin_transaction();
+                                for (auto& stagedImage : stagedImageEnumerationOrder(plan)) {
+                                    imageTransaction.add(stagedImage.header,
+                                        std::move(stagedImage.name), stagedImage.cache_backed);
+                                }
+                                imageTransaction.commit();
                                 for (const auto& staged : plan.images) {
                                     namedImagePlacementCursor = std::max(
                                         namedImagePlacementCursor, staged.guest_end);
@@ -5189,6 +5247,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (service == 115) {
                 const auto slide = image.image_slides.find(hostRegisters[0]);
                 hostRegisters[0] = slide == image.image_slides.end() ? 0 : slide->second;
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service == 186) {
+                if (imageRegistry.size() > std::numeric_limits<std::uint32_t>::max()) {
+                    throw std::runtime_error("Guest dyld image count exceeds its ABI width");
+                }
+                hostRegisters[0] = imageRegistry.size();
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service == 187 || service == 188) {
+                const auto index = hostRegisters[0];
+                if (service == 187) {
+                    const auto header = imageRegistry.header_at(index);
+                    if (header && imageRegistry.cache_backed_at(index)) {
+                        const auto* cache = image.metadata_cache_reader();
+                        if (cache == nullptr) {
+                            throw std::runtime_error(
+                                "Guest cached image header has no shared-cache reader");
+                        }
+                        const auto headerBytes = cache->bytes(cache->originalAddress(
+                            static_cast<std::int64_t>(*header)), 32);
+                        const auto read32 = [&headerBytes](std::size_t offset) {
+                            std::uint32_t value = 0;
+                            for (unsigned byte = 0; byte < 4; ++byte) {
+                                value |= static_cast<std::uint32_t>(headerBytes[offset + byte])
+                                         << (byte * 8U);
+                            }
+                            return value;
+                        };
+                        const auto commandCount = read32(16);
+                        const auto commandBytes = read32(20);
+                        if (commandBytes > 1024U * 1024U || commandCount > commandBytes / 8U) {
+                            throw std::runtime_error("Invalid cached Mach-O header metadata");
+                        }
+                        publishCacheMetadata(*cache, static_cast<std::int64_t>(*header),
+                                             32U + commandBytes, false);
+                    }
+                    hostRegisters[0] = header.value_or(0);
+                } else {
+                    const auto name = imageRegistry.name_at(index);
+                    if (name) {
+                        const auto address = stableGuestString(std::string(*name));
+                        hostRegisters[0] = address.value_or(0);
+                    } else {
+                        hostRegisters[0] = 0;
+                    }
+                }
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;

@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-guest-format verify-guest-image-registry verify-memcpy-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -245,6 +245,14 @@ verify-guest-format: $(GUEST_FORMAT_NATIVE) $(GUEST_FORMAT_TEST)
 	printf '%s\n' '1 2 3 4 5 6|0a|0x123456789abcdef|4294967301|0|-0042' >"$(BUILD_DIR)/guest-printf-formats.expected.out"
 	cmp "$(BUILD_DIR)/guest-printf-formats.expected.out" "$(BUILD_DIR)/guest-printf-formats.native.out"
 	"$(GUEST_FORMAT_TEST)"
+
+GUEST_IMAGE_REGISTRY_TEST := $(BUILD_DIR)/guest-image-registry-test
+$(GUEST_IMAGE_REGISTRY_TEST): ../fixtures/handoff/guest-image-registry-test.cpp guest_image_registry.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) ../fixtures/handoff/guest-image-registry-test.cpp -o "$@"
+
+verify-guest-image-registry: $(GUEST_IMAGE_REGISTRY_TEST)
+	"$(GUEST_IMAGE_REGISTRY_TEST)"
 
 $(INTERPRETER_DEMAND_CACHE_GENERATOR): ../fixtures/interpreter/demand-cache-retry-address.cpp shared_cache.cpp macho.cpp shared_cache.hpp macho.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) ../fixtures/interpreter/demand-cache-retry-address.cpp shared_cache.cpp macho.cpp -o "$@"

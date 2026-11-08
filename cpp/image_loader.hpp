@@ -1,6 +1,7 @@
 #pragma once
 
 #include "guest_code_policy.hpp"
+#include "guest_image_registry.hpp"
 #include "macho.hpp"
 #include "shared_cache.hpp"
 
@@ -274,6 +275,9 @@ struct ExecutableImage {
   // Startup RTLD_DEFAULT search order: main image, then breadth-first declared
   // dependency order. Prebound lazy-only images are excluded until activated.
   std::vector<std::uint64_t> global_scope_headers;
+  // Dyld image enumeration order. Local startup images precede the loaded
+  // shared-cache dependency closure in cache image-table order.
+  std::vector<GuestLoadedImage> loaded_image_order;
   // Images eagerly reachable at startup, independent of constructor collection.
   std::set<std::uint64_t> startup_eager_headers;
   // Startup graph metadata for append-only staged loading. The records retain
@@ -311,6 +315,7 @@ struct ExecutableImage {
 
   bool cache_enabled() const noexcept;
   void activate_named_cache_reader();
+  const SharedCache* metadata_cache_reader() const noexcept;
   StagedNamedLoad stage_named_load(const std::string& requested_path,
                                    std::uint64_t caller_header,
                                    std::uint64_t logical_placement,

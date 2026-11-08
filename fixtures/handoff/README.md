@@ -155,6 +155,12 @@ make verify-apps
 
 The default cases are valid and malformed `plutil`, deterministic `tar -tf`, and cache-only/dynamic-provider libz loading. Select a subset with `APP_VERIFY_CASES`, for example `make verify-apps APP_VERIFY_CASES='plutil tar'`. Add `jni` when qualifying an installed JDK by setting `JDK_HOME` to its home directory and including `jni` in the case list. `APP_VERIFY_RUNTIME` selects the frozen C++ launcher, and `APP_VERIFY_RESULTS` selects the parent directory for unique per-run receipts. Set `APP_VERIFY_TIMEOUT_SECONDS` to change the per-process timeout. The gate compares stdout, stderr, and exit status, stores the runtime SHA-256, and fails on timeout or runtime mutation.
 
+`make verify-dyld-image-enumeration-native` records the host dyld image count,
+checks header/name bounds, verifies failed-load snapshot stability, and proves
+that a successful `dlopen` publishes its requested image before a new dependency.
+`make -C cpp verify-guest-image-registry` checks guest registry ordering,
+out-of-range results, deduplication and uncommitted transaction rollback.
+
 ## Generated-code permission and rewrite probe
 
 The JIT probe writes a two-instruction ARM64 function into an anonymous mapping,

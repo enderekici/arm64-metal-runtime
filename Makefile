@@ -64,6 +64,22 @@ verify-apps:
 	@test -x "$(APP_VERIFY_RUNTIME)" || { echo "Build the C++ runtime first with make -C cpp app" >&2; exit 2; }
 	./verify-apps.sh "$(APP_VERIFY_RUNTIME)" "$(APP_VERIFY_RESULTS)" $(APP_VERIFY_CASES)
 
+DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
+DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib
+DYLD_IMAGE_ROOT := $(BUILD)/libdyld-image-root.dylib
+.PHONY: verify-dyld-image-enumeration-native
+$(DYLD_IMAGE_DEPENDENCY): fixtures/handoff/dyld-image-dependency.c | $(BUILD)
+	xcrun clang -arch arm64 -dynamiclib -install_name @rpath/libdyld-image-dependency.dylib "$<" -o "$@"
+
+$(DYLD_IMAGE_ROOT): fixtures/handoff/dyld-image-root.c $(DYLD_IMAGE_DEPENDENCY) | $(BUILD)
+	xcrun clang -arch arm64 -dynamiclib -L"$(BUILD)" -Wl,-rpath,@loader_path -install_name @rpath/libdyld-image-root.dylib "$<" -ldyld-image-dependency -o "$@"
+
+$(DYLD_IMAGE_ORACLE): fixtures/handoff/dyld-image-enumeration-oracle.c | $(BUILD)
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+verify-dyld-image-enumeration-native: $(DYLD_IMAGE_ORACLE) $(DYLD_IMAGE_ROOT)
+	"$(DYLD_IMAGE_ORACLE)" "$(BUILD)/missing-image.dylib" "$(DYLD_IMAGE_ROOT)" "$(DYLD_IMAGE_DEPENDENCY)"
+
 verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
 		$(RUNTIME) inspect-cache-rebases "/usr/lib/$$library" >"$(BUILD)/$$library.rebases"; \
