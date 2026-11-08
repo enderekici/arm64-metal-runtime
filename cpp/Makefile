@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -80,6 +80,7 @@ SEMAPHORE_NATIVE := $(BUILD_DIR)/mach-semaphore-lifecycle
 SEMAPHORE_SCHEDULER := $(BUILD_DIR)/guest-semaphore-scheduler
 SIGNAL_THREAD_FRAMES := $(BUILD_DIR)/guest-signal-thread-frames
 THREADED_RAISE_SIGNALS_NATIVE := $(BUILD_DIR)/threaded-raise-signals
+PTHREAD_KILL_NATIVE := $(BUILD_DIR)/pthread-kill-targeted
 INTERPRETER_NATIVE := $(BUILD_DIR)/interpreter-native
 INTERPRETER_TYPED_NATIVE := $(BUILD_DIR)/interpreter-typed-operations
 AUTH_RETURN_NATIVE := $(BUILD_DIR)/authenticated-return-native
@@ -224,6 +225,14 @@ $(THREADED_RAISE_SIGNALS_NATIVE): ../fixtures/handoff/threaded-raise-signals.c
 
 verify-threaded-raise-signals-native: $(THREADED_RAISE_SIGNALS_NATIVE)
 	"$(THREADED_RAISE_SIGNALS_NATIVE)"
+
+$(PTHREAD_KILL_NATIVE): ../fixtures/handoff/pthread-kill-targeted.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -Wno-nonnull \
+		-fno-stack-protector -fno-builtin-memset -pthread "$<" -o "$@"
+
+verify-pthread-kill-native: $(PTHREAD_KILL_NATIVE)
+	perl -e 'alarm 5; exec @ARGV' "$(PTHREAD_KILL_NATIVE)"
 
 $(OPEN_NOCANCEL_NATIVE): ../fixtures/handoff/open-nocancel.c \
 		../fixtures/handoff/open-nocancel-input.txt

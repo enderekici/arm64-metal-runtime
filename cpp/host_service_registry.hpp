@@ -102,6 +102,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_pthread_self", 73, true, true},
     {"_pthread_equal", 74, true, true},
     {"_pthread_threadid_np", 196, true, true},
+    {"_pthread_kill", 202, true, true},
     {"_pthread_detach", 174, true, true},
     {"_sched_yield", 75, true, true},
     {"_pthread_mutexattr_init", 76, true, true},

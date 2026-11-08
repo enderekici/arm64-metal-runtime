@@ -7700,6 +7700,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 202) {
+                const auto threadId = hostRegisters[0];
+                const auto signal = static_cast<std::int32_t>(hostRegisters[1]);
+                auto* thread = guestScheduler.find(threadId);
+                if (thread == nullptr) {
+                    hostRegisters[0] = ESRCH;
+                } else if (signal != 0 && !GuestSignals::valid(signal)) {
+                    hostRegisters[0] = EINVAL;
+                } else {
+                    if (signal != 0 &&
+                        hostServiceState.signals.action(signal).handler != 1) {
+                        thread->pendingSignals |= GuestSignals::bit(signal);
+                    }
+                    hostRegisters[0] = 0;
+                }
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 193) {
                 hostRegisters[0] = acquireGuestFixedSendRight(
                     static_cast<std::uint32_t>(guestMachHostPort));
