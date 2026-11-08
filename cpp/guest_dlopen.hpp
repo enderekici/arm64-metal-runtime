@@ -89,6 +89,17 @@ class GuestImageHandles {
     image_headers_[candidate.string()] = header;
   }
 
+  void unregister_loaded(std::uint64_t header) {
+    if (has_open_reference_for_image(header)) {
+      throw std::logic_error("Cannot unregister an image with open handles");
+    }
+    for (auto iter = image_headers_.begin(); iter != image_headers_.end();) {
+      if (iter->second == header) iter = image_headers_.erase(iter);
+      else ++iter;
+    }
+    nodelete_headers_.erase(header);
+  }
+
   std::uint64_t close(std::uint64_t handle) {
     if (is_rtld_default(handle) || is_rtld_main_only(handle)) return 0;
     const auto found = references_.find(handle);

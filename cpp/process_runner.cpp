@@ -3060,8 +3060,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::optional<std::uint64_t> stopAddress;
         std::optional<std::uint64_t> exitDso;
         std::vector<std::uint64_t> exitImages;
+        std::vector<std::uint64_t> drainedExitImages;
         std::size_t nextExitImage = 0;
         std::optional<std::uint64_t> currentExitImage;
+        std::optional<std::uint64_t> activeExitCallbackImage;
+        std::vector<std::uint64_t> activeExitLease;
         std::optional<std::int32_t> exitStatus;
         std::uint64_t exitThread = 0;
     };
@@ -3070,6 +3073,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> dynamicImageGroups;
     std::unordered_map<std::uint64_t, std::size_t> dynamicImageOwners;
     std::set<std::uint64_t> finalizedDynamicImages;
+    std::unordered_map<std::uint64_t, std::size_t> activeImageExitCallbacks;
+    std::set<std::uint64_t> pendingDynamicUnloads;
     std::set<std::pair<std::int64_t, std::int64_t>> cachedReadWindows;
     auto ensureTokenCapacity = [&](std::size_t additional) {
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
@@ -4338,11 +4343,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto found = callbackFramesByThread.find(threadId);
         if (found == callbackFramesByThread.end()) return;
         bool releasedMutation = false;
-        for (const auto& frame : found->second) {
+        for (auto& frame : found->second) {
             releasedMutation = releasedMutation || frame.mutationBlock != 0;
             if (frame.stopAddress && hostServiceState.heap) {
                 hostServiceState.heap->release(static_cast<std::int64_t>(*frame.stopAddress));
             }
+            if (frame.activeExitCallbackImage) {
+                const auto active = activeImageExitCallbacks.find(
+                    *frame.activeExitCallbackImage);
+                if (active != activeImageExitCallbacks.end() && active->second != 0 &&
+                    --active->second == 0) {
+                    activeImageExitCallbacks.erase(active);
+                }
+                frame.activeExitCallbackImage.reset();
+            }
+            for (const auto header : frame.activeExitLease) {
+                const auto owner = dynamicImageOwners.find(header);
+                if (owner == dynamicImageOwners.end() || owner->second == 0) continue;
+                if (--owner->second == 0) {
+                    dynamicImageOwners.erase(owner);
+                    if (!imageHandles.nodelete(header) &&
+                        !imageHandles.has_open_reference_for_image(header)) {
+                        pendingDynamicUnloads.insert(header);
+                    }
+                }
+            }
+            frame.activeExitLease.clear();
         }
         callbackFramesByThread.erase(found);
         if (!releasedMutation) return;
@@ -5864,6 +5890,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::reverse(closure.begin(), closure.end());
         return closure;
     };
+    const auto acquireExitLease = [&](GuestCallbackFrame& frame, std::uint64_t header) {
+        frame.activeExitCallbackImage.reset();
+        if (header != 0) frame.activeExitCallbackImage = header;
+        frame.activeExitLease = dynamicImageClosure(header);
+        for (const auto leasedHeader : frame.activeExitLease)
+            ++dynamicImageOwners[leasedHeader];
+        if (header != 0) ++activeImageExitCallbacks[header];
+    };
+    const auto releaseExitLease = [&](GuestCallbackFrame& frame) {
+        if (frame.activeExitCallbackImage) {
+            const auto active = activeImageExitCallbacks.find(*frame.activeExitCallbackImage);
+            if (active == activeImageExitCallbacks.end() || active->second == 0) {
+                throw std::logic_error("Dynamic image finalizer activity is inconsistent");
+            }
+            if (--active->second == 0) activeImageExitCallbacks.erase(active);
+            frame.activeExitCallbackImage.reset();
+        }
+        for (const auto header : frame.activeExitLease) {
+            const auto owner = dynamicImageOwners.find(header);
+            if (owner == dynamicImageOwners.end() || owner->second == 0) {
+                throw std::logic_error("Dynamic image callback lease is inconsistent");
+            }
+            if (--owner->second == 0) dynamicImageOwners.erase(owner);
+        }
+        frame.activeExitLease.clear();
+    };
     const auto ensureDynamicImageGroup = [&](std::uint64_t root) {
         if (dynamicImageGroups.find(root) != dynamicImageGroups.end()) return;
         auto closure = dynamicImageClosure(root);
@@ -5880,8 +5932,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto owners = dynamicImageOwners.find(header);
             if (owners == dynamicImageOwners.end() || owners->second == 0)
                 throw std::logic_error("Dynamic image ownership is inconsistent");
-            if (--owners->second != 0) continue;
+            if (--owners->second != 0) {
+                if (!imageHandles.nodelete(header) &&
+                    !imageHandles.has_open_reference_for_image(header)) {
+                    pendingDynamicUnloads.insert(header);
+                }
+                continue;
+            }
             dynamicImageOwners.erase(owners);
+            const auto active = activeImageExitCallbacks.find(header);
+            if (active != activeImageExitCallbacks.end() && active->second != 0 &&
+                !imageHandles.nodelete(header) &&
+                !imageHandles.has_open_reference_for_image(header)) {
+                pendingDynamicUnloads.insert(header);
+                continue;
+            }
+            pendingDynamicUnloads.erase(header);
             const auto record = std::find_if(image.loaded_image_graph.begin(),
                 image.loaded_image_graph.end(), [header](const auto& item) {
                     return item.guest_header == header;
@@ -5889,17 +5955,213 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (record != image.loaded_image_graph.end() &&
                 record->dynamic_unload_candidate && !imageHandles.nodelete(header) &&
                 !imageHandles.has_open_reference_for_image(header) &&
-                finalizedDynamicImages.find(header) == finalizedDynamicImages.end()) {
+                (activeImageExitCallbacks.find(header) == activeImageExitCallbacks.end() ||
+                 activeImageExitCallbacks.at(header) == 0)) {
                 finalizable.push_back(header);
             }
         }
         dynamicImageGroups.erase(group);
         return finalizable;
     };
+    const auto takePendingDynamicUnloads = [&]() {
+        std::vector<std::uint64_t> ready;
+        for (auto iter = pendingDynamicUnloads.begin(); iter != pendingDynamicUnloads.end();) {
+            const auto header = *iter;
+            const auto owners = dynamicImageOwners.find(header);
+            const auto active = activeImageExitCallbacks.find(header);
+            if (imageHandles.nodelete(header)) {
+                iter = pendingDynamicUnloads.erase(iter);
+                continue;
+            }
+            if (imageHandles.has_open_reference_for_image(header) ||
+                (owners != dynamicImageOwners.end() && owners->second != 0) ||
+                (active != activeImageExitCallbacks.end() && active->second != 0)) {
+                ++iter;
+                continue;
+            }
+            const auto record = std::find_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                });
+            if (record == image.loaded_image_graph.end() ||
+                !record->dynamic_unload_candidate) {
+                iter = pendingDynamicUnloads.erase(iter);
+                continue;
+            }
+            ready.push_back(header);
+            iter = pendingDynamicUnloads.erase(iter);
+        }
+        std::unordered_set<std::uint64_t> readySet(ready.begin(), ready.end());
+        std::unordered_map<std::uint64_t, std::size_t> pendingIndegree;
+        std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> pendingDependencies;
+        for (const auto header : ready) pendingIndegree.emplace(header, 0);
+        for (const auto header : ready) {
+            const auto record = std::find_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                });
+            if (record == image.loaded_image_graph.end()) continue;
+            for (const auto& dependency : record->dependencies) {
+                if (dependency.resolved_header &&
+                    readySet.find(*dependency.resolved_header) != readySet.end()) {
+                    pendingDependencies[header].push_back(*dependency.resolved_header);
+                    ++pendingIndegree[*dependency.resolved_header];
+                }
+            }
+        }
+        std::vector<std::uint64_t> ordered;
+        std::set<std::uint64_t> roots;
+        for (const auto& [header, degree] : pendingIndegree) {
+            if (degree == 0) roots.insert(header);
+        }
+        while (!roots.empty()) {
+            const auto header = *roots.begin();
+            roots.erase(roots.begin());
+            ordered.push_back(header);
+            for (const auto dependency : pendingDependencies[header]) {
+                auto& degree = pendingIndegree[dependency];
+                if (--degree == 0) roots.insert(dependency);
+            }
+        }
+        for (const auto header : readySet) {
+            if (std::find(ordered.begin(), ordered.end(), header) == ordered.end())
+                ordered.push_back(header);
+        }
+        return ordered;
+    };
+    const auto unloadDynamicImages = [&](const std::vector<std::uint64_t>& headers) {
+        std::unordered_set<std::uint64_t> removed;
+        for (const auto header : headers) {
+            if (imageHandles.nodelete(header) ||
+                imageHandles.has_open_reference_for_image(header) ||
+                (activeImageExitCallbacks.find(header) != activeImageExitCallbacks.end() &&
+                 activeImageExitCallbacks.at(header) != 0) ||
+                (dynamicImageOwners.find(header) != dynamicImageOwners.end() &&
+                 dynamicImageOwners.at(header) != 0)) {
+                finalizedDynamicImages.erase(header);
+                continue;
+            }
+            const auto record = std::find_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                });
+            if (record == image.loaded_image_graph.end() ||
+                !record->dynamic_unload_candidate) continue;
+            if (record->backing_offset > static_cast<std::size_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("Dynamic image backing exceeds allocator range");
+            }
+            mappingHeap.release(static_cast<std::int64_t>(record->backing_offset));
+
+            for (const auto& range : record->mapped_ranges) {
+                auto index = std::size_t{0};
+                while (index < resident[0]) {
+                    const auto row = 1 + 4 * index;
+                    if (resident[row] != range.first) {
+                        ++index;
+                        continue;
+                    }
+                    guestMemory.remove_mapping(range.first);
+                    const auto remaining = static_cast<std::size_t>(resident[0]) - index - 1;
+                    if (remaining != 0) {
+                        std::move(resident.begin() + static_cast<std::ptrdiff_t>(row + 4),
+                                  resident.begin() + static_cast<std::ptrdiff_t>(row + 4 +
+                                      remaining * 4),
+                                  resident.begin() + static_cast<std::ptrdiff_t>(row));
+                    }
+                    --resident[0];
+                }
+            }
+            const auto ownsAddress = [&record](std::uint64_t address) {
+                return std::any_of(record->mapped_ranges.begin(), record->mapped_ranges.end(),
+                    [address](const auto& range) {
+                        return range.first <= address && address < range.second;
+                    });
+            };
+            for (const auto slot : record->binding_slots) {
+                imports.erase(static_cast<std::int64_t>(slot));
+                guestStubs.erase(static_cast<std::int64_t>(slot));
+                image.bindings.erase(static_cast<std::size_t>(slot));
+                image.function_bindings.erase(static_cast<std::size_t>(slot));
+                image.authentication.erase(static_cast<std::size_t>(slot));
+            }
+            for (const auto stub : record->synthetic_import_stubs)
+                imports.erase(static_cast<std::int64_t>(stub));
+            auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
+            for (const auto token : record->authentication_tokens) {
+                const auto slot = guestTokenStart + 3 * token;
+                if (token < live[guestTokenCount]) {
+                    live[slot] = 0;
+                    live[slot + 1] = 0;
+                    live[slot + 2] = 0;
+                }
+            }
+            image.runtime_local_images.erase(std::remove_if(
+                image.runtime_local_images.begin(), image.runtime_local_images.end(),
+                [header](const auto& runtimeImage) {
+                    return runtimeImage.guest_header == header;
+                }), image.runtime_local_images.end());
+            image.mapped_image_segments.erase(std::remove_if(
+                image.mapped_image_segments.begin(), image.mapped_image_segments.end(),
+                [header](const auto& segment) { return segment.guest_header == header; }),
+                image.mapped_image_segments.end());
+            image.text_regions.erase(std::remove_if(image.text_regions.begin(),
+                image.text_regions.end(), [&](const auto& range) {
+                    return range.first >= 0 && ownsAddress(static_cast<std::uint64_t>(range.first));
+                }), image.text_regions.end());
+            image.code_abi_regions.erase(std::remove_if(image.code_abi_regions.begin(),
+                image.code_abi_regions.end(), [&](const auto& range) {
+                    return range.start >= 0 && ownsAddress(static_cast<std::uint64_t>(range.start));
+                }), image.code_abi_regions.end());
+            image.global_scope_headers.erase(std::remove(image.global_scope_headers.begin(),
+                image.global_scope_headers.end(), header), image.global_scope_headers.end());
+            image.loaded_image_order.erase(std::remove_if(image.loaded_image_order.begin(),
+                image.loaded_image_order.end(), [header](const auto& item) {
+                    return item.header == header;
+                }), image.loaded_image_order.end());
+            image.loaded_image_graph.erase(std::remove_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                }), image.loaded_image_graph.end());
+            image.thread_local_images.erase(header);
+            for (auto iter = image.modeled_global_export_provenance.begin();
+                 iter != image.modeled_global_export_provenance.end();) {
+                if (iter->second.guest_header == header)
+                    iter = image.modeled_global_export_provenance.erase(iter);
+                else ++iter;
+            }
+            image.image_paths.erase(header);
+            image.image_slides.erase(header);
+            for (auto iter = imageHeadersByPath.begin(); iter != imageHeadersByPath.end();) {
+                if (iter->second == header) iter = imageHeadersByPath.erase(iter);
+                else ++iter;
+            }
+            for (auto iter = dlsymImages.begin(); iter != dlsymImages.end();) {
+                if (iter->first == header) iter = dlsymImages.erase(iter);
+                else ++iter;
+            }
+            for (auto iter = dladdrSymbols.begin(); iter != dladdrSymbols.end();) {
+                if (std::get<0>(iter->first) == header) iter = dladdrSymbols.erase(iter);
+                else ++iter;
+            }
+            imageHandles.unregister_loaded(header);
+            loadedImageHeaders.erase(header);
+            finalizedDynamicImages.erase(header);
+            pendingDynamicUnloads.erase(header);
+            removed.insert(header);
+            processCodeCacheInvalidated = true;
+        }
+        if (!removed.empty()) {
+            imageRegistry.remove(removed);
+            std::memcpy(residentBuffer.data(), resident.data(),
+                        resident.size() * sizeof(std::uint64_t));
+        }
+    };
+    std::function<bool(std::vector<std::uint64_t>)> beginImageExitDrain;
     const auto beginExitDrain = [&](std::uint64_t dso,
                                     std::optional<std::int32_t> exitStatus) {
         const auto handler = exitRegistry.take_next(dso);
-        if (!handler) return false;
+        if (!handler) return beginImageExitDrain(takePendingDynamicUnloads());
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         GuestCallbackFrame frame;
         frame.savedRegisters.assign(live, live + 36);
@@ -5909,6 +6171,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         frame.exitDso = dso;
         frame.exitStatus = exitStatus;
         frame.exitThread = guestScheduler.current_id();
+        acquireExitLease(frame, handler->owner_image);
         callbackFramesByThread[guestScheduler.current_id()].push_back(std::move(frame));
         live[0] = handler->argument;
         live[30] = kNoFault;
@@ -5925,19 +6188,34 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto owners = dynamicImageOwners.find(header);
                 if ((owners != dynamicImageOwners.end() && owners->second != 0) ||
                     imageHandles.nodelete(header) ||
-                    imageHandles.has_open_reference_for_image(header)) {
+                    imageHandles.has_open_reference_for_image(header) ||
+                    (activeImageExitCallbacks.find(header) != activeImageExitCallbacks.end() &&
+                     activeImageExitCallbacks.at(header) != 0)) {
                     ++frame.nextExitImage;
                     continue;
                 }
             }
             const auto handler = exitRegistry.take_next_for_image(header);
             if (!handler) {
+                const auto owners = dynamicImageOwners.find(header);
+                if ((owners != dynamicImageOwners.end() && owners->second != 0) ||
+                    imageHandles.nodelete(header) ||
+                    imageHandles.has_open_reference_for_image(header) ||
+                    (activeImageExitCallbacks.find(header) != activeImageExitCallbacks.end() &&
+                     activeImageExitCallbacks.at(header) != 0)) {
+                    finalizedDynamicImages.erase(header);
+                    ++frame.nextExitImage;
+                    frame.currentExitImage.reset();
+                    continue;
+                }
                 finalizedDynamicImages.insert(header);
+                frame.drainedExitImages.push_back(header);
                 ++frame.nextExitImage;
                 frame.currentExitImage.reset();
                 continue;
             }
             frame.currentExitImage = header;
+            acquireExitLease(frame, header);
             auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
             std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), live);
             std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(),
@@ -5952,7 +6230,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return false;
     };
-    const auto beginImageExitDrain = [&](std::vector<std::uint64_t> images) {
+    beginImageExitDrain = [&](std::vector<std::uint64_t> images) {
         if (images.empty()) return false;
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
         GuestCallbackFrame frame;
@@ -5961,7 +6239,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
         frame.authenticationDepth = live[37];
         frame.exitImages = std::move(images);
-        return scheduleNextImageExitHandler(frame);
+        if (scheduleNextImageExitHandler(frame)) return true;
+        unloadDynamicImages(frame.drainedExitImages);
+        return false;
     };
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
@@ -6056,15 +6336,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (registers[37] != frame.authenticationDepth) {
                     throw std::runtime_error("Guest image callback left authentication stack unbalanced");
                 }
-                if (frame.currentExitImage) {
-                    if (scheduleNextImageExitHandler(frame)) continue;
-                } else if (frame.exitDso) {
+                if (frame.activeExitCallbackImage || !frame.activeExitLease.empty())
+                    releaseExitLease(frame);
+                if (frame.exitDso) {
                     const auto handler = exitRegistry.take_next(*frame.exitDso);
                     if (handler) {
                         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
                         std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), live);
                         std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(), live + 806);
                         live[37] = frame.authenticationDepth;
+                        acquireExitLease(frame, handler->owner_image);
                         live[0] = handler->argument;
                         live[30] = kNoFault;
                         live[33] = handler->target;
@@ -6072,8 +6353,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         selectKernel(static_cast<std::int64_t>(handler->target));
                         continue;
                     }
-                    if (frame.exitStatus) return *frame.exitStatus;
+                    frame.exitDso.reset();
                 }
+                auto pending = takePendingDynamicUnloads();
+                for (const auto header : pending) {
+                    const bool alreadyQueued =
+                        std::find(frame.exitImages.begin(), frame.exitImages.end(), header) !=
+                            frame.exitImages.end() ||
+                        std::find(frame.drainedExitImages.begin(),
+                                  frame.drainedExitImages.end(), header) !=
+                            frame.drainedExitImages.end();
+                    if (!alreadyQueued) frame.exitImages.push_back(header);
+                }
+                if (frame.nextExitImage < frame.exitImages.size() &&
+                    scheduleNextImageExitHandler(frame)) {
+                    continue;
+                }
+                unloadDynamicImages(frame.drainedExitImages);
+                if (frame.exitStatus) return *frame.exitStatus;
                 if (frame.nextImageNotification < frame.imageNotifications.size()) {
                     const auto notification =
                         frame.imageNotifications[frame.nextImageNotification++];
@@ -6153,6 +6450,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (registers[30] == kNoFault && guestScheduler.current_id() != 1) {
                 discardThreadCallbacks(guestScheduler.current_id());
+                if (beginImageExitDrain(takePendingDynamicUnloads())) continue;
                 std::vector<std::uint64_t> live(
                     static_cast<const std::uint64_t*>(stateBuffer.data()),
                     static_cast<const std::uint64_t*>(stateBuffer.data()) +
@@ -7014,6 +7312,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (service == 72) {
                 discardThreadCallbacks(guestScheduler.current_id());
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                if (beginImageExitDrain(takePendingDynamicUnloads())) continue;
                 if (finishGuestThread(hostRegisters[0], hostRegisters)) return 0;
                 continue;
             }

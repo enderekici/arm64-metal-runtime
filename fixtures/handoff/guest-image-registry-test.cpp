@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 int main() {
@@ -43,5 +44,10 @@ int main() {
     return 4;
   } catch (const std::invalid_argument&) {
   }
+  registry.remove({0x2000, 0x4000, 0xdead});
+  if (registry.size() != 3 || registry.header_at(0) != 0x1000 ||
+      registry.header_at(1) != 0x5000 || registry.name_at(1) != "/guest/no-slide" ||
+      registry.header_at(2) != 0x3000 || registry.name_at(2) != "/guest/staged" ||
+      registry.contains(0x2000) || registry.contains(0x4000)) return 6;
   return 0;
 }

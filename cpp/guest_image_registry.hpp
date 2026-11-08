@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
@@ -87,6 +88,22 @@ class GuestImageRegistry {
 
   [[nodiscard]] bool contains(std::uint64_t header) const noexcept {
     return indices_.find(header) != indices_.end();
+  }
+
+  void remove(const std::unordered_set<std::uint64_t>& headers) {
+    if (headers.empty()) return;
+    auto entries = entries_;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+        [&headers](const GuestLoadedImage& entry) {
+          return headers.find(entry.header) != headers.end();
+        }), entries.end());
+    std::unordered_map<std::uint64_t, std::size_t> indices;
+    indices.reserve(entries.size());
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      indices.emplace(entries[index].header, index);
+    }
+    entries_.swap(entries);
+    indices_.swap(indices);
   }
 
  private:
