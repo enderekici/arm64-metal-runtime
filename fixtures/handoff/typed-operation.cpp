@@ -287,6 +287,42 @@ int main() {
   }
   assert(!decode_operation(0x38400c00).has_value());
 
+  struct SignedScalarMemoryCase {
+    std::uint32_t encoding;
+    std::uint32_t target;
+    std::uint32_t base;
+    std::int32_t offset;
+    std::uint32_t modeAndTargetWidth;
+    std::uint32_t accessWidth;
+  };
+  const std::array<SignedScalarMemoryCase, 12> signedMemoryCases{{
+      {0x39c00cc9, 9, 6, 3, 0, 8},
+      {0x389fc0c9, 9, 6, -4, 5, 8},
+      {0x38c05cc9, 9, 6, 5, 3, 8},
+      {0x38dfb4c9, 9, 6, -5, 2, 8},
+      {0x79c00cc9, 9, 6, 6, 0, 16},
+      {0x789fe0c9, 9, 6, -2, 5, 16},
+      {0x78808cc9, 9, 6, 8, 7, 16},
+      {0x789f84c9, 9, 6, -8, 6, 16},
+      {0xb9800cc9, 9, 6, 12, 4, 32},
+      {0xb89f80c9, 9, 6, -8, 5, 32},
+      {0xb8810cc9, 9, 6, 16, 7, 32},
+      {0xb89f04c9, 9, 6, -16, 6, 32},
+  }};
+  for (const auto& memoryCase : signedMemoryCases) {
+    const auto decoded = decode_operation(memoryCase.encoding);
+    assert(decoded.has_value());
+    assert(decoded->opcode == Opcode::LoadSignedScalar);
+    assert(decoded->destination == memoryCase.target);
+    assert(decoded->source == memoryCase.base);
+    assert(static_cast<std::int32_t>(decoded->immediate) == memoryCase.offset);
+    assert(decoded->shift == memoryCase.modeAndTargetWidth);
+    assert(decoded->width == memoryCase.accessWidth);
+  }
+  assert(!decode_operation(0x38800c00).has_value());
+  assert(!decode_operation(0xb9c00000).has_value());
+  assert(!decode_operation(0xb8c00000).has_value());
+
   const auto lowered = make_operation_instruction(
       *wide, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(lowered.operation.has_value());

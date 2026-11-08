@@ -225,6 +225,28 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter scalar indexed-memory packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::LoadSignedScalar) {
+            hasMemoryAccess = true;
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto mode = operation[4] & 3U;
+            const bool targetIsX = (operation[4] & 4U) != 0;
+            const auto offset = static_cast<std::int32_t>(operation[3]);
+            const auto width = operation[5];
+            const auto bytes = width / 8U;
+            const bool validWidth = width == 8 || width == 16 || width == 32;
+            const bool validOffset = validWidth && (mode == 0
+                ? operation[3] <= 0xfffU * bytes && operation[3] % bytes == 0
+                : offset >= -256 && offset <= 255);
+            if (operation[1] > 31 || operation[2] > 31 ||
+                !validWidth ||
+                (operation[4] & ~7U) != 0 || (width == 32 && !targetIsX) ||
+                !validOffset || (mode >= 2 && operation[2] != 31 &&
+                 operation[2] == operation[1]) ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter signed scalar-memory packet metadata is invalid");
+            }
         } else {
             throw std::invalid_argument("Interpreter packet contains an unsupported operation");
         }
@@ -241,7 +263,8 @@ Result Interpreter::dispatch(const Backend& backend,
          initialOpcode == translate_core::Opcode::LoadPair ||
          initialOpcode == translate_core::Opcode::StorePair ||
          initialOpcode == translate_core::Opcode::LoadUnscaledWriteback ||
-         initialOpcode == translate_core::Opcode::StoreUnscaledWriteback) &&
+         initialOpcode == translate_core::Opcode::StoreUnscaledWriteback ||
+         initialOpcode == translate_core::Opcode::LoadSignedScalar) &&
         initialState[35] == (initialState[programCounterIndex] | cacheRetryPcMarker);
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
         throw std::invalid_argument(

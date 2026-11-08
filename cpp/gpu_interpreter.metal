@@ -54,7 +54,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
         const bool memoryRetry =
             (firstOpcode == 6u || firstOpcode == 7u ||
              firstOpcode == 13u || firstOpcode == 14u ||
-             firstOpcode == 17u || firstOpcode == 18u) &&
+             firstOpcode == 17u || firstOpcode == 18u ||
+             firstOpcode == 20u) &&
             state[35] == (pc | 0x8000000000000000ul);
         if ((packets[firstIndex].flags & 1u) == 0u && !memoryRetry) {
             state[33] = pc;
@@ -411,6 +412,70 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     store_guest_word(memory + offset, value, bytes);
                 }
                 if (mode != 0u) state[rn] = base + ulong(displacement);
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
+            if (opcode == 20u) {
+                const uint rt = instruction.operation[1];
+                const uint rn = instruction.operation[2];
+                const int displacement = as_type<int>(instruction.operation[3]);
+                const uint modeAndWidth = instruction.operation[4];
+                const uint mode = modeAndWidth & 3u;
+                const bool targetIsX = (modeAndWidth & 4u) != 0u;
+                const uint width = instruction.operation[5];
+                const uint bytes = width / 8u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                const bool validWidth = width == 8u || width == 16u || width == 32u;
+                const bool validOffset = validWidth && (mode == 0u
+                    ? uint(instruction.operation[3]) <= 0xfffu * bytes &&
+                      uint(instruction.operation[3]) % bytes == 0u
+                    : displacement >= -256 && displacement <= 255);
+                if (rt > 31u || rn > 31u || !validWidth ||
+                    (modeAndWidth & ~7u) != 0u || (width == 32u && !targetIsX) ||
+                    !validOffset || (mode >= 2u && rn != 31u && rn == rt) ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const ulong base = state[rn];
+                const ulong address = mode == 2u
+                    ? base : base + ulong(displacement);
+                const ulong offset = guest_offset(address, bytes, size, writable,
+                                                   false, state, resident, config);
+                if (offset == ~0ul) {
+                    state[874] = address;
+                    state[33] = pc;
+                    state[34] = 2;
+                    return;
+                }
+                const ulong value = load_guest_word(memory + offset, bytes);
+                ulong signedValue = 0ul;
+                if (width == 8u) {
+                    signedValue = targetIsX
+                        ? ulong(long(char(value)))
+                        : ulong(uint(int(char(value))));
+                } else if (width == 16u) {
+                    signedValue = targetIsX
+                        ? ulong(long(short(value)))
+                        : ulong(uint(int(short(value))));
+                } else {
+                    signedValue = ulong(long(int(value)));
+                }
+                if (rt < 31u) state[rt] = signedValue;
+                if (mode >= 2u) state[rn] = base + ulong(displacement);
                 if (blockEnd) {
                     pc = instruction.successor0;
                     leftBlock = true;

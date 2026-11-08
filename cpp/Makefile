@@ -105,6 +105,15 @@ INTERPRETER_DEMAND_CACHE_BYTE_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-by
 INTERPRETER_DEMAND_CACHE_HALF_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-half.s
 INTERPRETER_DEMAND_CACHE_HALF_MAIN := $(BUILD_DIR)/interpreter-demand-cache-half-main
 INTERPRETER_DEMAND_CACHE_HALF_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-half-native
+INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-signed-byte.s
+INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN := $(BUILD_DIR)/interpreter-demand-cache-signed-byte-main
+INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-signed-byte-native
+INTERPRETER_DEMAND_CACHE_SIGNED_HALF_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-signed-half.s
+INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN := $(BUILD_DIR)/interpreter-demand-cache-signed-half-main
+INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-signed-half-native
+INTERPRETER_DEMAND_CACHE_SIGNED_WORD_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-signed-word.s
+INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN := $(BUILD_DIR)/interpreter-demand-cache-signed-word-main
+INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-signed-word-native
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
@@ -328,6 +337,36 @@ $(INTERPRETER_DEMAND_CACHE_HALF_MAIN): $(INTERPRETER_DEMAND_CACHE_HALF_SOURCE)
 
 $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 -DACCESS_WIDTH=2 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" signed-byte >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN): $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 -DACCESS_WIDTH=1 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" signed-half >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN): $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 -DACCESS_WIDTH=2 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" signed-word >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN): $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 -DACCESS_WIDTH=4 "$<" -lz -o "$@"
 
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
@@ -583,7 +622,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-dispatch' "$$run_dir/scalar-indexed-memory.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
-verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_METALLIB)
+verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache.XXXXXX"); \
 		set +e; \
@@ -696,6 +735,72 @@ verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTER
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/half.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE)" >"$$run_dir/signed-byte.native.out" 2>"$$run_dir/signed-byte.native.err"; signed_byte_native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN)" >"$$run_dir/signed-byte.translated.out" 2>"$$run_dir/signed-byte.translated.err"; signed_byte_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN)" >"$$run_dir/signed-byte.interpreter.out" 2>"$$run_dir/signed-byte.interpreter.err"; signed_byte_interpreter_rc=$$?; \
+		printf '%s\n' "$$signed_byte_native_rc" >"$$run_dir/signed-byte.native.rc"; \
+		printf '%s\n' "$$signed_byte_translated_rc" >"$$run_dir/signed-byte.translated.rc"; \
+		printf '%s\n' "$$signed_byte_interpreter_rc" >"$$run_dir/signed-byte.interpreter.rc"; \
+		set -e; \
+		test "$$signed_byte_native_rc" -eq 32; \
+		test "$$signed_byte_translated_rc" -eq "$$signed_byte_native_rc"; \
+		test "$$signed_byte_interpreter_rc" -eq "$$signed_byte_native_rc"; \
+		cmp "$$run_dir/signed-byte.native.out" "$$run_dir/signed-byte.translated.out"; \
+		cmp "$$run_dir/signed-byte.native.out" "$$run_dir/signed-byte.interpreter.out"; \
+		cmp "$$run_dir/signed-byte.native.err" "$$run_dir/signed-byte.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/signed-byte.interpreter.err" >"$$run_dir/signed-byte.interpreter.no-trace.err"; \
+		cmp "$$run_dir/signed-byte.native.err" "$$run_dir/signed-byte.interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-byte.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
+		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
+		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
+		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-byte.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE)" >"$$run_dir/signed-half.native.out" 2>"$$run_dir/signed-half.native.err"; signed_half_native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN)" >"$$run_dir/signed-half.translated.out" 2>"$$run_dir/signed-half.translated.err"; signed_half_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN)" >"$$run_dir/signed-half.interpreter.out" 2>"$$run_dir/signed-half.interpreter.err"; signed_half_interpreter_rc=$$?; \
+		printf '%s\n' "$$signed_half_native_rc" >"$$run_dir/signed-half.native.rc"; \
+		printf '%s\n' "$$signed_half_translated_rc" >"$$run_dir/signed-half.translated.rc"; \
+		printf '%s\n' "$$signed_half_interpreter_rc" >"$$run_dir/signed-half.interpreter.rc"; \
+		set -e; \
+		test "$$signed_half_native_rc" -eq 32; \
+		test "$$signed_half_translated_rc" -eq "$$signed_half_native_rc"; \
+		test "$$signed_half_interpreter_rc" -eq "$$signed_half_native_rc"; \
+		cmp "$$run_dir/signed-half.native.out" "$$run_dir/signed-half.translated.out"; \
+		cmp "$$run_dir/signed-half.native.out" "$$run_dir/signed-half.interpreter.out"; \
+		cmp "$$run_dir/signed-half.native.err" "$$run_dir/signed-half.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/signed-half.interpreter.err" >"$$run_dir/signed-half.interpreter.no-trace.err"; \
+		cmp "$$run_dir/signed-half.native.err" "$$run_dir/signed-half.interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-half.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
+		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
+		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
+		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-half.interpreter.err"; \
+		set +e; \
+		"$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE)" >"$$run_dir/signed-word.native.out" 2>"$$run_dir/signed-word.native.err"; signed_word_native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN)" >"$$run_dir/signed-word.translated.out" 2>"$$run_dir/signed-word.translated.err"; signed_word_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN)" >"$$run_dir/signed-word.interpreter.out" 2>"$$run_dir/signed-word.interpreter.err"; signed_word_interpreter_rc=$$?; \
+		printf '%s\n' "$$signed_word_native_rc" >"$$run_dir/signed-word.native.rc"; \
+		printf '%s\n' "$$signed_word_translated_rc" >"$$run_dir/signed-word.translated.rc"; \
+		printf '%s\n' "$$signed_word_interpreter_rc" >"$$run_dir/signed-word.interpreter.rc"; \
+		set -e; \
+		test "$$signed_word_native_rc" -eq 32; \
+		test "$$signed_word_translated_rc" -eq "$$signed_word_native_rc"; \
+		test "$$signed_word_interpreter_rc" -eq "$$signed_word_native_rc"; \
+		cmp "$$run_dir/signed-word.native.out" "$$run_dir/signed-word.translated.out"; \
+		cmp "$$run_dir/signed-word.native.out" "$$run_dir/signed-word.interpreter.out"; \
+		cmp "$$run_dir/signed-word.native.err" "$$run_dir/signed-word.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/signed-word.interpreter.err" >"$$run_dir/signed-word.interpreter.no-trace.err"; \
+		cmp "$$run_dir/signed-word.native.err" "$$run_dir/signed-word.interpreter.no-trace.err"; \
+		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-word.interpreter.err"; \
+		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
+		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
+		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
+		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-word.interpreter.err"; \
 		echo "verify-interpreter-demand-cache receipts: $$run_dir"
 $(MAP_JIT_POLICY_TEST): \
 	../fixtures/handoff/map-jit-policy-test.cpp guest_code_policy.cpp guest_code_policy.hpp \

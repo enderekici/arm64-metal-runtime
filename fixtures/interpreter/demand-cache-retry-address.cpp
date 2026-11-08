@@ -10,9 +10,23 @@ int main(int argc, char** argv) {
     const bool indexedLoad = argc == 2 && std::string_view(argv[1]) == "indexed";
     const bool byteLoad = argc == 2 && std::string_view(argv[1]) == "byte";
     const bool halfLoad = argc == 2 && std::string_view(argv[1]) == "half";
+    const bool signedByteLoad = argc == 2 && std::string_view(argv[1]) == "signed-byte";
+    const bool signedHalfLoad = argc == 2 && std::string_view(argv[1]) == "signed-half";
+    const bool signedWordLoad = argc == 2 && std::string_view(argv[1]) == "signed-word";
     if (argc > 2 || (argc == 2 && !scalarLoad && !indexedLoad &&
-                     !byteLoad && !halfLoad)) return 2;
-    const bool useX1 = indexedLoad || byteLoad || halfLoad;
+                     !byteLoad && !halfLoad && !signedByteLoad &&
+                     !signedHalfLoad && !signedWordLoad)) return 2;
+    const bool useX1 = indexedLoad || byteLoad || halfLoad || signedByteLoad ||
+                       signedHalfLoad || signedWordLoad;
+    const std::string_view loadInstruction = signedByteLoad
+        ? "    ldrsb w0, [x1]\n"
+        : (signedHalfLoad ? "    ldrsh w0, [x1]\n"
+        : (signedWordLoad ? "    ldrsw x0, [x1]\n"
+        : (byteLoad ? "    ldrb w0, [x1]\n"
+        : (halfLoad ? "    ldrh w0, [x1]\n"
+        : (indexedLoad ? "    ldr x0, [x1, #0]!\n"
+        : (scalarLoad ? "    ldr x0, [x0]\n"
+                       : "    ldp x0, x1, [x0]\n"))))));
     arm64metal::SharedCache cache;
     const auto symbol = cache.resolveExport("/usr/lib/libz.1.dylib", "_zlibVersion");
     if (!symbol || symbol->guest_address <= 0) return 3;
@@ -31,11 +45,7 @@ int main(int argc, char** argv) {
                   << std::hex << part
                   << ", lsl #" << std::dec << shift << "\n";
     }
-    std::cout << (byteLoad ? "    ldrb w0, [x1]\n"
-                              : (halfLoad ? "    ldrh w0, [x1]\n"
-                              : (indexedLoad ? "    ldr x0, [x1, #0]!\n"
-                              : (scalarLoad ? "    ldr x0, [x0]\n"
-                                            : "    ldp x0, x1, [x0]\n"))))
+    std::cout << loadInstruction
               << "    ret\n"
               << ".section __DATA,__data\n"
               << ".p2align 3\n"

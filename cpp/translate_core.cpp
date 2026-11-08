@@ -95,6 +95,22 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   }
 
   const auto unsignedMemory = bits & 0xffc00000U;
+  const auto signedUnsignedMemory = unsignedMemory;
+  const auto signedUnsignedLoads =
+      std::array<std::pair<std::uint32_t, std::uint32_t>, 5>{
+          std::pair{0x39c00000U, 8U}, std::pair{0x39800000U, 8U},
+          std::pair{0x79c00000U, 16U}, std::pair{0x79800000U, 16U},
+          std::pair{0xb9800000U, 32U}};
+  for (const auto& [encoding, width] : signedUnsignedLoads) {
+    if (signedUnsignedMemory == encoding) {
+      const auto targetIsX = field(bits, 22, 1) == 0;
+      const auto bytes = width / 8U;
+      return Operation{Opcode::LoadSignedScalar, field(bits, 0, 5),
+                       field(bits, 5, 5),
+                       field(bits, 10, 12) * bytes,
+                       (targetIsX ? 4U : 0U), width};
+    }
+  }
   const auto memoryWidths = std::array<std::pair<std::uint32_t, std::uint32_t>, 8>{
       std::pair{0x39400000U, 8U}, std::pair{0x39000000U, 8U},
       std::pair{0x79400000U, 16U}, std::pair{0x79000000U, 16U},
@@ -111,6 +127,29 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     }
   }
   const auto scalarIndexedMemory = bits & 0xffe00c00U;
+  const auto signedIndexedWidths =
+      std::array<std::pair<std::uint32_t, std::uint32_t>, 5>{
+          std::pair{0x38c00000U, 8U}, std::pair{0x38800000U, 8U},
+          std::pair{0x78c00000U, 16U}, std::pair{0x78800000U, 16U},
+          std::pair{0xb8800000U, 32U}};
+  for (const auto& [encoding, width] : signedIndexedWidths) {
+    for (const auto mode : {0U, 1U, 3U}) {
+      if (scalarIndexedMemory == (encoding | (mode << 10U))) {
+        const auto target = field(bits, 0, 5);
+        const auto base = field(bits, 5, 5);
+        if (mode != 0 && base != 31 && target == base) {
+          return std::nullopt;
+        }
+        const auto targetIsX = field(bits, 22, 1) == 0;
+        const auto displacement = signed_field(field(bits, 12, 9), 9);
+        const auto operationMode = mode == 0 ? 1U : (mode == 1 ? 2U : 3U);
+        return Operation{Opcode::LoadSignedScalar, target, base,
+                         static_cast<std::uint32_t>(
+                             static_cast<std::int32_t>(displacement)),
+                         (targetIsX ? 4U : 0U) | operationMode, width};
+      }
+    }
+  }
   const auto indexedMemoryWidths =
       std::array<std::pair<std::uint32_t, std::uint32_t>, 8>{
           std::pair{0x38400000U, 8U}, std::pair{0x38000000U, 8U},
@@ -375,7 +414,8 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation->opcode != Opcode::LoadPair &&
       operation->opcode != Opcode::StorePair &&
       operation->opcode != Opcode::LoadUnscaledWriteback &&
-      operation->opcode != Opcode::StoreUnscaledWriteback) {
+      operation->opcode != Opcode::StoreUnscaledWriteback &&
+      operation->opcode != Opcode::LoadSignedScalar) {
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

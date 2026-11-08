@@ -2,7 +2,7 @@
 .global _main
 .p2align 2
 _main:
-    sub sp, sp, #32
+    sub sp, sp, #64
     add x6, sp, #16
     movz x0, #0x123
     str x0, [sp, #16]!
@@ -63,10 +63,68 @@ _main:
     strb wzr, [sp, #16]!
     ldrb w7, [sp], #-16
     cbnz w7, .Lfailure
-    add sp, sp, #32
+    movz w8, #0x80
+    strb w8, [x6, #3]
+    ldrsb w9, [x6, #3]
+    cmp w9, #0
+    b.ge .Lfailure
+    sturb w8, [x6, #-4]
+    ldursb x9, [x6, #-4]
+    cmp x9, #0
+    b.ge .Lfailure
+    strb w8, [x6, #5]
+    ldrsb w9, [x6, #5]!
+    cmp w9, #0
+    b.ge .Lfailure
+    ldrsb w9, [x6], #-5
+    cmp w9, #0
+    b.ge .Lfailure
+    movz w8, #0x8001
+    strh w8, [x6, #6]
+    ldrsh w9, [x6, #6]
+    cmp w9, #0
+    b.ge .Lfailure
+    sturh w8, [x6, #-2]
+    ldursh x9, [x6, #-2]
+    cmp x9, #0
+    b.ge .Lfailure
+    strh w8, [x6, #8]
+    ldrsh x9, [x6, #8]!
+    cmp x9, #0
+    b.ge .Lfailure
+    ldrsh x9, [x6], #-8
+    cmp x9, #0
+    b.ge .Lfailure
+    movz w8, #1
+    movk w8, #0x8000, lsl #16
+    str w8, [x6, #12]
+    ldrsw x9, [x6, #12]
+    cmp x9, #0
+    b.ge .Lfailure
+    stur w8, [x6, #-8]
+    ldursw x9, [x6, #-8]
+    cmp x9, #0
+    b.ge .Lfailure
+    str w8, [x6, #16]
+    ldrsw x9, [x6, #16]!
+    cmp x9, #0
+    b.ge .Lfailure
+    ldrsw x9, [x6], #-16
+    cmp x9, #0
+    b.ge .Lfailure
+    movz w8, #0x80
+    strb w8, [sp, #16]
+    ldrsb w9, [sp, #16]!
+    cmp w9, #0
+    b.ge .Lfailure
+    ldrsb w9, [sp], #-16
+    cmp w9, #0
+    b.ge .Lfailure
+    ldrsb wzr, [sp, #2]
+    add sp, sp, #64
     mov w0, #42
     ret
 .Lfailure:
-    add sp, sp, #32
+    add sp, sp, #64
     mov w0, #99
     ret

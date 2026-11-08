@@ -372,8 +372,11 @@ ProcessKernelPlan plan_process_kernel(
             const bool indexedScalarMemoryOpcode =
                 opcode == translate_core::Opcode::LoadUnscaledWriteback ||
                 opcode == translate_core::Opcode::StoreUnscaledWriteback;
+            const bool signedScalarMemoryOpcode =
+                opcode == translate_core::Opcode::LoadSignedScalar;
             const bool memoryOpcode = unsignedMemoryOpcode || pairMemoryOpcode ||
-                                      indexedScalarMemoryOpcode;
+                                      indexedScalarMemoryOpcode ||
+                                      signedScalarMemoryOpcode;
             const bool addSubImmediateOpcode =
                 opcode == translate_core::Opcode::AddImmediate ||
                 opcode == translate_core::Opcode::SubImmediate ||
@@ -422,6 +425,25 @@ ProcessKernelPlan plan_process_kernel(
                  indexedScalarOffset >= -256 && indexedScalarOffset <= 255 &&
                  (operation.shift == 0 || operation.source == 31 ||
                   operation.source != operation.destination));
+            const auto signedScalarOffset =
+                static_cast<std::int32_t>(operation.immediate);
+            const auto signedScalarMode = operation.shift & 3U;
+            const bool signedTargetIsX = (operation.shift & 4U) != 0;
+            const auto signedAccessBytes = operation.width / 8U;
+            const bool validSignedScalarMemoryOperation =
+                !signedScalarMemoryOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.width == 8 || operation.width == 16 ||
+                  operation.width == 32) &&
+                 (operation.shift & ~7U) == 0 &&
+                 (operation.width != 32 || signedTargetIsX) &&
+                 (signedScalarMode == 0
+                      ? (operation.immediate <= 0xfffU * signedAccessBytes &&
+                         operation.immediate % signedAccessBytes == 0)
+                      : signedScalarOffset >= -256 &&
+                            signedScalarOffset <= 255) &&
+                 (signedScalarMode < 2 || operation.source == 31 ||
+                  operation.source != operation.destination));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
@@ -446,6 +468,7 @@ ProcessKernelPlan plan_process_kernel(
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
+                !validSignedScalarMemoryOperation ||
                 !validAddSubImmediate || !validConditionalSelect ||
                 !validAddSubShiftedRegister ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
@@ -5399,7 +5422,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         opcode == translate_core::Opcode::LoadUnsignedImmediate ||
                         opcode == translate_core::Opcode::StoreUnsignedImmediate ||
                         opcode == translate_core::Opcode::LoadUnscaledWriteback ||
-                        opcode == translate_core::Opcode::StoreUnscaledWriteback;
+                        opcode == translate_core::Opcode::StoreUnscaledWriteback ||
+                        opcode == translate_core::Opcode::LoadSignedScalar;
                     const auto expectedWidth = faultPacket->operation[5] / 8U *
                         (pairAccess ? 2U : 1U);
                     if ((!scalarAccess && !pairAccess) ||

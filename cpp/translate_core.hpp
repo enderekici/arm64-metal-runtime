@@ -32,6 +32,7 @@ enum class Opcode : std::uint32_t {
   LoadUnscaledWriteback = 17,
   StoreUnscaledWriteback = 18,
   AddSubShiftedRegister = 19,
+  LoadSignedScalar = 20,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -48,6 +49,9 @@ enum class Opcode : std::uint32_t {
 // immediate=signed byte offset, shift=addressing mode (0=unscaled, 1=post,
 // 3=pre), and width=8/16/32/64. Narrow loads zero extend Wt. Opcodes 17/18
 // select load/store.
+// Signed scalar loads use destination=Rt, source=Rn, immediate=byte offset,
+// shift=(target-is-X << 2) | mode (0=scaled unsigned, 1=unscaled, 2=post,
+// 3=pre), and width=8/16/32 access bits.
 // BranchCondition uses source for the condition and immediate for byte offset.
 // Conditional select uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(variant << 4) | condition, and width=32 or 64.
