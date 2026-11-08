@@ -335,6 +335,15 @@ $(MALLOC_SIZE_DOMAIN): ../fixtures/handoff/malloc-size-domain.c
 verify-malloc-size-domain-native: $(MALLOC_SIZE_DOMAIN)
 	"$(MALLOC_SIZE_DOMAIN)"
 
+.PHONY: verify-dyld-platform-apis-native
+DYLD_PLATFORM_APIS := $(BUILD_DIR)/dyld-platform-apis-native
+$(DYLD_PLATFORM_APIS): ../fixtures/handoff/dyld-platform-apis.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-dyld-platform-apis-native: $(DYLD_PLATFORM_APIS)
+	"$(DYLD_PLATFORM_APIS)"
+
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }
 	@mkdir -p "$(BUILD_DIR)"

@@ -66,6 +66,21 @@ constexpr std::uint64_t kNoFault = std::numeric_limits<std::uint64_t>::max();
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
+
+std::uint32_t dyld_base_platform(std::uint32_t platform) {
+    switch (platform) {
+        case 6: return 2;
+        case 7: return 2;
+        case 8: return 3;
+        case 9: return 4;
+        case 12: return 11;
+        default: return platform;
+    }
+}
+
+bool dyld_is_simulator_platform(std::uint32_t platform) {
+    return platform == 7 || platform == 8 || platform == 9 || platform == 12;
+}
 // The pointer encoding stores a 1-based token index in the low 32 bits, shifted by 3.
 constexpr std::size_t kGuestTokenCodecCapacity =
     static_cast<std::size_t>((std::uint64_t{0xffffffff} >> 3U));
@@ -949,17 +964,28 @@ DyldApisFacade initialize_dyld_apis(
         throw std::runtime_error("Cached libdyld writable-TPRO method is unavailable");
     }
     constexpr std::uint64_t serviceBase = 0x80000000ULL;
-    auto service = serviceBase;
-    while (service <= static_cast<std::uint64_t>(
-               std::numeric_limits<std::int64_t>::max()) - 4 &&
-           (imports.find(static_cast<std::int64_t>(service)) != imports.end() ||
-            guestStubs.find(static_cast<std::int64_t>(service)) != guestStubs.end())) {
-        service += 4;
-    }
-    if (service >= guestCodeLimit) {
-        throw std::runtime_error("Synthetic libdyld service address space exhausted");
-    }
-    imports.emplace(static_cast<std::int64_t>(service), "__guest_libdyld_initialize");
+    auto serviceCursor = serviceBase;
+    const auto addSyntheticService = [&](const char* symbol) {
+        while (serviceCursor <= static_cast<std::uint64_t>(
+                   std::numeric_limits<std::int64_t>::max()) - 4 &&
+               (imports.find(static_cast<std::int64_t>(serviceCursor)) != imports.end() ||
+                guestStubs.find(static_cast<std::int64_t>(serviceCursor)) != guestStubs.end())) {
+            serviceCursor += 4;
+        }
+        if (serviceCursor >= guestCodeLimit || serviceCursor >
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) - 4) {
+            throw std::runtime_error("Synthetic libdyld service address space exhausted");
+        }
+        const auto address = serviceCursor;
+        serviceCursor += 4;
+        imports.emplace(static_cast<std::int64_t>(address), symbol);
+        return address;
+    };
+    const auto initializeService = addSyntheticService("__guest_libdyld_initialize");
+    const auto basePlatformService = addSyntheticService("__guest_dyld_get_base_platform");
+    const auto activePlatformService = addSyntheticService("__guest_dyld_get_active_platform");
+    const auto simulatorPlatformService = addSyntheticService(
+        "__guest_dyld_is_simulator_platform");
 
     constexpr std::uint64_t objectBytes = 16;
     constexpr std::uint64_t vtableBytes = 0x428;
@@ -981,12 +1007,28 @@ DyldApisFacade initialize_dyld_apis(
                   static_cast<std::uint64_t>(method->guest_address), 0, methodModifier));
     const auto initializeSlot = vtable + 0x8;
     const auto initializeModifier = (initializeSlot & addressMask) | 0x8379000000000000ULL;
+    const auto basePlatformSlot = vtable + 0x218;
+    const auto basePlatformModifier = (basePlatformSlot & addressMask) | 0xdafc000000000000ULL;
+    const auto activePlatformSlot = vtable + 0x210;
+    const auto activePlatformModifier = (activePlatformSlot & addressMask) | 0xc6a9000000000000ULL;
+    const auto simulatorPlatformSlot = vtable + 0x220;
+    const auto simulatorPlatformModifier =
+        (simulatorPlatformSlot & addressMask) | 0x198a000000000000ULL;
+    store_u64(bootstrap.memory, basePlatformSlot,
+              append_guest_pointer_token(bootstrap, basePlatformService, 0,
+                                         basePlatformModifier));
+    store_u64(bootstrap.memory, activePlatformSlot,
+              append_guest_pointer_token(bootstrap, activePlatformService, 0,
+                                         activePlatformModifier));
+    store_u64(bootstrap.memory, simulatorPlatformSlot,
+              append_guest_pointer_token(bootstrap, simulatorPlatformService, 0,
+                                         simulatorPlatformModifier));
     store_u64(bootstrap.memory, initializeSlot,
-              append_guest_pointer_token(bootstrap, service, 0, initializeModifier));
+              append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
     if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
     bootstrap.heap.begin += reservation;
-    return {object, service, cell->address, cellOffset.has_value()};
+    return {object, initializeService, cell->address, cellOffset.has_value()};
 }
 
 void initialize_cached_globals(const ExecutableImage& image,
@@ -1740,7 +1782,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
-    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 3U : 0U;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 6U : 0U;
     if (image.authentication.size() >
         std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
         throw std::length_error("Initial guest authentication table size overflow");
@@ -6811,6 +6853,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackRegisters[33] = callback;
                 callbackRegisters[34] = 0;
                 selectKernel(static_cast<std::int64_t>(callback));
+                continue;
+            }
+            if (service >= 213 && service <= 215) {
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "Dyld platform method did not use the published API object");
+                }
+                if (service == 213) {
+                    registers[0] = dyld_base_platform(
+                        static_cast<std::uint32_t>(hostRegisters[1]));
+                } else if (service == 214) {
+                    registers[0] = bootstrap.activePlatform;
+                } else {
+                    registers[0] = dyld_is_simulator_platform(
+                        static_cast<std::uint32_t>(hostRegisters[1])) ? 1U : 0U;
+                }
                 continue;
             }
             if (service == 201) {

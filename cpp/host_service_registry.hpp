@@ -224,6 +224,9 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mach_host_self", 193, true, true},
     {"_mach_thread_self", 194, true, true},
     {"__guest_libdyld_initialize", 201, true, true},
+    {"__guest_dyld_get_base_platform", 213, true, true},
+    {"__guest_dyld_get_active_platform", 214, true, true},
+    {"__guest_dyld_is_simulator_platform", 215, true, true},
 };
 
 inline const std::map<std::string, int>& decoder_host_service_ids() {
