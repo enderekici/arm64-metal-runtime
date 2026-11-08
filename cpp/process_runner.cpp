@@ -2391,25 +2391,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         cachedReadWindows.emplace(lower, upper);
         return true;
     };
-    const auto replaceDynamicCodeRegions = [&](std::uint64_t begin, std::uint64_t end,
-                                               const std::vector<VmRegion>& regions) {
-        bool changedExecutableRegions = false;
-        for (auto iter = dynamicCodeRegionStarts.begin(); iter != dynamicCodeRegionStarts.end();) {
+    struct DynamicCodeReplacement {
+        std::set<std::uint64_t> starts;
+        std::vector<std::uint64_t> removedStarts;
+        std::vector<RuntimeLocalImageBytes> addedImages;
+        std::vector<std::pair<std::int64_t, std::int64_t>> addedTextRegions;
+        bool changed = false;
+    };
+    const auto prepareDynamicCodeRegions = [&](std::uint64_t begin, std::uint64_t end,
+                                                const std::vector<VmRegion>& regions) {
+        DynamicCodeReplacement replacement;
+        replacement.starts = dynamicCodeRegionStarts;
+        for (auto iter = replacement.starts.begin(); iter != replacement.starts.end();) {
             if (*iter < begin || *iter >= end) {
                 ++iter;
                 continue;
             }
-            const auto start = static_cast<std::int64_t>(*iter);
-            image.runtime_local_images.erase(std::remove_if(
-                image.runtime_local_images.begin(), image.runtime_local_images.end(),
-                [start](const RuntimeLocalImageBytes& runtimeImage) {
-                    return runtimeImage.guest_header == static_cast<std::uint64_t>(start);
-                }), image.runtime_local_images.end());
-            image.text_regions.erase(std::remove_if(image.text_regions.begin(),
-                image.text_regions.end(), [start](const auto& range) { return range.first == start; }),
-                image.text_regions.end());
-            iter = dynamicCodeRegionStarts.erase(iter);
-            changedExecutableRegions = true;
+            replacement.removedStarts.push_back(*iter);
+            iter = replacement.starts.erase(iter);
+            replacement.changed = true;
         }
         auto* backingBytes = static_cast<const std::uint8_t*>(memoryBuffer.data());
         for (const auto& region : regions) {
@@ -2423,13 +2423,49 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             runtimeImage.bytes.assign(backingBytes + region.backing,
                                       backingBytes + region.backing + (region.end - region.begin));
             runtimeImage.executable_ranges.emplace_back(region.begin, region.end);
-            image.runtime_local_images.push_back(std::move(runtimeImage));
-            image.text_regions.emplace_back(static_cast<std::int64_t>(region.begin),
-                                            static_cast<std::int64_t>(region.end));
-            dynamicCodeRegionStarts.insert(region.begin);
-            changedExecutableRegions = true;
+            replacement.addedImages.push_back(std::move(runtimeImage));
+            replacement.addedTextRegions.emplace_back(static_cast<std::int64_t>(region.begin),
+                                                       static_cast<std::int64_t>(region.end));
+            replacement.starts.insert(region.begin);
+            replacement.changed = true;
         }
-        processCodeCacheInvalidated = processCodeCacheInvalidated || changedExecutableRegions;
+        image.runtime_local_images.reserve(
+            image.runtime_local_images.size() + replacement.addedImages.size());
+        image.text_regions.reserve(image.text_regions.size() +
+                                   replacement.addedTextRegions.size());
+        return replacement;
+    };
+    const auto commitDynamicCodeRegions = [&](DynamicCodeReplacement&& replacement) noexcept {
+        const auto wasRemoved = [&replacement](std::uint64_t start) {
+            return std::find(replacement.removedStarts.begin(),
+                             replacement.removedStarts.end(), start) !=
+                   replacement.removedStarts.end();
+        };
+        image.runtime_local_images.erase(std::remove_if(image.runtime_local_images.begin(),
+            image.runtime_local_images.end(), [&](const RuntimeLocalImageBytes& runtimeImage) {
+                return wasRemoved(runtimeImage.guest_header);
+            }), image.runtime_local_images.end());
+        image.text_regions.erase(std::remove_if(image.text_regions.begin(), image.text_regions.end(),
+            [&](const auto& range) { return wasRemoved(static_cast<std::uint64_t>(range.first)); }),
+            image.text_regions.end());
+        for (auto& runtimeImage : replacement.addedImages) {
+            image.runtime_local_images.push_back(std::move(runtimeImage));
+        }
+        for (const auto& range : replacement.addedTextRegions) image.text_regions.push_back(range);
+        dynamicCodeRegionStarts.swap(replacement.starts);
+        processCodeCacheInvalidated = processCodeCacheInvalidated || replacement.changed;
+    };
+    const auto appendVmRegionToResident = [&](std::vector<std::uint64_t>& table,
+                                               const VmRegion& region) {
+        if (table[0] >= residentCapacity) {
+            throw std::runtime_error("Guest resident map capacity exceeded by VM mapping");
+        }
+        const auto row = 1 + 4 * static_cast<std::size_t>(table[0]);
+        table[row] = region.begin;
+        table[row + 1] = region.end;
+        table[row + 2] = region.backing;
+        table[row + 3] = (region.writable ? 1U : 0U) | (region.readable ? 0U : 2U);
+        table[0] += 1;
     };
     const auto publishVmRegion = [&](const VmRegion& region) {
         if (resident[0] >= residentCapacity) {
@@ -2437,28 +2473,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         guestMemory.add_mapping({region.begin, region.end, region.backing,
                                  region.writable, region.readable});
-        const auto row = 1 + 4 * static_cast<std::size_t>(resident[0]);
-        resident[row] = region.begin;
-        resident[row + 1] = region.end;
-        resident[row + 2] = region.backing;
-        resident[row + 3] = (region.writable ? 1U : 0U) | (region.readable ? 0U : 2U);
-        resident[0] += 1;
+        appendVmRegionToResident(resident, region);
     };
-    const auto removeVmRegion = [&](const VmRegion& region) {
-        guestMemory.remove_mapping(region.begin);
-        for (std::size_t index = 0; index < resident[0]; ++index) {
+    const auto removeVmRegionFromResident = [&](std::vector<std::uint64_t>& table,
+                                                 const VmRegion& region) {
+        for (std::size_t index = 0; index < table[0]; ++index) {
             const auto row = 1 + 4 * index;
-            if (resident[row] != region.begin || resident[row + 1] != region.end ||
-                resident[row + 2] != region.backing) continue;
-            const auto last = 1 + 4 * (static_cast<std::size_t>(resident[0]) - 1);
+            if (table[row] != region.begin || table[row + 1] != region.end ||
+                table[row + 2] != region.backing) continue;
+            const auto last = 1 + 4 * (static_cast<std::size_t>(table[0]) - 1);
             for (std::size_t column = 0; column < 4; ++column) {
-                resident[row + column] = resident[last + column];
-                resident[last + column] = 0;
+                table[row + column] = table[last + column];
+                table[last + column] = 0;
             }
-            resident[0] -= 1;
+            table[0] -= 1;
             return;
         }
         throw std::runtime_error("Missing guest VM resident row");
+    };
+    const auto removeVmRegion = [&](const VmRegion& region) {
+        guestMemory.remove_mapping(region.begin);
+        removeVmRegionFromResident(resident, region);
     };
     const auto syncResidentTable = [&]() {
         std::memcpy(residentBuffer.data(), resident.data(), resident.size() * sizeof(std::uint64_t));
@@ -2579,9 +2614,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (currentProtection & 4U) != 0};
         VmAllocation allocation{address, address + size, backing, maximumProtection, {region}};
         try {
-            publishVmRegion(region);
-            vmAllocations.emplace(address, std::move(allocation));
-            replaceDynamicCodeRegions(address, address + size, {region});
+            auto stagedAllocations = vmAllocations;
+            const auto [position, inserted] = stagedAllocations.emplace(
+                address, std::move(allocation));
+            (void)position;
+            if (!inserted) throw std::runtime_error("Duplicate guest VM allocation address");
+            auto stagedResident = resident;
+            appendVmRegionToResident(stagedResident, region);
+            auto stagedCodeRegions = prepareDynamicCodeRegions(address, address + size, {region});
+            guestMemory.replace_mappings({}, {{region.begin, region.end, region.backing,
+                                               region.writable, region.readable}});
+            vmAllocations.swap(stagedAllocations);
+            resident.swap(stagedResident);
+            commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
             mappingHeap.release(*allocated);
             throw;
@@ -2627,16 +2672,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (region.begin < mappedBegin) {
                 replacement.push_back({region.begin, mappedBegin, region.backing,
-                                        region.readable, region.writable});
+                                        region.readable, region.writable, region.executable});
             }
             if (region.end > mappedEnd) {
                 replacement.push_back({mappedEnd, region.end,
                     region.backing + static_cast<std::size_t>(mappedEnd - region.begin),
-                    region.readable, region.writable});
+                    region.readable, region.writable, region.executable});
             }
         }
         if (resident[0] < allocation.regions.size() ||
             resident[0] - allocation.regions.size() + replacement.size() > residentCapacity) {
+            return kernNoSpace;
+        }
+
+        DynamicCodeReplacement stagedCodeRegions;
+        try {
+            stagedCodeRegions = prepareDynamicCodeRegions(
+                allocation.begin, allocation.end, replacement);
+        } catch (...) {
             return kernNoSpace;
         }
 
@@ -2664,6 +2717,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             mappingHeap.release(static_cast<std::int64_t>(allocation.backing));
             vmAllocations.erase(found);
         }
+        commitDynamicCodeRegions(std::move(stagedCodeRegions));
         syncResidentTable();
         return kernSuccess;
     };
@@ -2704,15 +2758,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             covered += middleEnd - middleBegin;
         }
-        if (covered != size || resident[0] - current.regions.size() + replacement.size() > residentCapacity) {
+        if (covered != size || resident[0] < current.regions.size() ||
+            resident[0] - current.regions.size() + replacement.size() > residentCapacity) {
             return kernInvalidAddress;
         }
         const auto oldRegions = current.regions;
-        for (const auto& region : oldRegions) removeVmRegion(region);
-        current.regions = std::move(replacement);
         try {
-            for (const auto& region : current.regions) publishVmRegion(region);
-            replaceDynamicCodeRegions(current.begin, current.end, current.regions);
+            auto stagedResident = resident;
+            std::vector<std::uint64_t> removedBegins;
+            std::vector<GuestMemoryMapping> addedMappings;
+            removedBegins.reserve(oldRegions.size());
+            addedMappings.reserve(replacement.size());
+            for (const auto& region : oldRegions) {
+                removedBegins.push_back(region.begin);
+                removeVmRegionFromResident(stagedResident, region);
+            }
+            for (const auto& region : replacement) {
+                appendVmRegionToResident(stagedResident, region);
+                addedMappings.push_back({region.begin, region.end, region.backing,
+                                         region.writable, region.readable});
+            }
+            auto stagedCodeRegions = prepareDynamicCodeRegions(
+                current.begin, current.end, replacement);
+            guestMemory.replace_mappings(removedBegins, addedMappings);
+            resident.swap(stagedResident);
+            current.regions.swap(replacement);
+            commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
             return kernNoSpace;
         }

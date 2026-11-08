@@ -491,6 +491,36 @@ void GuestMemory::add_mapping(GuestMemoryMapping mapping) {
     mappings_.push_back(mapping);
 }
 
+void GuestMemory::replace_mappings(
+    const std::vector<std::uint64_t>& logicalBegins,
+    const std::vector<GuestMemoryMapping>& replacements) {
+    auto staged = mappings_;
+    for (const auto logicalBegin : logicalBegins) {
+        const auto found = std::find_if(staged.begin(), staged.end(),
+            [logicalBegin](const GuestMemoryMapping& mapping) {
+                return mapping.logicalBegin == logicalBegin;
+            });
+        if (found == staged.end()) {
+            throw std::out_of_range("Guest memory mapping to replace was not found");
+        }
+        staged.erase(found);
+    }
+    for (const auto& mapping : replacements) {
+        if (mapping.logicalBegin >= mapping.logicalEnd || mapping.backingBegin > size_ ||
+            mapping.logicalEnd - mapping.logicalBegin > size_ - mapping.backingBegin) {
+            throw std::invalid_argument("Invalid replacement guest memory mapping");
+        }
+        for (const auto& existing : staged) {
+            if (mapping.logicalBegin < existing.logicalEnd &&
+                existing.logicalBegin < mapping.logicalEnd) {
+                throw std::invalid_argument("Replacement guest memory mapping overlaps");
+            }
+        }
+        staged.push_back(mapping);
+    }
+    mappings_.swap(staged);
+}
+
 void GuestMemory::remove_mapping(std::uint64_t logicalBegin) {
     const auto found = std::find_if(mappings_.begin(), mappings_.end(),
         [&](const GuestMemoryMapping& mapping) {

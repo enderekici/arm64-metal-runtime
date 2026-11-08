@@ -142,6 +142,8 @@ public:
     [[nodiscard]] bool is_readonly(std::uint64_t address, std::uint64_t length) const;
     void rebind(std::uint8_t* bytes, std::size_t size);
     void add_mapping(GuestMemoryMapping mapping);
+    void replace_mappings(const std::vector<std::uint64_t>& logicalBegins,
+                          const std::vector<GuestMemoryMapping>& replacements);
     void remove_mapping(std::uint64_t logicalBegin);
     void set_mapping_permissions(std::uint64_t logicalBegin, bool writable);
     void set_mapping_permissions(std::uint64_t logicalBegin, bool readable, bool writable);
