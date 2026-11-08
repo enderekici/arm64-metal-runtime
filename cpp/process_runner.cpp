@@ -4000,7 +4000,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;
-    bool connectDiagnosticEmitted = false;
     while (true) {
         syncTproThreadAccess();
         if (!applyJitWriteProtection ||
@@ -6368,6 +6367,50 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == SYS_connect) {
+                constexpr std::uint64_t carryMask = 8U;
+                const auto descriptor = static_cast<std::int32_t>(registers[0]);
+                const auto address = registers[1];
+                const auto addressLength = static_cast<std::uint32_t>(registers[2]);
+                std::uint32_t error = 0;
+                if (hostServiceState.openDescriptors.count(descriptor) == 0) {
+                    error = EBADF;
+                } else if (hostServiceState.socketDescriptors.count(descriptor) == 0) {
+                    error = ENOTSOCK;
+                } else if (address == 0 ||
+                    addressLength < offsetof(sockaddr_un, sun_path) ||
+                    addressLength > sizeof(sockaddr_un)) {
+                    error = EINVAL;
+                } else {
+                    try {
+                        const auto* bytes = guestMemory.buffer(address, addressLength);
+                        const auto family = static_cast<unsigned char>(bytes[1]);
+                        if (family != AF_UNIX) {
+                            error = EAFNOSUPPORT;
+                        } else {
+                            const auto pathBytes = static_cast<std::size_t>(addressLength) -
+                                offsetof(sockaddr_un, sun_path);
+                            const auto* path = bytes + offsetof(sockaddr_un, sun_path);
+                            const auto terminator = std::find(path, path + pathBytes, '\0');
+                            const auto pathLength = static_cast<std::size_t>(terminator - path);
+                            if (pathLength == 0) {
+                                error = EINVAL;
+                            } else {
+                                // Guest UNIX sockets have a guest-owned namespace. No bind or
+                                // service endpoint is registered yet, so never forward this
+                                // path to the host or report a synthetic successful connection.
+                                error = ENOENT;
+                            }
+                        }
+                    } catch (const std::out_of_range&) {
+                        error = EFAULT;
+                    }
+                }
+                registers[0] = error;
+                registers[32] |= carryMask;
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == SYS_socket) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto domain = static_cast<int>(static_cast<std::int32_t>(registers[0]));
@@ -8363,52 +8406,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 registers[34] = 0;
                 continue;
-            }
-            if (registers[16] == 98 && progressTrace.enabled() &&
-                !connectDiagnosticEmitted) {
-                connectDiagnosticEmitted = true;
-                const auto address = registers[1];
-                const auto addressLength = registers[2];
-                const auto pathOffset = offsetof(sockaddr_un, sun_path);
-                const auto maximumLength = sizeof(sockaddr_un);
-                const auto logClass = [&](const char* category, unsigned sunLength,
-                                          unsigned family) {
-                    std::cerr << "arm64-metal trace connect-sockaddr pc=0x"
-                              << hexadecimal(registers[33]) << " lr=0x"
-                              << hexadecimal(registers[30]) << " fd=" << registers[0]
-                              << " length=" << addressLength << " sun_len=" << sunLength
-                              << " family=" << family << " path_class=" << category << '\n';
-                };
-                if (addressLength < pathOffset || addressLength > maximumLength ||
-                    address < ExecutableImage::minimum_image_address) {
-                    logClass("invalid-bounds", 0, 0);
-                } else {
-                    try {
-                        const auto* bytes = guestMemory.buffer(address,
-                            static_cast<std::size_t>(addressLength));
-                        const auto sunLength = static_cast<unsigned char>(bytes[0]);
-                        const auto family = static_cast<unsigned char>(bytes[1]);
-                        const auto pathBytes = static_cast<std::size_t>(addressLength) - pathOffset;
-                        const auto* path = bytes + pathOffset;
-                        const auto terminator = std::find(path, path + pathBytes, '\0');
-                        const auto pathLength = static_cast<std::size_t>(terminator - path);
-                        const bool isSyslog =
-                            (pathLength == sizeof("/var/run/syslog") - 1 &&
-                                std::memcmp(path, "/var/run/syslog", pathLength) == 0) ||
-                            (pathLength == sizeof("/private/var/run/syslog") - 1 &&
-                                std::memcmp(path, "/private/var/run/syslog", pathLength) == 0);
-                        const bool isRunDirectory =
-                            (pathLength >= sizeof("/var/run/") - 1 &&
-                                std::memcmp(path, "/var/run/", sizeof("/var/run/") - 1) == 0) ||
-                            (pathLength >= sizeof("/private/var/run/") - 1 &&
-                                std::memcmp(path, "/private/var/run/",
-                                    sizeof("/private/var/run/") - 1) == 0);
-                        logClass(isSyslog ? "syslog" : isRunDirectory ? "var-run" : "opaque",
-                            sunLength, family);
-                    } catch (const std::out_of_range&) {
-                        logClass("unreadable", 0, 0);
-                    }
-                }
             }
             throw std::runtime_error("Guest reached unsupported Darwin syscall 0x" +
                 hexadecimal(registers[16]) + " at PC 0x" + hexadecimal(registers[33]) +
