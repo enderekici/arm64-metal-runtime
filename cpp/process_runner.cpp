@@ -783,6 +783,7 @@ struct DyldApisFacade {
     std::uint64_t object = 0;
     std::uint64_t initializeService = 0;
     std::int64_t publicationCell = 0;
+    bool publicationSeeded = false;
 };
 
 DyldApisFacade initialize_dyld_apis(
@@ -790,6 +791,13 @@ DyldApisFacade initialize_dyld_apis(
     std::map<std::int64_t, std::string>& imports,
     const std::map<std::int64_t, std::int64_t>& guestStubs) {
     if (!image.cache_reader) return {};
+    constexpr std::array<std::uint8_t, 16> supportedCacheUuid{
+        0xc2, 0x84, 0xa2, 0x91, 0xb6, 0x8b, 0x3d, 0x0d,
+        0xa1, 0xa0, 0x3f, 0x86, 0x6f, 0x87, 0xef, 0xdc};
+    if (!std::equal(supportedCacheUuid.begin(), supportedCacheUuid.end(),
+                    image.cache_reader->uuid().begin(), image.cache_reader->uuid().end())) {
+        throw std::runtime_error("Unsupported dyld API ABI for this shared-cache UUID");
+    }
     const auto cell = image.cache_reader->dyldApisCell();
     if (!cell) throw std::runtime_error("Cached libdyld has no __dyld_apis publication cell");
     const auto cellOffset = memory_backing_offset(image,
@@ -851,9 +859,10 @@ DyldApisFacade initialize_dyld_apis(
     const auto initializeModifier = (initializeSlot & addressMask) | 0x8379000000000000ULL;
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, service, 0, initializeModifier));
+    bootstrap.readOnlyRanges.push_back({object, object + reservation});
     if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
     bootstrap.heap.begin += reservation;
-    return {object, service, cell->address};
+    return {object, service, cell->address, cellOffset.has_value()};
 }
 
 void initialize_cached_globals(const ExecutableImage& image,
@@ -1345,6 +1354,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     const auto dyldApis = options.cachedInitializers
         ? initialize_dyld_apis(image, bootstrap, imports, guestStubs)
         : DyldApisFacade{};
+    bool dyldApisPublicationSeeded = dyldApis.publicationSeeded;
+    if (dyldApisPublicationSeeded) {
+        progressTrace.event("dyld-apis-seeded", dyldApis.object,
+                            static_cast<std::uint64_t>(dyldApis.publicationCell));
+    }
     initialize_cached_globals(image, bootstrap);
     GuestTlvRuntime guestTlvRuntime;
     std::set<std::uint64_t> registeredCachedTlvImages;
@@ -2493,6 +2507,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t authenticationDepth = 0;
         std::uint64_t mutationBlock = 0;
         bool tproScope = false;
+        bool dyldBootstrapCallback = false;
         std::vector<std::uint64_t> objcHeaders;
         std::uint64_t callback = 0;
         std::vector<std::array<std::uint64_t, 4>> arguments;
@@ -2983,14 +2998,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         error->second.pending = false;
         return static_cast<std::uint64_t>(error->second.allocation);
     };
-    bool writableTproCallbackSeen = false;
-    bool dyldLocksReady = false;
+    bool writableTproCallbackCompleted = false;
     bool dyldRuntimeInitialized = false;
     const auto initializeDyldRuntimeState = [&]() {
-        if (!dyldApis.object || !writableTproCallbackSeen || dyldRuntimeInitialized) {
+        if (!dyldApis.object || !writableTproCallbackCompleted || dyldRuntimeInitialized) {
             throw std::runtime_error("Invalid _libdyld_initialize lifecycle order");
         }
-        dyldLocksReady = true;
+        // Native helper installation maps to the runner's existing pthread
+        // mutex host services backed by GuestScheduler.
+        std::uint64_t initializedDescriptors = 0;
         const GuestTlvRuntime::Allocate allocateTlv =
             [&](std::uint64_t size, std::uint64_t alignment)
             -> std::optional<std::uint64_t> {
@@ -3017,10 +3033,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (key != expectedKey || offset >= templateSize) {
                 throw std::runtime_error("Invalid initial-image TLV descriptor");
             }
+            if (key >= GuestTlvRuntime::guestTsdSlotCount) {
+                throw std::runtime_error("Initial-image TLV key exceeds guest TSD capacity");
+            }
             const auto storage = guestTlvRuntime.resolve(
                 bootstrap.mainThreadSpecificData, key, offset, allocateTlv,
                 guestTlvRelease, guestTlvRead, guestTlvWrite);
             if (!storage) throw std::runtime_error("Unable to initialize initial-image TLV");
+            std::uint64_t published = 0;
+            const auto* slot = guestMemory.buffer(
+                bootstrap.mainThreadSpecificData +
+                    static_cast<std::uint64_t>(key) * sizeof(published), sizeof(published));
+            std::memcpy(&published, slot, sizeof(published));
+            if (published != *storage) {
+                throw std::runtime_error("Initial-image TLV key was not published to guest TSD");
+            }
+            ++initializedDescriptors;
         };
         for (const auto& owner : guestTlvDescriptors) {
             for (auto address = owner.begin; address < owner.end; address += 24) {
@@ -3086,6 +3114,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         dlerrorByThread.try_emplace(guestScheduler.current_id());
         dyldRuntimeInitialized = true;
+        return initializedDescriptors;
     };
     std::unordered_map<std::string, std::uint64_t> stableGuestStrings;
     const auto stableGuestString = [&](const std::string& value)
@@ -3206,8 +3235,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         };
         if (dyldApis.publicationCell != 0) {
+            const bool cellInPlan =
+                dyldApis.publicationCell >= plan->logical_start &&
+                static_cast<std::uint64_t>(dyldApis.publicationCell -
+                    plan->logical_start) <=
+                    static_cast<std::uint64_t>(plan->logical_end - plan->logical_start) &&
+                sizeof(std::uint64_t) <= static_cast<std::uint64_t>(
+                    plan->logical_end - dyldApis.publicationCell);
             patchWord(static_cast<std::uint64_t>(dyldApis.publicationCell),
                       dyldApis.object, sizeof(std::uint64_t));
+            if (cellInPlan && !dyldApisPublicationSeeded) {
+                dyldApisPublicationSeeded = true;
+                progressTrace.event("dyld-apis-seeded", dyldApis.object,
+                    static_cast<std::uint64_t>(dyldApis.publicationCell));
+            }
         }
         if (image.cached_task_port) patchWord(*image.cached_task_port, guestMachTaskPort, 4);
         if (const auto locale = image.cache_reader->localeKeyAddress()) patchWord(*locale, 10, 8);
@@ -4646,6 +4687,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                  callbackFrames.back().exitThread == guestScheduler.current_id())) {
                 auto frame = std::move(callbackFrames.back());
                 callbackFrames.pop_back();
+                if (frame.dyldBootstrapCallback) {
+                    writableTproCallbackCompleted = true;
+                    progressTrace.event("dyld-tpro-callback-return", frame.callback,
+                                        frame.savedRegisters.size() > 33
+                                            ? frame.savedRegisters[33] : 0);
+                }
                 if (registers[37] != frame.authenticationDepth) {
                     throw std::runtime_error("Guest image callback left authentication stack unbalanced");
                 }
@@ -4848,6 +4895,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (service == 178) {
                 const bool cxxMethod = dyldApis.object != 0 &&
                     hostRegisters[0] == dyldApis.object;
+                if (cxxMethod && !dyldApisPublicationSeeded) {
+                    throw std::runtime_error("dyld API object reached before gAPIs publication");
+                }
                 if (startupIndex >= writableTproStartupTargets) {
                     std::fputs("dyld: Illegal TPRO memory access\n", stderr);
                     std::abort();
@@ -4876,9 +4926,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                 hostRegisters.begin() + guestTokenCount);
                 frame.authenticationDepth = hostRegisters[37];
                 frame.tproScope = true;
+                frame.dyldBootstrapCallback = cxxMethod;
+                frame.callback = callback;
                 callbackFrames.push_back(std::move(frame));
-                if (cxxMethod) writableTproCallbackSeen = true;
                 syncTproThreadAccess();
+                if (cxxMethod) {
+                    progressTrace.event("dyld-tpro-callback-enter", callback,
+                                        hostRegisters[2]);
+                }
                 auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
                 callbackRegisters[0] = hostRegisters[cxxMethod ? 2U : 1U];
                 callbackRegisters[30] = kNoFault;
@@ -4892,10 +4947,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     throw std::runtime_error(
                         "_libdyld_initialize dispatch did not use the published guest dyld API object");
                 }
-                initializeDyldRuntimeState();
-                if (!dyldLocksReady || !dyldRuntimeInitialized) {
+                progressTrace.event("dyld-libdyld-initialize", hostRegisters[33],
+                                    dyldApis.object);
+                const auto initializedDescriptors = initializeDyldRuntimeState();
+                if (!dyldRuntimeInitialized) {
                     throw std::runtime_error("libdyld loader state is not initialized");
                 }
+                progressTrace.event("dyld-runtime-ready", dyldApis.object,
+                                    initializedDescriptors);
                 registers[0] = 0;
                 continue;
             }
