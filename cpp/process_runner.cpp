@@ -36,6 +36,9 @@
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <mach/mach.h>
+#include <mach/host_info.h>
+#include <mach/mach_host.h>
+#include <mach/ndr.h>
 #include <tuple>
 #include <thread>
 #include <tuple>
@@ -5317,6 +5320,101 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
+                if (messageId == 200) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    if (remote != guestMachHostPort) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        (registers[5] >> 32) != reply ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        throw std::runtime_error("Unsupported guest host_info message shape");
+                    }
+                    if ((registers[2] >> 32) != 40 || registers[6] < 36) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto* request = guestMemory.buffer(registers[0], 40);
+                    std::uint32_t flavor = 0;
+                    std::uint32_t inputCount = 0;
+                    std::memcpy(&flavor, request + 32, sizeof(flavor));
+                    std::memcpy(&inputCount, request + 36, sizeof(inputCount));
+
+                    struct HostInfoErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct HostInfoReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                        mach_msg_type_number_t count;
+                        integer_t info[68];
+                    };
+                    static_assert(sizeof(HostInfoErrorReply) == 36);
+                    static_assert(offsetof(HostInfoReply, info) == 40);
+
+                    const auto prepareHeader = [reply](mach_msg_header_t& header,
+                                                       std::uint32_t size) {
+                        header.msgh_bits = 0x1200;
+                        header.msgh_size = size;
+                        header.msgh_remote_port = MACH_PORT_NULL;
+                        header.msgh_local_port = reply;
+                        header.msgh_voucher_port = MACH_PORT_NULL;
+                        header.msgh_id = 300;
+                    };
+                    HostInfoReply response{};
+                    prepareHeader(response.header, sizeof(HostInfoErrorReply));
+                    response.ndr = NDR_record;
+                    response.returnCode = KERN_INVALID_ARGUMENT;
+                    if (inputCount <= std::size(response.info)) {
+                        mach_msg_type_number_t outputCount = inputCount;
+                        const auto nativeHost = mach_host_self();
+                        response.returnCode = host_info(
+                            nativeHost, static_cast<host_flavor_t>(flavor),
+                            response.info, &outputCount);
+                        (void)mach_port_deallocate(mach_task_self(), nativeHost);
+                        if (response.returnCode == KERN_SUCCESS) {
+                            const auto responseSize = offsetof(HostInfoReply, info) +
+                                static_cast<std::size_t>(outputCount) * sizeof(integer_t);
+                            if (outputCount > std::size(response.info) ||
+                                responseSize > registers[6] ||
+                                responseSize > std::numeric_limits<std::uint32_t>::max()) {
+                                registers[0] = machSendInvalidData;
+                                registers[34] = 0;
+                                continue;
+                            }
+                            response.count = outputCount;
+                            prepareHeader(response.header,
+                                          static_cast<std::uint32_t>(responseSize));
+                            std::memcpy(guestMemory.buffer(registers[0], responseSize, true),
+                                        &response, responseSize);
+                        } else {
+                            std::memcpy(guestMemory.buffer(registers[0],
+                                            sizeof(HostInfoErrorReply), true),
+                                        &response, sizeof(HostInfoErrorReply));
+                        }
+                    } else {
+                        response.returnCode = KERN_FAILURE;
+                        std::memcpy(guestMemory.buffer(registers[0],
+                                        sizeof(HostInfoErrorReply), true),
+                                    &response, sizeof(HostInfoErrorReply));
+                    }
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (registers[1] != 0x2'0000'0003ULL ||
                     static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
                     static_cast<std::uint32_t>(registers[3]) != guestMachTaskPort ||
@@ -5325,6 +5423,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[5] != (static_cast<std::uint64_t>(reply) << 32) ||
                     registers[6] < 44 || registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                     registers[7] != 0 || guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                    if (progressTrace.enabled()) {
+                        const auto remote = static_cast<std::uint32_t>(registers[3]);
+                        const char* destinationRole = remote == 0 ? "null"
+                            : remote == guestMachTaskPort ? "guest-task"
+                            : remote == guestMachHostPort ? "guest-host"
+                            : guestReceiveRights.find(remote) != guestReceiveRights.end()
+                                  ? "guest-receive-right" : "unknown";
+                        std::cerr << "arm64-metal trace mach-msg2-reject"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " id=" << static_cast<std::uint32_t>(registers[4] >> 32)
+                                  << " remote=0x" << hexadecimal(remote)
+                                  << " remote-role=" << destinationRole
+                                  << " local=0x" << hexadecimal(registers[3] >> 32)
+                                  << " options=0x" << hexadecimal(registers[1])
+                                  << " bits=0x" << hexadecimal(
+                                         static_cast<std::uint32_t>(registers[2]))
+                                  << " send-size=" << (registers[2] >> 32)
+                                  << " voucher=0x" << hexadecimal(
+                                         static_cast<std::uint32_t>(registers[4]))
+                                  << " descriptors=" << static_cast<std::uint32_t>(registers[5])
+                                  << " receive-name=0x" << hexadecimal(registers[5] >> 32)
+                                  << " receive-size=" << static_cast<std::uint32_t>(registers[6])
+                                  << " priority=" << (registers[6] >> 32)
+                                  << " timeout=" << registers[7];
+                        std::cerr << '\n';
+                    }
                     throw std::runtime_error("Unsupported guest Mach message");
                 }
                 const auto sendSize = registers[2] >> 32;

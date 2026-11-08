@@ -53,6 +53,7 @@ xcrun clang -Wall -Wextra -Werror "$src/cache-provider-main.c" -o "$out/cache-pr
 xcrun clang -Wall -Wextra -Werror "$src/kdebug-typefilter.c" -o "$out/kdebug-typefilter"
 xcrun clang -Wall -Wextra -Werror "$src/dyld-interposition.c" -o "$out/dyld-interposition"
 xcrun clang -Wall -Wextra -Werror "$src/mach-reply-port.c" -o "$out/mach-reply-port"
+xcrun clang -Wall -Wextra -Werror "$src/mach-host-info.c" -o "$out/mach-host-info"
 xcrun clang -Wall -Wextra -Werror "$src/mach-self-pid.c" -o "$out/mach-self-pid"
 xcrun clang -Wall -Wextra -Werror "$src/commpage-page-shift.c" -o "$out/commpage-page-shift"
 xcrun clang -Wall -Wextra -Werror "$src/mach-vm-partial-deallocate.c" \
@@ -65,6 +66,7 @@ xcrun clang -Wall -Wextra -Werror -I "$JDK_HOME/include" -I "$JDK_HOME/include/d
 "$out/kdebug-typefilter"
 "$out/dyld-interposition"
 "$out/mach-reply-port"
+"$out/mach-host-info"
 "$out/mach-self-pid"
 "$out/commpage-page-shift"
 "$out/mach-vm-partial-deallocate"
