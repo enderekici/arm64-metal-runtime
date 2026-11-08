@@ -198,11 +198,8 @@ void decode_reachable(const ExecutableImage& image,
                        pc >= SharedCache::guestBase && image.is_code(pc)) {
                 instruction = decode_process(image.instruction(pc), pc, imports, guestStubs, true);
                 auto host = hostCall(import->second, std::nullopt, true);
-                const auto lower = guestMappingBase + image.cache_backing_end();
-                const auto upper = guestMappingBase + image.mapping_backing_end();
                 host.code.insert(host.code.begin(),
-                    "if (x[0] < " + std::to_string(lower) + "ul || x[0] >= " +
-                    std::to_string(upper) + "ul) {");
+                    "if (x[0] < " + std::to_string(SharedCache::guestBase) + "ul) {");
                 host.code.push_back("}");
                 instruction.code.insert(instruction.code.begin(), host.code.begin(), host.code.end());
             } else if (import != imports.end()) {

@@ -3,6 +3,7 @@
 #include "guest_strings.hpp"
 #include "guest_vector_crypto.hpp"
 #include "process_host.hpp"
+#include "shared_cache.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -402,7 +403,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto usesGuestAllocator =
         (imports.count(target) &&
          imports.at(target) == (std::string("_malloc_size"))) &&
-        (target >= (1LL << 32) && target < (1LL << 44));
+        (target >= SharedCache::guestBase && target < SharedCache::guestLimit);
     if (imports.count(target) && !usesGuestAllocator) {
       auto name = imports.at(target);
       return hostCall(

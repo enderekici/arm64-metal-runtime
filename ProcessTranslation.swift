@@ -1226,12 +1226,10 @@ struct ProcessTranslation {
                 var instruction = try decodeProcess(word, pc: pc, imports: image.imports, guestStubs: image.guestStubs,
                                                     cached: true)
                 if usesGuestAllocator {
-                    // The guest's libmalloc owns objects allocated inside guest VM mappings.
+                    // Guest cached libmalloc owns sparse VM pointers in its address domain.
                     let host = try hostCall("_malloc_size", returnAddress: nil, cached: true)
-                    let vmStart = guestMappingBase + image.cacheBackingEnd
-                    let vmEnd = guestMappingBase + image.mappingBackingEnd
-                    let outsideVM = "if (x[0] < \(vmStart)ul || x[0] >= \(vmEnd)ul) {"
-                    instruction = Instruction(code: [outsideVM] + host.code + ["}"] + instruction.code,
+                    let outsideGuestAddressDomain = "if (x[0] < \(SharedCache.guestBase)ul) {"
+                    instruction = Instruction(code: [outsideGuestAddressDomain] + host.code + ["}"] + instruction.code,
                                               next: instruction.next)
                 }
                 instructions[pc] = checkpoint(instruction, at: pc)
