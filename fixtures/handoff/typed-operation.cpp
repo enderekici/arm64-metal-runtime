@@ -17,6 +17,30 @@ using arm64metal::translate_core::decode_operation;
 using arm64metal::translate_core::make_operation_instruction;
 using arm64metal::translate_core::serialize_operation;
 
+static std::uint64_t native_ubfm_wrap(std::uint64_t source) {
+  std::uint64_t result;
+  asm volatile("ubfm %0, %1, #60, #7" : "=r"(result) : "r"(source));
+  return result;
+}
+
+static std::uint64_t native_sbfm_wrap(std::uint64_t source) {
+  std::uint64_t result;
+  asm volatile("sbfm %0, %1, #60, #7" : "=r"(result) : "r"(source));
+  return result;
+}
+
+static std::uint64_t native_bfm_wrap(std::uint64_t destination,
+                                     std::uint64_t source) {
+  asm volatile("bfm %0, %1, #60, #7" : "+r"(destination) : "r"(source));
+  return destination;
+}
+
+static std::uint64_t native_ubfm_word(std::uint32_t source) {
+  std::uint64_t result;
+  asm volatile("ubfm %w0, %w1, #28, #7" : "=r"(result) : "r"(source));
+  return result;
+}
+
 static std::pair<std::uint64_t, std::uint32_t> native_add_sub_carry(
     bool subtract, bool setFlags, std::uint64_t lhs, std::uint64_t rhs,
     std::uint32_t flags, std::uint32_t width) {
@@ -95,6 +119,52 @@ static std::pair<std::uint64_t, std::uint32_t> native_alias_add_sub_carry(
 }
 
 int main() {
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t variant = 0; variant < 3; ++variant) {
+      for (const auto [rotation, end] :
+           {std::pair{0U, 0U}, std::pair{0U, width - 1U},
+            std::pair{width - 1U, 0U}, std::pair{4U, 11U},
+            std::pair{width - 4U, 7U}}) {
+        const auto base = variant == 0 ? 0x53000000U
+            : variant == 1 ? 0x33000000U : 0x13000000U;
+        const auto bits = base | (width == 64 ? 0x80400000U : 0U) |
+                          (rotation << 16U) | (end << 10U) | (3U << 5U) | 2U;
+        const auto operation = decode_operation(bits);
+        const auto packed = (variant << 6U) | end;
+        assert(operation.has_value() && operation->opcode == Opcode::Bitfield &&
+               operation->destination == 2 && operation->source == 3 &&
+               operation->immediate == rotation && operation->shift == packed &&
+               operation->width == width);
+        assert((serialize_operation(*operation) ==
+                arm64metal::translate_core::OperationPacket{
+                    33, 2, 3, rotation, packed, width}));
+        const auto lowered = make_operation_instruction(
+            *operation, {0x1004}, LoweringMode::Process,
+            std::uint64_t{1} << 48);
+        assert(lowered.code.size() == 1 &&
+               lowered.code.front().find("bitfield_apply(") !=
+                   std::string::npos);
+      }
+    }
+  }
+  assert(!decode_operation(0x13401c20U).has_value());  // W N mismatch.
+  assert(!decode_operation(0x53201c20U).has_value());  // W rotation out of range.
+  assert(!decode_operation(0x53008020U).has_value());  // W end out of range.
+  const std::uint64_t bitfieldSource = 0x8123456789abcdefULL;
+  const auto nativeUbfm = native_ubfm_wrap(bitfieldSource);
+  const auto nativeSbfm = native_sbfm_wrap(bitfieldSource);
+  const auto nativeBfm = native_bfm_wrap(0x123, bitfieldSource);
+  assert(nativeUbfm == arm64metal::bitfield_apply(
+                           0, 0, bitfieldSource, 60, 7, 64));
+  assert(nativeSbfm == arm64metal::bitfield_apply(
+                           2, 0, bitfieldSource, 60, 7, 64));
+  assert(nativeBfm == arm64metal::bitfield_apply(
+                          1, 0x123, bitfieldSource, 60, 7, 64));
+  assert(nativeSbfm == 0xfffffffffffffef0ULL);
+  assert(native_ubfm_word(0x89abcdefU) ==
+         arm64metal::bitfield_apply(0, 0, 0x89abcdefU, 28, 7, 32));
+  assert(native_ubfm_word(0x89abcdefU) == 0xef0U);
+
   for (const std::uint32_t width : {32U, 64U}) {
     for (std::uint32_t subtract = 0; subtract < 2; ++subtract) {
       for (std::uint32_t setFlags = 0; setFlags < 2; ++setFlags) {
@@ -373,8 +443,9 @@ int main() {
   assert(logicalMsl.find("width, 0u, previousFlags); }\n"
                          "inline ulong multiply_accumulate_apply") !=
          std::string_view::npos);
-  assert(logicalMsl.find("base + product) & mask; }\n"
-                         "inline bool arm64_condition_holds") !=
+  assert(logicalMsl.find("inline ulong bitfield_apply(uint variant") !=
+         std::string_view::npos);
+  assert(logicalMsl.find("inline bool arm64_condition_holds") !=
          std::string_view::npos);
   assert(logicalMsl.find("};\\ninline LogicalShiftedResult") ==
          std::string_view::npos);

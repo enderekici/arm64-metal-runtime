@@ -230,6 +230,28 @@ inline ulong multiply_accumulate_apply(
         : (accumulator & mask) + product;
     return result & mask;
 }
+inline ulong bitfield_apply(uint variant, ulong destination, ulong source,
+                            uint rotation, uint end, uint width) {
+    const ulong valueMask = width == 32u ? 0xfffffffful : ~0ul;
+    const uint count = end >= rotation ? end - rotation + 1u : end + 1u;
+    const uint position = end >= rotation ? 0u : width - rotation;
+    const ulong lowMask = count == 64u ? ~0ul : ((1ul << count) - 1ul);
+    ulong extracted = end >= rotation
+        ? ((source >> rotation) & lowMask)
+        : ((source & lowMask) << position);
+    const ulong fieldMask = (lowMask << position) & valueMask;
+    if (variant == 2u &&
+        ((extracted >> (position + count - 1u)) & 1ul) != 0ul) {
+        const uint fieldEnd = position + count;
+        const ulong extensionMask = fieldEnd == 64u ? 0ul
+            : valueMask & ~((1ul << fieldEnd) - 1ul);
+        extracted |= extensionMask;
+    }
+    if (variant == 1u) {
+        return ((destination & ~fieldMask) | extracted) & valueMask;
+    }
+    return extracted & valueMask;
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -366,6 +388,31 @@ inline constexpr std::uint64_t multiply_accumulate_apply(
                                      : (accumulator & mask) + product;
   return result & mask;
 }
+inline constexpr std::uint64_t bitfield_apply(
+    std::uint32_t variant, std::uint64_t destination, std::uint64_t source,
+    std::uint32_t rotation, std::uint32_t end, std::uint32_t width) {
+  const auto valueMask = width == 32U ? std::uint64_t{0xffffffffU}
+                                      : ~std::uint64_t{0};
+  const auto count = end >= rotation ? end - rotation + 1U : end + 1U;
+  const auto position = end >= rotation ? 0U : width - rotation;
+  const auto lowMask = count == 64U ? ~std::uint64_t{0}
+                                    : ((std::uint64_t{1} << count) - 1U);
+  auto extracted = end >= rotation
+      ? ((source >> rotation) & lowMask)
+      : ((source & lowMask) << position);
+  const auto fieldMask = (lowMask << position) & valueMask;
+  if (variant == 2U &&
+      ((extracted >> (position + count - 1U)) & 1U) != 0U) {
+    const auto fieldEnd = position + count;
+    const auto extensionMask = fieldEnd == 64U ? 0U
+        : valueMask & ~((std::uint64_t{1} << fieldEnd) - 1U);
+    extracted |= extensionMask;
+  }
+  if (variant == 1U) {
+    return ((destination & ~fieldMask) | extracted) & valueMask;
+  }
+  return extracted & valueMask;
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -501,6 +548,19 @@ inline constexpr char typed_integer_msl_source[] =
     "? 0xfffffffful : ~0ul; ulong product = (lhs & mask) * (rhs & mask); "
     "ulong base = accumulator & mask; return (subtract != 0u ? "
     "base - product : base + product) & mask; }\n"
+    "inline ulong bitfield_apply(uint variant, ulong destination, ulong source, "
+    "uint rotation, uint end, uint width) { ulong valueMask = width == 32u "
+    "? 0xfffffffful : ~0ul; uint count = end >= rotation ? end - rotation + 1u "
+    ": end + 1u; uint position = end >= rotation ? 0u : width - rotation; "
+    "ulong lowMask = count == 64u ? ~0ul : ((1ul << count) - 1ul); "
+    "ulong extracted = end >= rotation ? ((source >> rotation) & lowMask) "
+    ": ((source & lowMask) << position); ulong fieldMask = (lowMask << position) "
+    "& valueMask; if (variant == 2u && ((extracted >> (position + count - 1u)) "
+    "& 1ul) != 0ul) { uint fieldEnd = position + count; ulong extensionMask "
+    "= fieldEnd == 64u ? 0ul : valueMask & ~((1ul << fieldEnd) - 1ul); "
+    "extracted |= extensionMask; } if (variant == 1u) "
+    "return ((destination & ~fieldMask) | extracted) & valueMask; "
+    "return extracted & valueMask; }\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

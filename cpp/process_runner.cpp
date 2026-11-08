@@ -454,6 +454,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::LogicalVariableShiftRegister;
             const bool multiplyAccumulateOpcode =
                 opcode == translate_core::Opcode::IntegerMultiplyAccumulate;
+            const bool bitfieldOpcode =
+                opcode == translate_core::Opcode::Bitfield;
             const bool conditionalSelectOpcode =
                 opcode == translate_core::Opcode::ConditionalSelect;
             const bool adrOpcode = opcode == translate_core::Opcode::Adr;
@@ -573,6 +575,15 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 31 && operation.shift <= 63 &&
                  (operation.width == 32 || operation.width == 64));
+            const auto bitfieldVariant = operation.shift >> 6U;
+            const auto bitfieldEnd = operation.shift & 63U;
+            const bool validBitfield =
+                !bitfieldOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.width == 32 || operation.width == 64) &&
+                 operation.immediate < operation.width &&
+                 bitfieldEnd < operation.width && bitfieldVariant <= 2U &&
+                 (operation.shift & ~0xffU) == 0);
             const bool validAdr =
                 !adrOpcode ||
                 (operation.destination <= 31 && operation.source <= 1 &&
@@ -583,7 +594,7 @@ ProcessKernelPlan plan_process_kernel(
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
                  !logicalShiftedRegisterOpcode && !logicalImmediateOpcode &&
                  !logicalVariableShiftOpcode && !multiplyAccumulateOpcode &&
-                 !adrOpcode) ||
+                 !bitfieldOpcode && !adrOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -592,7 +603,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validAddSubCarryRegister ||
                 !validLogicalShiftedRegister || !validLogicalImmediate ||
                 !validLogicalVariableShift || !validMultiplyAccumulate ||
-                !validAdr ||
+                !validBitfield || !validAdr ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

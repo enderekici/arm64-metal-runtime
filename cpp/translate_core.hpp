@@ -43,6 +43,7 @@ enum class Opcode : std::uint32_t {
   LogicalVariableShiftRegister = 29,
   BranchRegister = 30,
   IntegerMultiplyAccumulate = 31,
+  Bitfield = 33,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -98,6 +99,10 @@ enum class Opcode : std::uint32_t {
 // Integer multiply-accumulate uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(subtract << 5) | Ra, and width=32 or 64. Register 31 is ZR for all
 // operands; Ra=31 gives MUL/MNEG aliases.
+// UBFM/BFM/SBFM use destination=Rd, source=Rn, immediate=immr,
+// shift=(variant << 6) | imms (0=unsigned, 1=merge, 2=signed), and width
+// 32 or 64. Register 31 is ZR; BFM reads the prior destination as its merge
+// value.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
