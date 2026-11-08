@@ -2071,6 +2071,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return name;
     };
+    std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
+    std::uint32_t nextGuestThreadPortName = 0x40000003U;
     struct RestartableRange { std::uint64_t begin; std::uint64_t end; std::uint64_t recovery; };
     std::vector<RestartableRange> restartableRanges;
     struct GuestCallbackFrame {

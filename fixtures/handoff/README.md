@@ -103,6 +103,14 @@ right/name cases. It uses `MACH64_SEND_ANY` on raw sends, matching the generic
 send classification selected by libSystem. Native normalized output is
 `task=1 allocate=1 insert=1 invalid_destination=1 send=1 receive=1 payload=1 timeout=268451843 receive_only_send=268435459 invalid_receive=268451842`.
 
+`mach-self-pid.c` also exercises raw `thread_self_trap` (`-27`) from the main
+thread and a pthread worker. It checks stable names within each thread,
+distinct names across threads, and releases both acquired references for each
+name with raw `mach_port_deallocate` (`-18`). Native normalized output begins
+`thread_reused=1 thread_nonnull=1 worker_valid=1 thread_distinct=1 thread_cleanup=1`.
+Run the guest fixture with shared-cache and demand-cache enabled, leaving cache
+bootstrap and initializer flags unset so execution enters the fixture directly.
+
 ## Bootstrap service lookup boundary
 
 `bootstrap-lookup-native.c` is a native, headless oracle for the allowed
