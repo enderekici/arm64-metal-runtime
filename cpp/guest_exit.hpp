@@ -13,7 +13,10 @@ enum class GuestExitHandlerKind { Standard, Cxa };
 struct GuestExitHandler {
     std::uint64_t target = 0;
     std::uint64_t argument = 0;
+    // The token passed to __cxa_finalize remains opaque and is not necessarily
+    // the Mach-O header used by dyld image ownership.
     std::uint64_t dso = 0;
+    std::uint64_t owner_image = 0;
     GuestExitHandlerKind kind = GuestExitHandlerKind::Standard;
 };
 
@@ -44,6 +47,18 @@ public:
     [[nodiscard]] std::optional<GuestExitHandler> take_next(std::uint64_t dso = 0) {
         for (std::size_t i = handlers_.size(); i != 0; --i) {
             if (dso != 0 && handlers_[i - 1].dso != dso) continue;
+            const auto handler = handlers_[i - 1];
+            handlers_.erase(handlers_.begin() + static_cast<std::ptrdiff_t>(i - 1));
+            return handler;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<GuestExitHandler> take_next_for_image(
+        std::uint64_t imageHeader) {
+        if (imageHeader == 0) return std::nullopt;
+        for (std::size_t i = handlers_.size(); i != 0; --i) {
+            if (handlers_[i - 1].owner_image != imageHeader) continue;
             const auto handler = handlers_[i - 1];
             handlers_.erase(handlers_.begin() + static_cast<std::ptrdiff_t>(i - 1));
             return handler;

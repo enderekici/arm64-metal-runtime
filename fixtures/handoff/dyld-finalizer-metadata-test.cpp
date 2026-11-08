@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 
 #include <cstdio>
+#include <cstdint>
 #include <exception>
 
 int main(int argc, char** argv) {
@@ -33,6 +34,13 @@ int main(int argc, char** argv) {
 
     void* handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) return 5;
+    auto rawFinalizer = dlsym(handle, "dyld_raw_mod_term");
+    Dl_info rawFinalizerInfo{};
+    if (rawFinalizer == nullptr || dladdr(rawFinalizer, &rawFinalizerInfo) == 0 ||
+        image.finalizers[0] != reinterpret_cast<std::uintptr_t>(rawFinalizer) -
+                                  reinterpret_cast<std::uintptr_t>(rawFinalizerInfo.dli_fbase)) {
+      return 10;
+    }
     auto value = reinterpret_cast<int (*)()>(dlsym(handle, "dyld_finalizer_fixture_value"));
     if (value == nullptr || value() != 42) return 6;
     if (dlclose(handle) != 0) return 7;

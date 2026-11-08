@@ -72,6 +72,7 @@ class GuestImageHandles {
       throw std::overflow_error("Guest dlopen reference count overflow");
     }
     ++references;
+    if ((mode & RTLD_NODELETE) != 0) nodelete_headers_.insert(header);
     closed_handles_.erase(handle);
     return handle;
   }
@@ -102,6 +103,19 @@ class GuestImageHandles {
   std::uint64_t reference_count(std::uint64_t handle) const noexcept {
     const auto found = references_.find(handle);
     return found == references_.end() ? 0 : found->second;
+  }
+
+  bool has_open_reference_for_image(std::uint64_t header) const noexcept {
+    constexpr std::uint64_t handleFlag = std::uint64_t{1} << 63U;
+    for (const auto& [handle, references] : references_) {
+      const auto handleHeader = handle & ~handleFlag & ~std::uint64_t{1};
+      if (handleHeader == header && references != 0) return true;
+    }
+    return false;
+  }
+
+  bool nodelete(std::uint64_t header) const noexcept {
+    return nodelete_headers_.find(header) != nodelete_headers_.end();
   }
 
   std::optional<std::uint64_t> loaded_header(std::uint64_t handle) const noexcept {
@@ -174,6 +188,7 @@ class GuestImageHandles {
   std::filesystem::path executable_directory_;
   std::unordered_map<std::uint64_t, std::uint64_t> references_;
   std::unordered_set<std::uint64_t> closed_handles_;
+  std::unordered_set<std::uint64_t> nodelete_headers_;
 };
 
 }  // namespace arm64metal

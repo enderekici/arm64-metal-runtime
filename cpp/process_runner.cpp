@@ -3059,11 +3059,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t nextImageNotification = 0;
         std::optional<std::uint64_t> stopAddress;
         std::optional<std::uint64_t> exitDso;
+        std::vector<std::uint64_t> exitImages;
+        std::size_t nextExitImage = 0;
+        std::optional<std::uint64_t> currentExitImage;
         std::optional<std::int32_t> exitStatus;
         std::uint64_t exitThread = 0;
     };
     std::unordered_map<std::uint64_t, std::vector<GuestCallbackFrame>> callbackFramesByThread;
     GuestExitRegistry exitRegistry;
+    std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> dynamicImageGroups;
+    std::unordered_map<std::uint64_t, std::size_t> dynamicImageOwners;
+    std::set<std::uint64_t> finalizedDynamicImages;
     std::set<std::pair<std::int64_t, std::int64_t>> cachedReadWindows;
     auto ensureTokenCapacity = [&](std::size_t additional) {
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
@@ -5838,6 +5844,58 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return std::nullopt;
     };
+    const auto dynamicImageClosure = [&](std::uint64_t root) {
+        std::vector<std::uint64_t> closure;
+        std::set<std::uint64_t> visited;
+        std::function<void(std::uint64_t)> visit;
+        visit = [&](std::uint64_t header) {
+            if (header == 0 || !visited.insert(header).second) return;
+            const auto record = std::find_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                });
+            if (record == image.loaded_image_graph.end()) return;
+            for (const auto& dependency : record->dependencies) {
+                if (dependency.resolved_header) visit(*dependency.resolved_header);
+            }
+            if (record->dynamic_unload_candidate) closure.push_back(header);
+        };
+        visit(root);
+        std::reverse(closure.begin(), closure.end());
+        return closure;
+    };
+    const auto ensureDynamicImageGroup = [&](std::uint64_t root) {
+        if (dynamicImageGroups.find(root) != dynamicImageGroups.end()) return;
+        auto closure = dynamicImageClosure(root);
+        if (closure.empty() || closure.front() != root) return;
+        for (const auto header : closure) ++dynamicImageOwners[header];
+        dynamicImageGroups.emplace(root, std::move(closure));
+    };
+    const auto releaseDynamicImageGroup = [&](std::uint64_t root) {
+        std::vector<std::uint64_t> finalizable;
+        const auto group = dynamicImageGroups.find(root);
+        if (group == dynamicImageGroups.end()) return finalizable;
+        if (imageHandles.nodelete(root)) return finalizable;
+        for (const auto header : group->second) {
+            const auto owners = dynamicImageOwners.find(header);
+            if (owners == dynamicImageOwners.end() || owners->second == 0)
+                throw std::logic_error("Dynamic image ownership is inconsistent");
+            if (--owners->second != 0) continue;
+            dynamicImageOwners.erase(owners);
+            const auto record = std::find_if(image.loaded_image_graph.begin(),
+                image.loaded_image_graph.end(), [header](const auto& item) {
+                    return item.guest_header == header;
+                });
+            if (record != image.loaded_image_graph.end() &&
+                record->dynamic_unload_candidate && !imageHandles.nodelete(header) &&
+                !imageHandles.has_open_reference_for_image(header) &&
+                finalizedDynamicImages.find(header) == finalizedDynamicImages.end()) {
+                finalizable.push_back(header);
+            }
+        }
+        dynamicImageGroups.erase(group);
+        return finalizable;
+    };
     const auto beginExitDrain = [&](std::uint64_t dso,
                                     std::optional<std::int32_t> exitStatus) {
         const auto handler = exitRegistry.take_next(dso);
@@ -5857,6 +5915,53 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         live[33] = handler->target;
         selectKernel(static_cast<std::int64_t>(handler->target));
         return true;
+    };
+    const auto scheduleNextImageExitHandler = [&](GuestCallbackFrame& frame) {
+        while (frame.nextExitImage < frame.exitImages.size()) {
+            const auto header = frame.exitImages[frame.nextExitImage];
+            const bool continuingCurrentImage = frame.currentExitImage &&
+                *frame.currentExitImage == header;
+            if (!continuingCurrentImage) {
+                const auto owners = dynamicImageOwners.find(header);
+                if ((owners != dynamicImageOwners.end() && owners->second != 0) ||
+                    imageHandles.nodelete(header) ||
+                    imageHandles.has_open_reference_for_image(header)) {
+                    ++frame.nextExitImage;
+                    continue;
+                }
+            }
+            const auto handler = exitRegistry.take_next_for_image(header);
+            if (!handler) {
+                finalizedDynamicImages.insert(header);
+                ++frame.nextExitImage;
+                frame.currentExitImage.reset();
+                continue;
+            }
+            frame.currentExitImage = header;
+            auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
+            std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), live);
+            std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(),
+                      live + 806);
+            live[37] = frame.authenticationDepth;
+            live[0] = handler->argument;
+            live[30] = kNoFault;
+            live[33] = handler->target;
+            callbackFramesByThread[guestScheduler.current_id()].push_back(std::move(frame));
+            selectKernel(static_cast<std::int64_t>(handler->target));
+            return true;
+        }
+        return false;
+    };
+    const auto beginImageExitDrain = [&](std::vector<std::uint64_t> images) {
+        if (images.empty()) return false;
+        auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
+        GuestCallbackFrame frame;
+        frame.savedRegisters.assign(live, live + 36);
+        frame.savedRegisters[34] = 0;
+        frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
+        frame.authenticationDepth = live[37];
+        frame.exitImages = std::move(images);
+        return scheduleNextImageExitHandler(frame);
     };
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
@@ -5951,7 +6056,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (registers[37] != frame.authenticationDepth) {
                     throw std::runtime_error("Guest image callback left authentication stack unbalanced");
                 }
-                if (frame.exitDso) {
+                if (frame.currentExitImage) {
+                    if (scheduleNextImageExitHandler(frame)) continue;
+                } else if (frame.exitDso) {
                     const auto handler = exitRegistry.take_next(*frame.exitDso);
                     if (handler) {
                         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
@@ -6110,21 +6217,34 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     !image.is_code(static_cast<std::int64_t>(target)))
                     throw std::runtime_error("Guest exit callback target is not executable");
                 std::uint64_t dso = service == 167 ? hostRegisters[2] : 0;
-                if (service == 166) {
+                std::uint64_t ownerImage = 0;
+                const auto findImageOwner = [&](std::uint64_t address) {
                     const auto owner = std::find_if(image.mapped_image_segments.begin(),
-                        image.mapped_image_segments.end(), [target](const MappedImageSegment& segment) {
+                        image.mapped_image_segments.end(), [address](
+                            const MappedImageSegment& segment) {
                             return segment.start >= 0 && segment.end > segment.start &&
-                                target >= static_cast<std::uint64_t>(segment.start) &&
-                                target < static_cast<std::uint64_t>(segment.end);
+                                address >= static_cast<std::uint64_t>(segment.start) &&
+                                address < static_cast<std::uint64_t>(segment.end);
                         });
-                    if (owner != image.mapped_image_segments.end()) dso = owner->guest_header;
+                    return owner == image.mapped_image_segments.end()
+                        ? std::uint64_t{0} : owner->guest_header;
+                };
+                if (service == 167) {
+                    ownerImage = findImageOwner(dso);
+                    if (ownerImage == 0) ownerImage = findImageOwner(target);
+                } else {
+                    ownerImage = findImageOwner(target);
+                    dso = ownerImage;
                 }
                 const GuestExitHandler handler{target,
                     service == 167 ? hostRegisters[1] : 0,
                     dso,
+                    ownerImage,
                     service == 167 ? GuestExitHandlerKind::Cxa : GuestExitHandlerKind::Standard};
-                registers[0] = exitRegistry.register_handler(handler) ? 0 :
-                    static_cast<std::uint64_t>(-1);
+                const bool registered = exitRegistry.register_handler(handler);
+                if (registered && ownerImage != 0)
+                    finalizedDynamicImages.erase(ownerImage);
+                registers[0] = registered ? 0 : static_cast<std::uint64_t>(-1);
                 continue;
             }
             if (service == 168) {
@@ -7033,12 +7153,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 const auto header = imageHandles.header_for_path(path);
                                 hostRegisters[0] = header && imageIsLoaded(*header)
                                     ? imageHandles.open(path, mode) : 0;
+                                if (hostRegisters[0] != 0) {
+                                    if (const auto loaded =
+                                            imageHandles.loaded_header(hostRegisters[0]))
+                                        ensureDynamicImageGroup(*loaded);
+                                }
                                 if (hostRegisters[0] == 0)
                                     setGuestDlerror("dlopen: image is not loaded: " + path);
                         } else if (const auto header = imageHandles.header_for_path(path);
                                    header && imageIsLoaded(*header)) {
                                 const auto handle = imageHandles.open_loaded(path, mode);
                                 hostRegisters[0] = *handle;
+                                if (const auto loaded =
+                                        imageHandles.loaded_header(hostRegisters[0]))
+                                    ensureDynamicImageGroup(*loaded);
                         } else {
                                 const auto placement = namedImagePlacementCursor;
                                 std::optional<StagedNamedLoad> stagedPlan;
@@ -7131,6 +7259,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     imageHandles.register_loaded(path, plan.requested_header);
                                 hostRegisters[0] = imageHandles.retain(
                                     plan.requested_header, mode);
+                                ensureDynamicImageGroup(plan.requested_header);
                                 clearGuestDlerror();
                                 if (!initializers.empty() || !imageNotifications.empty()) {
                                     GuestCallbackFrame frame;
@@ -7207,7 +7336,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                 } else {
+                    const auto header = imageHandles.loaded_header(hostRegisters[0]);
                     hostRegisters[0] = imageHandles.close(hostRegisters[0]);
+                    std::vector<std::uint64_t> finalizableImages;
+                    if (hostRegisters[0] == 0 && header &&
+                        !imageHandles.has_open_reference_for_image(*header)) {
+                        finalizableImages = releaseDynamicImageGroup(*header);
+                    }
+                    std::copy_n(hostRegisters.begin(), 36,
+                                static_cast<std::uint64_t*>(stateBuffer.data()));
+                    if (beginImageExitDrain(std::move(finalizableImages))) continue;
+                    continue;
                 }
                 std::copy_n(hostRegisters.begin(), 36,
                             static_cast<std::uint64_t*>(stateBuffer.data()));

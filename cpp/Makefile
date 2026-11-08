@@ -29,7 +29,7 @@ COMPONENT_OBJECTS := $(addprefix $(BUILD_DIR)/,$(COMPONENT_SOURCES:.cpp=.o))
 COMPONENT_DEPFILES := $(COMPONENT_OBJECTS:.o=.d)
 -include $(COMPONENT_DEPFILES)
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-adc-sbc-carry-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-literal-load-native verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-semaphore-native verify-semaphore-scheduler verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-native verify-adc-sbc-interpreter verify-mach-vm-deferred-reclamation-native verify-guest-heap-allocate-at verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -701,6 +701,14 @@ $(GUEST_IMAGE_REGISTRY_TEST): ../fixtures/handoff/guest-image-registry-test.cpp 
 verify-guest-image-registry: $(GUEST_IMAGE_REGISTRY_TEST)
 	"$(GUEST_IMAGE_REGISTRY_TEST)"
 
+GUEST_EXIT_REGISTRY_TEST := $(BUILD_DIR)/guest-exit-registry-test
+$(GUEST_EXIT_REGISTRY_TEST): ../fixtures/handoff/guest-exit-registry-test.cpp guest_exit.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) ../fixtures/handoff/guest-exit-registry-test.cpp -o "$@"
+
+verify-guest-exit-registry: $(GUEST_EXIT_REGISTRY_TEST)
+	"$(GUEST_EXIT_REGISTRY_TEST)"
+
 DYLD_FINALIZER_FIXTURE := $(BUILD_DIR)/libdyld-finalizer-metadata.dylib
 DYLD_FINALIZER_METADATA_TEST := $(BUILD_DIR)/dyld-finalizer-metadata-test
 $(DYLD_FINALIZER_FIXTURE): ../fixtures/handoff/dyld-finalizer-metadata.c
@@ -722,7 +730,7 @@ verify-dyld-finalizer-metadata-native: $(DYLD_FINALIZER_FIXTURE) $(DYLD_FINALIZE
 	"$(DYLD_FINALIZER_METADATA_TEST)" "$(DYLD_FINALIZER_FIXTURE)" \
 		>"$(BUILD_DIR)/dyld-finalizer-metadata.out" \
 		2>"$(BUILD_DIR)/dyld-finalizer-metadata.err"
-	printf '%s\n' 'native-init' 'native-final' \
+	printf '%s\n' 'native-init' 'native-cxa-final' \
 		'default_reject=1 metadata initializers=2 finalizers=1 finalizer_text=1 native_value=42' \
 		>"$(BUILD_DIR)/dyld-finalizer-metadata.expected"
 	cmp "$(BUILD_DIR)/dyld-finalizer-metadata.expected" \
