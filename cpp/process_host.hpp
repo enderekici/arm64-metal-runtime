@@ -93,6 +93,7 @@ struct ProcessBootstrapResult {
     std::uint64_t programName = 0;
     std::uint64_t vectorBase = 0;
     std::uint64_t emptyVectorAddress = 0;
+    std::uint64_t appleAddress = 0;
     std::uint64_t stdoutSlot = 0;
     std::uint64_t localeSlot = 0;
     std::uint64_t stderrSlot = 0;

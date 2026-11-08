@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstring>
+#include <charconv>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -28,6 +29,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <cwchar>
+#include <cstdlib>
 
 // Read-only libsystem_kernel queries; their private header is absent from the SDK.
 extern "C" int csr_check(std::uint32_t mask);
@@ -85,6 +87,13 @@ std::uint64_t random_word() {
     const std::uint64_t high = source();
     const std::uint64_t low = source();
     return (high << 32U) ^ low;
+}
+
+std::string hex_word(std::uint64_t value) {
+    char digits[16];
+    const auto result = std::to_chars(digits, digits + sizeof(digits), value, 16);
+    if (result.ec != std::errc{}) throw std::runtime_error("Unable to format guest entropy");
+    return "0x" + std::string(digits, result.ptr);
 }
 
 }  // namespace
@@ -159,6 +168,21 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         }
     }
 
+    std::uint64_t pointer_munge_token = 0;
+    arc4random_buf(&pointer_munge_token, sizeof(pointer_munge_token));
+    if (pointer_munge_token == 0) pointer_munge_token = 1;
+    std::vector<std::string> apple_strings = {
+        "executable_path=" + result.resolvedExecutablePath,
+        "ptr_munge=" + hex_word(pointer_munge_token),
+    };
+    std::vector<std::uint64_t> apple_pointers;
+    apple_pointers.reserve(apple_strings.size());
+    for (const auto& entry : apple_strings) {
+        std::uint64_t address = 0;
+        store_guest_string(result.memory, cursor, entry, address);
+        apple_pointers.push_back(address);
+    }
+
     cursor = checked_align(cursor, 8);
     result.vectorBase = cursor;
     result.environmentAddress = checked_add(
@@ -168,7 +192,11 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         result.environmentAddress,
         static_cast<std::uint64_t>((environment_pointers.size() + 1) * 8),
         "Guest environment vector overflow");
-    result.stdoutSlot = checked_add(result.emptyVectorAddress, 8, "Guest stack overflow");
+    result.appleAddress = checked_add(result.emptyVectorAddress, 8,
+                                      "Guest apple vector overflow");
+    result.stdoutSlot = checked_add(
+        result.appleAddress, static_cast<std::uint64_t>((apple_pointers.size() + 1) * 8),
+        "Guest apple vector overflow");
     result.localeSlot = checked_add(result.stdoutSlot, 8, "Guest stack overflow");
     result.stderrSlot = checked_add(result.localeSlot, 8, "Guest stack overflow");
     result.optindSlot = checked_add(result.stderrSlot, 8, "Guest stack overflow");
@@ -211,6 +239,9 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     for (std::size_t index = 0; index < environment_pointers.size(); ++index) {
         store_u64(result.memory, result.environmentAddress + index * 8,
                   environment_pointers[index]);
+    }
+    for (std::size_t index = 0; index < apple_pointers.size(); ++index) {
+        store_u64(result.memory, result.appleAddress + index * 8, apple_pointers[index]);
     }
     store_u64(result.memory, result.argcAddress, argv.size());
     store_u64(result.memory, result.argvAddress, result.vectorBase);
@@ -273,7 +304,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     result.registers[0] = argv.size();
     result.registers[1] = result.vectorBase;
     result.registers[2] = result.environmentAddress;
-    result.registers[3] = result.emptyVectorAddress;
+    result.registers[3] = result.appleAddress;
     result.registers[30] = std::numeric_limits<std::uint64_t>::max();
     result.registers[31] = result.stack.end;
     result.registers[33] = input.entry;
