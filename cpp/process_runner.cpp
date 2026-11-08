@@ -38,6 +38,7 @@
 #include <mach/mach.h>
 #include <mach/host_info.h>
 #include <mach/mach_host.h>
+#include <mach/clock.h>
 #include <mach/ndr.h>
 #include <tuple>
 #include <thread>
@@ -1846,6 +1847,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::map<std::uint32_t, std::uint32_t> guestSendRightUrefs{
         {static_cast<std::uint32_t>(guestMachTaskPort), 1U}};
+    std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::map<std::uint64_t, std::uint32_t> guestThreadPortNames;
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::uint32_t nextGuestThreadPortName = 0x40000003U;
@@ -5412,6 +5414,219 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
+                if (messageId == 206) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    constexpr std::uint32_t machMessageComplex = 0x80000000;
+                    constexpr std::uint32_t kernResourceShortage = 6;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto hostSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachHostPort ||
+                        hostSendRight == guestSendRightUrefs.end() ||
+                        hostSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        (registers[5] >> 32) != reply ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        throw std::runtime_error("Unsupported guest host_get_clock_service message shape");
+                    }
+                    if ((registers[2] >> 32) != 36 || registers[6] < 36) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto* request = guestMemory.buffer(registers[0], 36);
+                    mach_msg_header_t requestHeader{};
+                    NDR_record_t requestNdr{};
+                    clock_id_t clockId = 0;
+                    std::memcpy(&requestHeader, request, sizeof(requestHeader));
+                    std::memcpy(&requestNdr, request + sizeof(requestHeader), sizeof(requestNdr));
+                    std::memcpy(&clockId, request + sizeof(requestHeader) + sizeof(requestNdr),
+                                sizeof(clockId));
+                    if (requestHeader.msgh_bits != 0x1513 || requestHeader.msgh_size != 36 ||
+                        requestHeader.msgh_id != 206 ||
+                        requestHeader.msgh_remote_port != guestMachHostPort ||
+                        requestHeader.msgh_local_port != reply ||
+                        requestHeader.msgh_voucher_port != MACH_PORT_NULL ||
+                        std::memcmp(&requestNdr, &NDR_record, sizeof(requestNdr)) != 0) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    struct HostClockServiceErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct HostClockServiceReply {
+                        mach_msg_header_t header;
+                        mach_msg_body_t body;
+                        mach_msg_port_descriptor_t clockService;
+                    };
+                    static_assert(sizeof(HostClockServiceErrorReply) == 36);
+                    static_assert(sizeof(HostClockServiceReply) == 40);
+                    static_assert(offsetof(HostClockServiceReply, clockService) == 28);
+
+                    const auto prepareHeader = [reply](mach_msg_header_t& header,
+                                                       std::uint32_t size,
+                                                       std::uint32_t bits) {
+                        header.msgh_bits = bits;
+                        header.msgh_size = size;
+                        header.msgh_remote_port = MACH_PORT_NULL;
+                        header.msgh_local_port = reply;
+                        header.msgh_voucher_port = MACH_PORT_NULL;
+                        header.msgh_id = 306;
+                    };
+                    HostClockServiceErrorReply errorReply{};
+                    prepareHeader(errorReply.header, sizeof(errorReply.header) +
+                                      sizeof(errorReply.ndr) + sizeof(errorReply.returnCode),
+                                  0x1200);
+                    errorReply.ndr = NDR_record;
+                    errorReply.returnCode = KERN_INVALID_ARGUMENT;
+                    std::uint32_t clockName = 0;
+                    std::uint32_t result = KERN_INVALID_ARGUMENT;
+                    if (clockId == SYSTEM_CLOCK || clockId == CALENDAR_CLOCK) {
+                        clockName = static_cast<std::uint32_t>(guestMachHostPort) + 1U +
+                            static_cast<std::uint32_t>(clockId);
+                        auto references = guestSendRightUrefs.find(clockName);
+                        if (references == guestSendRightUrefs.end()) {
+                            guestSendRightUrefs.emplace(clockName, 1U);
+                            guestClockServiceIds.emplace(clockName, clockId);
+                            result = KERN_SUCCESS;
+                        } else if (references->second ==
+                                   std::numeric_limits<std::uint32_t>::max()) {
+                            result = kernResourceShortage;
+                        } else {
+                            ++references->second;
+                            result = KERN_SUCCESS;
+                        }
+                    }
+                    if (result == KERN_SUCCESS) {
+                        HostClockServiceReply response{};
+                        prepareHeader(response.header, sizeof(response),
+                                      machMessageComplex | 0x1200);
+                        response.body.msgh_descriptor_count = 1;
+                        response.clockService.name = clockName;
+                        response.clockService.disposition = MACH_MSG_TYPE_MOVE_SEND;
+                        response.clockService.type = MACH_MSG_PORT_DESCRIPTOR;
+                        if (sizeof(response) > registers[6]) {
+                            --guestSendRightUrefs[clockName];
+                            if (guestSendRightUrefs[clockName] == 0) {
+                                guestSendRightUrefs.erase(clockName);
+                                guestClockServiceIds.erase(clockName);
+                            }
+                            registers[0] = machSendInvalidData;
+                            registers[34] = 0;
+                            continue;
+                        }
+                        std::memcpy(guestMemory.buffer(registers[0], sizeof(response), true),
+                                    &response, sizeof(response));
+                    } else {
+                        errorReply.returnCode = static_cast<kern_return_t>(result);
+                        std::memcpy(guestMemory.buffer(registers[0], sizeof(errorReply), true),
+                                    &errorReply, sizeof(errorReply));
+                    }
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
+                if (messageId == 1000) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x1000000a;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto service = guestClockServiceIds.find(remote);
+                    const auto sendRight = guestSendRightUrefs.find(remote);
+                    if (service == guestClockServiceIds.end() ||
+                        sendRight == guestSendRightUrefs.end() || sendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        (registers[5] >> 32) != reply ||
+                        registers[6] > std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        throw std::runtime_error("Unsupported guest clock_get_time message shape");
+                    }
+                    if ((registers[2] >> 32) != sizeof(mach_msg_header_t) ||
+                        registers[6] < 44) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto* request = guestMemory.buffer(registers[0], sizeof(mach_msg_header_t));
+                    mach_msg_header_t requestHeader{};
+                    std::memcpy(&requestHeader, request, sizeof(requestHeader));
+                    if (requestHeader.msgh_bits != 0x1513 ||
+                        requestHeader.msgh_size != sizeof(mach_msg_header_t) ||
+                        requestHeader.msgh_id != 1000 || requestHeader.msgh_remote_port != remote ||
+                        requestHeader.msgh_local_port != reply ||
+                        requestHeader.msgh_voucher_port != MACH_PORT_NULL) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    struct ClockGetTimeErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct ClockGetTimeReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                        mach_timespec_t currentTime;
+                    };
+                    static_assert(sizeof(ClockGetTimeErrorReply) == 36);
+                    static_assert(sizeof(ClockGetTimeReply) == 44);
+
+                    ClockGetTimeReply response{};
+                    response.header.msgh_bits = 0x1200;
+                    response.header.msgh_size = sizeof(ClockGetTimeErrorReply);
+                    response.header.msgh_remote_port = MACH_PORT_NULL;
+                    response.header.msgh_local_port = reply;
+                    response.header.msgh_voucher_port = MACH_PORT_NULL;
+                    response.header.msgh_id = 1100;
+                    response.ndr = NDR_record;
+                    response.returnCode = KERN_FAILURE;
+                    const auto nativeHost = mach_host_self();
+                    clock_serv_t nativeClock = MACH_PORT_NULL;
+                    response.returnCode = host_get_clock_service(nativeHost, service->second,
+                                                                  &nativeClock);
+                    if (response.returnCode == KERN_SUCCESS) {
+                        response.returnCode = clock_get_time(nativeClock, &response.currentTime);
+                    }
+                    if (nativeClock != MACH_PORT_NULL) {
+                        (void)mach_port_deallocate(mach_task_self(), nativeClock);
+                    }
+                    (void)mach_port_deallocate(mach_task_self(), nativeHost);
+                    if (response.returnCode == KERN_SUCCESS) {
+                        response.header.msgh_size = sizeof(response);
+                        std::memcpy(guestMemory.buffer(registers[0], sizeof(response), true),
+                                    &response, sizeof(response));
+                    } else {
+                        std::memcpy(guestMemory.buffer(registers[0],
+                                        sizeof(ClockGetTimeErrorReply), true),
+                                    &response, sizeof(ClockGetTimeErrorReply));
+                    }
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 200) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x1000000a;
