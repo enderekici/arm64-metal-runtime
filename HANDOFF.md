@@ -56,10 +56,10 @@ smoke returned `mixed42`. Receipts: `/tmp/metal-vm-protect-gate.7ep6a4`.
 Focused Mach host-info and port-release cases from `dcc1488` match native,
 including invalid-host/flavor/count and rights cleanup controls. Isolated
 allowlisted raw-core candidate `8b67998` matched native byte-for-byte with
-status 0 and no diagnostics on its raw and stack fixtures. An isolated raw syscall-366 proof exists, but the Java 26 application still
-stops at raw syscall 206. The isolated result does not establish Java startup
-support. Six local IPC fixtures passed in isolation; general Mach IPC and full
-application service behavior remain open.
+status 0 and no diagnostics on its raw and stack fixtures. The latest unchanged Java 26 and libz probes have advanced past raw syscall
+206 and now stop at raw syscall 3418. A focused clock raw-service fixture
+matches native/GPU. Six local IPC fixtures passed in isolation; these bounded
+results do not establish full Java/libz startup or general Mach IPC behavior.
 
 ## Combined typed interpreter qualification
 
@@ -147,10 +147,10 @@ fallback. The exact archive SHA-256 is
 `.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
 `/tmp/metal-format-gate.wQXVyM` and `/tmp/metal-stack-registry-gate.zgf0Ez`.
 
-The demand-cache retry fixture returns status 32 in native, translated, and
-interpreter modes. Its trace records cache fault then cache resident at the same
-PC before retry; the fail-fast gate checks that transition. This proves only
-the named fixture and does not establish general demand-cache behavior.
+Scalar and pair demand-cache retry fixtures each return status 32 in native,
+translated, and interpreter modes. Both traces record cache fault then cache
+resident at the same PC before retry; fail-fast gates check the transition.
+These results prove only the named fixtures, not general demand-cache behavior.
 
 No broad application compatibility claim follows from these service and
 formatting fixtures.
@@ -206,9 +206,35 @@ The [loader probe sources](fixtures/handoff/README.md) are included in the repos
 
 [LEDGER.md](LEDGER.md) has the chronological decisions and proof boundaries. Recent local receipts are indexed by `/tmp/arm64-metal-align-current`; its value is the scratch root. Relevant pointer files include `cpp-fcmp-frintp-gettid-batch-path`, `cpp-high-named-load-path`, `cpp-alias-overlap-path`, `cpp-noload-active-path`, and `cpp-dynamic-jvm-inspect-path`. Within the last directory, `jni-entry-path` and `cache-provider-path` identify the JNI and libz controls. These local paths are temporary. The build commands and conclusions above remain usable if the scratch directories are removed.
 
+## Pair memory and typed B.cond qualification
+
+Source checkpoint `8841503` adds typed LDP/STP and conditional branch execution.
+Regression, interpreter, and demand-cache gates exited 0. The pair-memory
+fixture matched native and translated results and returned 42 after a 26-packet
+interpreter dispatch. The NZCV fixture matched all three modes and returned 42;
+it exercised three interpreter blocks of 128, 128, and 32 packets with no
+translated compile fallback.
+
+The first packaged B.cond command used the wrong fixture filename. The corrected
+`interpreter-bcond-nzcv-main` invocation with the same archive exited 42. Its
+trace confirms the three AOT dispatches. This is the named W/X condition-code
+fixture, not a claim for the full ARM64 ISA. The separate SP/CMP fallback fixture
+places unsupported MADD before translated `B.ne`; the gate asserts dispatch
+ends at `0x42ec` and translated compilation starts at that same PC, preserving
+NZCV across the boundary.
+
+Runtime SHA-256 before and after was
+`6410960da1edd3c86e7d45df359dd73ad5221e7b8719b5ed767931fc52ab91cf`;
+interpreter metallib SHA-256 was
+`55f6b96e9288afa3ac88b3d0291393a452607aa75c1e65c1bc221fc513fa933c`. Archive
+SHA-256 is
+`ac33951bc7aadd4b74aab32a3e6497316536cb9df256eb68b045ea7ed8da02ed`; copied to
+`.build/arm64-metal-cpp-macos.tar.gz`. Receipts are under
+`/tmp/metal-jit-pair-bcond-release.m7yDQP`.
+
 ## Final checkpoint verification
 
-See [Current wave](#current-wave) for the latest released interpreter and VM
-proof, exact hashes, receipts, and the remaining libz syscall boundary. The
+See [Current wave](#current-wave) and the ISA sections above for latest
+interpreter/VM proof, exact hashes, receipts, and remaining syscall boundaries. The
 full compatibility matrix and its proof limits are in
 [COMPATIBILITY.md](COMPATIBILITY.md).
