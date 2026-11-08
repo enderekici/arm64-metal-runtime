@@ -480,6 +480,29 @@ std::uint64_t GuestMemory::contiguous_readable_size(std::uint64_t address) const
     return end - address;
 }
 
+bool GuestMemory::is_guest_readable(std::uint64_t address,
+                                    std::uint64_t length) const noexcept {
+    if (length > std::numeric_limits<std::uint64_t>::max() - address) return false;
+    for (const auto& mapping : mappings_) {
+        if (address >= mapping.logicalBegin && address < mapping.logicalEnd &&
+            mapping.readable && length <= mapping.logicalEnd - address) {
+            return true;
+        }
+    }
+    return std::any_of(guestRanges_.begin(), guestRanges_.end(),
+        [address, length](const GuestMemoryRange& range) {
+            return address >= range.begin && address < range.end &&
+                length <= range.end - address;
+        });
+}
+
+void GuestMemory::add_guest_range(GuestMemoryRange range) {
+    if (range.begin >= range.end || range.end > size_) {
+        throw std::invalid_argument("Invalid guest mapped range");
+    }
+    guestRanges_.push_back(range);
+}
+
 bool GuestMemory::is_readonly(std::uint64_t address, std::uint64_t length) const {
     try {
         validate_logical_interval(address, length);
@@ -2370,6 +2393,26 @@ HostServiceResult dispatch_guest_host_service(
                 state.standardDescriptorFlags.erase(descriptor);
                 state.standardStatusFlags.erase(descriptor);
                 const auto result = ::close(descriptor);
+                if (result == 0) {
+                    if (const auto socket = state.guestUnixSockets.find(descriptor);
+                        socket != state.guestUnixSockets.end()) {
+                        if (socket->second.boundPath) {
+                            const auto path = state.guestUnixSocketPaths.find(
+                                *socket->second.boundPath);
+                            if (path != state.guestUnixSocketPaths.end() &&
+                                path->second == descriptor) {
+                                path->second = guestUnixClosedEndpoint;
+                            }
+                        }
+                        for (auto& peer : state.guestUnixSockets) {
+                            if (peer.second.connectedPeer == descriptor) {
+                                peer.second.connectedPeer.reset();
+                                peer.second.connectedPeerClosed = true;
+                            }
+                        }
+                        state.guestUnixSockets.erase(socket);
+                    }
+                }
                 if (result < 0) set_errno(errno);
                 registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
             } else {

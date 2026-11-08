@@ -1013,6 +1013,44 @@ std::string guest_cstring(const GuestMemory& memory, std::uint64_t address) {
     throw std::runtime_error("Guest string exceeds runner limit");
 }
 
+std::optional<std::string> guest_unix_socket_path(const GuestMemory& memory,
+        std::uint64_t address, std::uint64_t length, std::uint32_t& error) {
+    const auto pathOffset = offsetof(sockaddr_un, sun_path);
+    if (address == 0 || length < pathOffset || length > sizeof(sockaddr_un)) {
+        error = EINVAL;
+        return std::nullopt;
+    }
+    if (!memory.is_guest_readable(address, length)) {
+        error = EFAULT;
+        return std::nullopt;
+    }
+    try {
+        const auto* bytes = memory.buffer(address, static_cast<std::size_t>(length));
+        if (static_cast<unsigned char>(bytes[1]) != AF_UNIX) {
+            error = EAFNOSUPPORT;
+            return std::nullopt;
+        }
+        const auto pathLength = static_cast<std::size_t>(length) - pathOffset;
+        const auto* path = bytes + pathOffset;
+        const auto terminator = std::find(path, path + pathLength, '\0');
+        const auto nameLength = static_cast<std::size_t>(terminator - path);
+        if (nameLength == 0) {
+            error = EINVAL;
+            return std::nullopt;
+        }
+        try {
+            error = 0;
+            return std::string(reinterpret_cast<const char*>(path), nameLength);
+        } catch (const std::bad_alloc&) {
+            error = ENOMEM;
+            return std::nullopt;
+        }
+    } catch (const std::out_of_range&) {
+        error = EFAULT;
+        return std::nullopt;
+    }
+}
+
 std::string hexadecimal(std::uint64_t value) {
     std::ostringstream output;
     output << std::hex << value;
@@ -1405,6 +1443,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     GuestMemory guestMemory(static_cast<std::uint8_t*>(memoryBuffer.data()), memoryBuffer.size(),
                             bootstrap.readOnlyRanges, guest_memory_mappings(image));
+    for (const auto& segment : image.mapped_image_segments) {
+        if (segment.start >= 0 && segment.end > segment.start &&
+            static_cast<std::uint64_t>(segment.end) <= guestMemory.size()) {
+            guestMemory.add_guest_range({static_cast<std::uint64_t>(segment.start),
+                static_cast<std::uint64_t>(segment.end)});
+        }
+    }
+    for (const auto& range : {bootstrap.stack, bootstrap.heap}) {
+        if (range.begin < range.end && range.end <= guestMemory.size()) {
+            guestMemory.add_guest_range(range);
+        }
+    }
     std::set<std::uint64_t> objcWritableBackings;
     std::optional<std::uint64_t> tproWritableThread;
     const auto publishCommpage = [&](std::uint64_t address, std::size_t backing,
@@ -1609,6 +1659,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         &memoryConfigBuffer};
     const DispatchSize one{1, 1, 1};
     HostServiceState hostServiceState;
+    HostServiceState::GuestUnixSocket guestSyslogSink;
+    guestSyslogSink.type = SOCK_DGRAM;
+    guestSyslogSink.boundPath = "/var/run/syslog";
+    guestSyslogSink.captureSink = true;
+    hostServiceState.guestUnixSockets.emplace(guestUnixSyslogCaptureDescriptor,
+        std::move(guestSyslogSink));
+    hostServiceState.guestUnixSocketPaths.emplace("/var/run/syslog",
+        guestUnixSyslogCaptureDescriptor);
     if (bootstrap.heap.end > static_cast<std::uint64_t>(
             std::numeric_limits<std::int64_t>::max())) {
         throw std::length_error("Guest heap address exceeds the allocator range");
@@ -6384,47 +6442,192 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == SYS_connect) {
+            if (syscall == SYS_bind || syscall == SYS_connect) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto descriptor = static_cast<std::int32_t>(registers[0]);
-                const auto address = registers[1];
                 const auto addressLength = static_cast<std::uint32_t>(registers[2]);
                 std::uint32_t error = 0;
+                const auto guestSocket = hostServiceState.guestUnixSockets.find(descriptor);
                 if (hostServiceState.openDescriptors.count(descriptor) == 0) {
                     error = EBADF;
-                } else if (hostServiceState.socketDescriptors.count(descriptor) == 0) {
+                } else if (hostServiceState.socketDescriptors.count(descriptor) == 0 ||
+                    guestSocket == hostServiceState.guestUnixSockets.end()) {
                     error = ENOTSOCK;
-                } else if (address == 0 ||
-                    addressLength < offsetof(sockaddr_un, sun_path) ||
-                    addressLength > sizeof(sockaddr_un)) {
-                    error = EINVAL;
                 } else {
-                    try {
-                        const auto* bytes = guestMemory.buffer(address, addressLength);
-                        const auto family = static_cast<unsigned char>(bytes[1]);
-                        if (family != AF_UNIX) {
-                            error = EAFNOSUPPORT;
-                        } else {
-                            const auto pathBytes = static_cast<std::size_t>(addressLength) -
-                                offsetof(sockaddr_un, sun_path);
-                            const auto* path = bytes + offsetof(sockaddr_un, sun_path);
-                            const auto terminator = std::find(path, path + pathBytes, '\0');
-                            const auto pathLength = static_cast<std::size_t>(terminator - path);
-                            if (pathLength == 0) {
+                    auto path = guest_unix_socket_path(guestMemory, registers[1],
+                        addressLength, error);
+                    if (path) {
+                        if (syscall == SYS_bind) {
+                            if (guestSocket->second.boundPath) {
                                 error = EINVAL;
                             } else {
-                                // Guest UNIX sockets have a guest-owned namespace. No bind or
-                                // service endpoint is registered yet, so never forward this
-                                // path to the host or report a synthetic successful connection.
+                                try {
+                                    const auto inserted = hostServiceState.guestUnixSocketPaths
+                                        .emplace(*path, descriptor);
+                                    if (!inserted.second) {
+                                        error = EADDRINUSE;
+                                    } else {
+                                        guestSocket->second.boundPath = std::move(*path);
+                                        error = 0;
+                                    }
+                                } catch (const std::bad_alloc&) {
+                                    error = ENOMEM;
+                                }
+                            }
+                        } else {
+                            const auto targetPath =
+                                hostServiceState.guestUnixSocketPaths.find(*path);
+                            if (targetPath == hostServiceState.guestUnixSocketPaths.end()) {
                                 error = ENOENT;
+                            } else if (targetPath->second == guestUnixClosedEndpoint) {
+                                error = ECONNREFUSED;
+                            } else {
+                                const auto target = hostServiceState.guestUnixSockets.find(
+                                    targetPath->second);
+                                if (target == hostServiceState.guestUnixSockets.end()) {
+                                    hostServiceState.guestUnixSocketPaths.erase(targetPath);
+                                    error = ENOENT;
+                                } else if (guestSocket->second.type != SOCK_DGRAM ||
+                                    target->second.type != SOCK_DGRAM) {
+                                    error = ENOTSUP;
+                                } else {
+                                    guestSocket->second.connectedPeer = target->first;
+                                    guestSocket->second.connectedPeerClosed = false;
+                                    error = 0;
+                                }
                             }
                         }
-                    } catch (const std::out_of_range&) {
-                        error = EFAULT;
                     }
                 }
                 registers[0] = error;
-                registers[32] |= carryMask;
+                if (error == 0) registers[32] &= ~carryMask;
+                else registers[32] |= carryMask;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == SYS_sendto || syscall == SYS_recvfrom) {
+                constexpr std::uint64_t carryMask = 8U;
+                const auto descriptor = static_cast<std::int32_t>(registers[0]);
+                std::uint32_t error = 0;
+                std::uint64_t result = 0;
+                const auto socket = hostServiceState.guestUnixSockets.find(descriptor);
+                if (hostServiceState.openDescriptors.count(descriptor) == 0) {
+                    error = EBADF;
+                } else if (hostServiceState.socketDescriptors.count(descriptor) == 0 ||
+                    socket == hostServiceState.guestUnixSockets.end()) {
+                    error = ENOTSOCK;
+                } else if (socket->second.type != SOCK_DGRAM) {
+                    error = ENOTSUP;
+                } else if (registers[3] != 0) {
+                    error = ENOTSUP;
+                } else if (syscall == SYS_sendto) {
+                    const auto byteCount = registers[2];
+                    std::int32_t peerDescriptor = -1;
+                    if (registers[4] == 0) {
+                        if (socket->second.connectedPeerClosed) {
+                            error = ECONNRESET;
+                        } else if (!socket->second.connectedPeer) {
+                            error = EDESTADDRREQ;
+                        } else {
+                            peerDescriptor = *socket->second.connectedPeer;
+                        }
+                    } else {
+                        auto path = guest_unix_socket_path(guestMemory, registers[4],
+                            static_cast<std::uint32_t>(registers[5]), error);
+                        if (path) {
+                            const auto targetPath =
+                                hostServiceState.guestUnixSocketPaths.find(*path);
+                            if (targetPath == hostServiceState.guestUnixSocketPaths.end()) {
+                                error = ENOENT;
+                            } else {
+                                peerDescriptor = targetPath->second;
+                            }
+                        }
+                    }
+                    const auto peer = hostServiceState.guestUnixSockets.find(peerDescriptor);
+                    if (error == 0 && peer == hostServiceState.guestUnixSockets.end()) {
+                        error = ECONNREFUSED;
+                    } else if (error == 0 && peer->second.type != SOCK_DGRAM) {
+                        error = EPROTOTYPE;
+                    } else if (error == 0 &&
+                        (byteCount > std::numeric_limits<std::size_t>::max() ||
+                         (byteCount != 0 && !guestMemory.is_guest_readable(
+                            registers[1], byteCount)))) {
+                        error = EFAULT;
+                    } else if (error == 0) {
+                        try {
+                            HostServiceState::GuestUnixDatagram datagram;
+                            if (byteCount != 0) {
+                                const auto* source = guestMemory.buffer(registers[1], byteCount);
+                                datagram.payload.assign(source, source + byteCount);
+                            }
+                            if (peer->second.captureSink) {
+                                constexpr std::size_t maximumCapturedDatagrams = 64;
+                                if (hostServiceState.guestSyslogCapture.size() ==
+                                    maximumCapturedDatagrams) {
+                                    hostServiceState.guestSyslogCapture.pop_front();
+                                }
+                                hostServiceState.guestSyslogCapture.push_back(datagram);
+                                if (progressTrace.enabled()) {
+                                    constexpr char digits[] = "0123456789abcdef";
+                                    constexpr std::size_t maximumTraceBytes = 64;
+                                    const auto tracedBytes = std::min<std::size_t>(
+                                        datagram.payload.size(), maximumTraceBytes);
+                                    std::cerr << "arm64-metal trace syslog-datagram bytes="
+                                              << datagram.payload.size() << " payload_hex=";
+                                    for (std::size_t index = 0; index < tracedBytes; ++index) {
+                                        const auto byte = datagram.payload[index];
+                                        std::cerr << digits[byte >> 4U] << digits[byte & 0xfU];
+                                    }
+                                    if (tracedBytes < datagram.payload.size()) {
+                                        std::cerr << "...";
+                                    }
+                                    std::cerr << '\n';
+                                }
+                            } else {
+                                peer->second.receiveQueue.push_back(std::move(datagram));
+                            }
+                            result = byteCount;
+                        } catch (const std::out_of_range&) {
+                            error = EFAULT;
+                        } catch (const std::bad_alloc&) {
+                            error = ENOMEM;
+                        }
+                    }
+                } else {
+                    if (registers[4] != 0 || registers[5] != 0) {
+                        error = ENOTSUP;
+                    } else if (socket->second.receiveQueue.empty()) {
+                        // Blocking receive scheduling is not modeled by this datagram slice.
+                        error = ENOTSUP;
+                    } else if (registers[2] > std::numeric_limits<std::size_t>::max() ||
+                        (registers[2] != 0 && !guestMemory.is_guest_readable(
+                            registers[1], registers[2]))) {
+                        error = EFAULT;
+                    } else {
+                        try {
+                            const auto& datagram = socket->second.receiveQueue.front();
+                            const auto copied = std::min<std::uint64_t>(
+                                registers[2], datagram.payload.size());
+                            if (copied != 0) {
+                                auto* destination = guestMemory.buffer(registers[1], copied, true);
+                                std::memcpy(destination, datagram.payload.data(),
+                                    static_cast<std::size_t>(copied));
+                            }
+                            result = copied;
+                            socket->second.receiveQueue.pop_front();
+                        } catch (const std::out_of_range&) {
+                            error = EFAULT;
+                        }
+                    }
+                }
+                if (error == 0) {
+                    registers[0] = result;
+                    registers[32] &= ~carryMask;
+                } else {
+                    registers[0] = error;
+                    registers[32] |= carryMask;
+                }
                 registers[34] = 0;
                 continue;
             }
@@ -6446,15 +6649,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         try {
                             hostServiceState.openDescriptors.insert(result);
                             hostServiceState.socketDescriptors.insert(result);
+                            HostServiceState::GuestUnixSocket guestSocket;
+                            guestSocket.type = type;
+                            hostServiceState.guestUnixSockets.emplace(result,
+                                std::move(guestSocket));
                         } catch (const std::bad_alloc&) {
                             hostServiceState.openDescriptors.erase(result);
                             hostServiceState.socketDescriptors.erase(result);
+                            hostServiceState.guestUnixSockets.erase(result);
                             (void)::close(result);
                             result = -1;
                             error = ENOMEM;
                         } catch (...) {
                             hostServiceState.openDescriptors.erase(result);
                             hostServiceState.socketDescriptors.erase(result);
+                            hostServiceState.guestUnixSockets.erase(result);
                             (void)::close(result);
                             throw;
                         }

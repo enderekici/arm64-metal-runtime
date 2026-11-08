@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -28,6 +29,8 @@ inline constexpr std::size_t guestThreadPointer = 876;
 inline constexpr std::size_t guestCacheFaultWidth = 877;
 inline constexpr std::size_t guestPACGAKey = 878;
 inline constexpr std::size_t guestTokenStart = 880;
+inline constexpr std::int32_t guestUnixSyslogCaptureDescriptor = -1;
+inline constexpr std::int32_t guestUnixClosedEndpoint = -2;
 inline constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
 inline constexpr std::uint64_t guestInitialTokenCapacity = 4096;
 inline constexpr std::uint64_t guestMachTaskPort = 0x103;
@@ -142,6 +145,9 @@ public:
     [[nodiscard]] const std::uint8_t* buffer(std::uint64_t address,
                                             std::uint64_t length) const;
     [[nodiscard]] std::uint64_t contiguous_readable_size(std::uint64_t address) const;
+    [[nodiscard]] bool is_guest_readable(std::uint64_t address,
+                                         std::uint64_t length) const noexcept;
+    void add_guest_range(GuestMemoryRange range);
     [[nodiscard]] bool is_readonly(std::uint64_t address, std::uint64_t length) const;
     [[nodiscard]] bool is_protection_fault(std::uint64_t address) const;
     void rebind(std::uint8_t* bytes, std::size_t size);
@@ -165,6 +171,7 @@ private:
     bool external_ = false;
     std::vector<GuestMemoryRange> readOnlyRanges_;
     std::vector<GuestMemoryMapping> mappings_;
+    std::vector<GuestMemoryRange> guestRanges_;
     GuestMemoryMappingResolver mappingResolver_;
 };
 
@@ -185,8 +192,22 @@ struct HostServiceState {
         std::uint64_t address = 0;
         std::uint64_t capacity = 0;
     };
+    struct GuestUnixDatagram {
+        std::vector<std::uint8_t> payload;
+    };
+    struct GuestUnixSocket {
+        std::int32_t type = 0;
+        std::optional<std::string> boundPath;
+        std::optional<std::int32_t> connectedPeer;
+        bool connectedPeerClosed = false;
+        bool captureSink = false;
+        std::deque<GuestUnixDatagram> receiveQueue;
+    };
     std::set<std::int32_t> openDescriptors;
     std::set<std::int32_t> socketDescriptors;
+    std::map<std::int32_t, GuestUnixSocket> guestUnixSockets;
+    std::map<std::string, std::int32_t> guestUnixSocketPaths;
+    std::deque<GuestUnixDatagram> guestSyslogCapture;
     std::set<std::int32_t> writableDescriptors;
     std::map<std::int32_t, std::int32_t> standardDescriptorFlags;
     std::map<std::int32_t, std::int32_t> standardStatusFlags;
