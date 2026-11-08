@@ -2582,6 +2582,30 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (queue.empty()) guestUnixReceiveWaiters.erase(waiters);
     };
+    const auto closeGuestUnixReceiveWaiters = [&](std::int32_t descriptor) {
+        const auto waiters = guestUnixReceiveWaiters.find(descriptor);
+        if (waiters == guestUnixReceiveWaiters.end()) return;
+        for (const auto threadId : waiters->second) {
+            const auto blocked = guestUnixBlockedReceives.find(threadId);
+            auto* thread = guestScheduler.find(threadId);
+            const auto* wait = thread != nullptr && thread->wait.has_value()
+                ? std::get_if<GuestUnixSocketReceiveWait>(&*thread->wait) : nullptr;
+            if (blocked == guestUnixBlockedReceives.end() || wait == nullptr ||
+                blocked->second.descriptor != descriptor || wait->descriptor != descriptor) {
+                continue;
+            }
+            guestUnixBlockedReceives.erase(blocked);
+            guestScheduler.wake(threadId, EBADF);
+            thread = guestScheduler.find(threadId);
+            if (thread != nullptr && thread->registers.size() > 32) {
+                thread->registers[0] = EBADF;
+                thread->registers[32] |= std::uint64_t{8};
+            }
+            progressTrace.event("unix-recv-closed", threadId,
+                                static_cast<std::uint64_t>(descriptor));
+        }
+        guestUnixReceiveWaiters.erase(waiters);
+    };
     const auto deliverGuestMachMessage = [&](std::uint32_t port) {
         expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
         auto waiting = guestMachReceiveWaiters.find(port);
@@ -7029,6 +7053,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 6 || syscall == 396 || syscall == 397 || syscall == 399) {
                 constexpr std::uint64_t carryMask = 8U;
+                const auto closedDescriptor = static_cast<std::int32_t>(registers[0]);
+                const bool closesSocket = (syscall == 6 || syscall == 399) &&
+                    hostServiceState.socketDescriptors.count(closedDescriptor) != 0;
                 const std::uint64_t service = syscall == 396 ? 23U
                     : syscall == 397 ? 2U : 22U;
                 auto* errnoBytes = guestMemory.buffer(bootstrap.errnoSlot,
@@ -7051,6 +7078,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     failed = true;
                 }
                 std::memcpy(errnoBytes, &savedErrno, sizeof(savedErrno));
+                if (closesSocket && !failed && callRegisters[0] == 0) {
+                    closeGuestUnixReceiveWaiters(closedDescriptor);
+                }
                 if (failed) {
                     registers[0] = error;
                     registers[32] |= carryMask;
