@@ -81,6 +81,7 @@ INTERPRETER_BCOND_MAIN := $(BUILD_DIR)/interpreter-bcond-nzcv-main
 INTERPRETER_CSEL_MAIN := $(BUILD_DIR)/interpreter-csel-family-main
 INTERPRETER_ADD_SUB_SHIFTED_MAIN := $(BUILD_DIR)/interpreter-add-sub-shifted-register-main
 INTERPRETER_ADD_SUB_EXTENDED_MAIN := $(BUILD_DIR)/interpreter-add-sub-extended-register-main
+INTERPRETER_LOGICAL_SHIFTED_MAIN := $(BUILD_DIR)/interpreter-logical-shifted-register-main
 INTERPRETER_MINIMAL_MAIN := $(BUILD_DIR)/interpreter-minimal-main
 INTERPRETER_MOVN_MOVK_MAIN := $(BUILD_DIR)/interpreter-movn-movk-main
 INTERPRETER_BRANCH_MAIN := $(BUILD_DIR)/interpreter-branch-main
@@ -223,6 +224,10 @@ $(INTERPRETER_ADD_SUB_SHIFTED_MAIN): ../fixtures/interpreter/add-sub-shifted-reg
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
 $(INTERPRETER_ADD_SUB_EXTENDED_MAIN): ../fixtures/interpreter/add-sub-extended-register-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+$(INTERPRETER_LOGICAL_SHIFTED_MAIN): ../fixtures/interpreter/logical-shifted-register-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
@@ -481,7 +486,7 @@ $(INTERPRETER_AIR): $(INTERPRETER_SOURCE) integer_ops_shared.h
 $(INTERPRETER_METALLIB): $(INTERPRETER_AIR)
 	xcrun -sdk macosx metal -o "$@" "$<"
 
-verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_NATIVE) $(INTERPRETER_ADD_SUB_NATIVE) $(INTERPRETER_ADD_SUB_FLAGS_NATIVE) $(INTERPRETER_MINIMAL_MAIN) $(INTERPRETER_MOVN_MOVK_MAIN) $(INTERPRETER_ADD_SUB_MAIN) $(INTERPRETER_ADD_SUB_SP_MAIN) $(INTERPRETER_BCOND_MAIN) $(INTERPRETER_CSEL_MAIN) $(INTERPRETER_ADD_SUB_SHIFTED_MAIN) $(INTERPRETER_ADD_SUB_EXTENDED_MAIN) $(INTERPRETER_LOGICAL_SHIFTED_MAIN) $(INTERPRETER_BRANCH_MAIN) $(INTERPRETER_BRANCH_FALLBACK_MAIN) $(INTERPRETER_TYPED_MEMORY_MAIN) $(INTERPRETER_TYPED_MEMORY_RO_MAIN) $(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_PAIR_MEMORY_MAIN) $(INTERPRETER_SCALAR_INDEXED_MEMORY_MAIN) $(INTERPRETER_CBZ_CBNZ_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		mkdir -p "$(BUILD_DIR)"; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-verify.XXXXXX"); \
@@ -731,6 +736,21 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/scalar-indexed-memory.native.err" "$$run_dir/scalar-indexed-memory.interpreter.no-trace.err" && \
 		grep -q 'interpreter-block-ready' "$$run_dir/scalar-indexed-memory.interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/scalar-indexed-memory.interpreter.err" || exit 1; \
+		set +e; \
+		"$(INTERPRETER_LOGICAL_SHIFTED_MAIN)" >"$$run_dir/logical-shifted.native.out" 2>"$$run_dir/logical-shifted.native.err"; logical_native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_LOGICAL_SHIFTED_MAIN)" >"$$run_dir/logical-shifted.translated.out" 2>"$$run_dir/logical-shifted.translated.err"; logical_translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_LOGICAL_SHIFTED_MAIN)" >"$$run_dir/logical-shifted.interpreter.out" 2>"$$run_dir/logical-shifted.interpreter.err"; logical_interpreter_rc=$$?; \
+		printf '%s\n' "$$logical_native_rc" >"$$run_dir/logical-shifted.native.rc"; \
+		printf '%s\n' "$$logical_translated_rc" >"$$run_dir/logical-shifted.translated.rc"; \
+		printf '%s\n' "$$logical_interpreter_rc" >"$$run_dir/logical-shifted.interpreter.rc"; \
+		set -e; \
+		test "$$logical_native_rc" -eq 42 && test "$$logical_translated_rc" -eq "$$logical_native_rc" && \
+		test "$$logical_interpreter_rc" -eq "$$logical_native_rc" && \
+		cmp "$$run_dir/logical-shifted.native.out" "$$run_dir/logical-shifted.translated.out" && \
+		cmp "$$run_dir/logical-shifted.native.out" "$$run_dir/logical-shifted.interpreter.out" && \
+		cmp "$$run_dir/logical-shifted.native.err" "$$run_dir/logical-shifted.translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/logical-shifted.interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/logical-shifted.interpreter.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
 verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)

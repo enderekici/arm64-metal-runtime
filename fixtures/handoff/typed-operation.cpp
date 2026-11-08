@@ -122,6 +122,77 @@ int main() {
   assert(std::string_view(arm64metal::typed_integer_msl_source).find(
              "add_sub_extended_apply") != std::string_view::npos);
 
+  for (const std::uint32_t width : {32U, 64U}) {
+    for (std::uint32_t opc = 0; opc < 4; ++opc) {
+      for (std::uint32_t invert = 0; invert < 2; ++invert) {
+        for (std::uint32_t shiftType = 0; shiftType < 4; ++shiftType) {
+          for (const std::uint32_t amount : {0U, 1U, width - 1U}) {
+            const auto bits = 0x0a000000U | (width == 64 ? 0x80000000U : 0U) |
+                              (opc << 29U) | (shiftType << 22U) |
+                              (invert << 21U) | (2U << 16U) |
+                              (amount << 10U) | (1U << 5U) | 3U;
+            const auto logical = decode_operation(bits);
+            const auto packed = (amount << 5U) | (shiftType << 3U) |
+                                (invert << 2U) | opc;
+            assert(logical.has_value() &&
+                   logical->opcode == Opcode::LogicalShiftedRegister &&
+                   logical->destination == 3 && logical->source == 1 &&
+                   logical->immediate == 2 && logical->shift == packed &&
+                   logical->width == width);
+            assert((serialize_operation(*logical) ==
+                    arm64metal::translate_core::OperationPacket{
+                        23, 3, 1, 2, packed, width}));
+            const auto lowered = make_operation_instruction(
+                *logical, {0x1004}, LoweringMode::Process,
+                std::uint64_t{1} << 48);
+            assert(lowered.code.front() == "{");
+            assert(lowered.code[1].find("logical_shifted_apply(") !=
+                   std::string::npos);
+            assert(lowered.code.back() == "}");
+            assert(lowered.code.size() == (opc == 3U ? 9U : 4U));
+          }
+        }
+      }
+    }
+  }
+  assert(!decode_operation(0x12000000U).has_value());  // Logical immediate stays separate.
+  assert(!decode_operation(0x0a008020U).has_value());  // W shift amount 32 is invalid.
+  const auto logicalCmp = decode_operation(0xea02003fU);
+  assert(logicalCmp.has_value() && logicalCmp->destination == 31 &&
+         logicalCmp->shift == 3U);
+  assert(make_operation_instruction(*logicalCmp, {0x1004}, LoweringMode::Process,
+                                    std::uint64_t{1} << 48)
+             .code.size() == 8);
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "logical_shifted_apply") != std::string_view::npos);
+
+  using arm64metal::logical_shifted_apply;
+  assert(logical_shifted_apply(0, 0, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0);
+  assert(logical_shifted_apply(0, 1, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0xf0);
+  assert(logical_shifted_apply(1, 0, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0xff);
+  assert(logical_shifted_apply(1, 1, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0xfffffffffffffff0ULL);
+  assert(logical_shifted_apply(2, 0, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0xff);
+  assert(logical_shifted_apply(2, 1, 0xf0, 0x0f, 0, 0, 64, 0, 0xf)
+             .value == 0xffffffffffffff00ULL);
+  assert(logical_shifted_apply(3, 0, 0x8000000000000000ULL,
+                               0x8000000000000000ULL, 1, 0, 64, 1, 0xf)
+             .flags == 2);
+  assert(logical_shifted_apply(3, 1, 0, 0, 0, 0, 32, 1, 0xf).flags == 1);
+  assert(logical_shifted_apply(0, 0, 0, 0, 0, 0, 32, 0, 0xf).flags == 0xf);
+  assert(logical_shifted_apply(1, 0, 0, 0x80000005U, 0, 2, 32, 0, 0)
+             .value == 0x14U);
+  assert(logical_shifted_apply(1, 0, 0, 0x80000005U, 1, 2, 32, 0, 0)
+             .value == 0x20000001U);
+  assert(logical_shifted_apply(1, 0, 0, 0x80000005U, 2, 2, 32, 0, 0)
+             .value == 0xe0000001U);
+  assert(logical_shifted_apply(1, 0, 0, 0x80000005U, 3, 2, 32, 0, 0)
+             .value == 0x60000001U);
+
   constexpr std::uint32_t selectBases[] = {
       0x1a800000U, 0x1a800400U, 0x5a800000U, 0x5a800400U};
   for (std::uint32_t variant = 0; variant < 4; ++variant) {

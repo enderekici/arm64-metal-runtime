@@ -239,6 +239,18 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::AddSubExtendedRegister, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), packed, width};
   }
+  if ((bits & 0x1f000000U) == 0x0a000000U) {
+    const auto width = field(bits, 31, 1) == 1 ? 64U : 32U;
+    const auto shiftType = field(bits, 22, 2);
+    const auto amount = field(bits, 10, 6);
+    if (amount >= width) return std::nullopt;
+    const auto opc = field(bits, 29, 2);
+    const auto invert = field(bits, 21, 1);
+    const auto packed = (amount << 5U) | (shiftType << 3U) |
+                        (invert << 2U) | opc;
+    return Operation{Opcode::LogicalShiftedRegister, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5), packed, width};
+  }
   const auto moveWide = bits & 0x7f800000;
   Opcode opcode;
   if (moveWide == 0x52800000) {
@@ -371,6 +383,45 @@ Instruction make_operation_instruction(Operation operation,
     code.push_back("c = (add_sub_result.flags & 8u) != 0u;");
     if (mode == LoweringMode::Process) {
       code.push_back("x[32] = add_sub_result.flags;");
+    }
+    code.push_back("}");
+  } else if (operation.opcode == Opcode::LogicalShiftedRegister) {
+    const auto opc = operation.shift & 3U;
+    const auto invert = (operation.shift >> 2U) & 1U;
+    const auto shiftType = (operation.shift >> 3U) & 3U;
+    const auto amount = (operation.shift >> 5U) & 63U;
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || opc > 3 || shiftType > 3 ||
+        amount >= operation.width ||
+        (operation.width != 32 && operation.width != 64) ||
+        (operation.shift & ~0x7ffU) != 0) {
+      throw std::invalid_argument("Typed logical shifted-register operands are invalid");
+    }
+    const bool setFlags = opc == 3U;
+    const auto flags = "(uint(z) | (uint(n) << 1u) | (uint(v) << 2u) | "
+                       "(uint(c) << 3u))";
+    code.push_back("{");
+    code.push_back("const LogicalShiftedResult logical_result = "
+                   "logical_shifted_apply(" + std::to_string(opc) + "u, " +
+                   std::to_string(invert) + "u, " +
+                   reg(operation.source, operation.width == 64) + ", " +
+                   reg(operation.immediate, operation.width == 64) + ", " +
+                   std::to_string(shiftType) + "u, " +
+                   std::to_string(amount) + "u, " +
+                   std::to_string(operation.width) + "u, " +
+                   std::string(setFlags ? "1u" : "0u") + ", " + flags + ");");
+    if (!setFlags || operation.destination != 31) {
+      code.push_back("x[" + std::to_string(operation.destination) +
+                     "] = logical_result.value;");
+    }
+    if (setFlags) {
+      code.push_back("z = (logical_result.flags & 1u) != 0u;");
+      code.push_back("n = (logical_result.flags & 2u) != 0u;");
+      code.push_back("v = (logical_result.flags & 4u) != 0u;");
+      code.push_back("c = (logical_result.flags & 8u) != 0u;");
+      if (mode == LoweringMode::Process) {
+        code.push_back("x[32] = logical_result.flags;");
+      }
     }
     code.push_back("}");
   } else if (operation.opcode == Opcode::Return) {

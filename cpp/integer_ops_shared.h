@@ -133,6 +133,39 @@ inline AddSubImmediateResult add_sub_extended_apply(
         : previousFlags;
     return AddSubImmediateResult{value, flags};
 }
+struct LogicalShiftedResult {
+    ulong value;
+    uint flags;
+};
+inline LogicalShiftedResult logical_shifted_apply(
+    uint opc, uint invert, ulong lhs, ulong rhs, uint shiftType, uint amount,
+    uint width, uint setFlags, uint previousFlags) {
+    const ulong mask = width == 32u ? 0xfffffffful : ~0ul;
+    const ulong source = rhs & mask;
+    ulong shifted = source;
+    if (shiftType == 0u) shifted = (source << amount) & mask;
+    else if (shiftType == 1u) shifted = source >> amount;
+    else if (shiftType == 2u && amount != 0u) {
+        const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+        shifted = source >> amount;
+        if ((source & signBit) != 0ul) shifted |= ~0ul << (width - amount);
+        shifted &= mask;
+    } else if (shiftType == 3u && amount != 0u) {
+        shifted = ((source >> amount) | (source << (width - amount))) & mask;
+    }
+    if (invert != 0u) shifted = (~shifted) & mask;
+    const ulong left = lhs & mask;
+    ulong value = left & shifted;
+    if (opc == 1u) value = left | shifted;
+    else if (opc == 2u) value = left ^ shifted;
+    value &= mask;
+    uint flags = previousFlags;
+    if (setFlags != 0u) {
+        const ulong signBit = width == 32u ? 0x80000000ul : 0x8000000000000000ul;
+        flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u);
+    }
+    return LogicalShiftedResult{value, flags};
+}
 inline bool arm64_condition_holds(uint condition, uint flags) {
     return ARM64METAL_CONDITION_HOLDS(condition, flags);
 }
@@ -149,6 +182,42 @@ inline ulong conditional_select_apply(uint variant, ulong lhs, ulong rhs,
 }
 #else
 namespace arm64metal {
+struct LogicalShiftedResult {
+  std::uint64_t value;
+  std::uint32_t flags;
+};
+inline constexpr LogicalShiftedResult logical_shifted_apply(
+    std::uint32_t opc, std::uint32_t invert, std::uint64_t lhs,
+    std::uint64_t rhs, std::uint32_t shiftType, std::uint32_t amount,
+    std::uint32_t width, std::uint32_t setFlags,
+    std::uint32_t previousFlags) {
+  const auto mask = width == 32U ? std::uint64_t{0xffffffffU} : ~std::uint64_t{0};
+  const auto source = rhs & mask;
+  std::uint64_t shifted = source;
+  if (shiftType == 0U) shifted = (source << amount) & mask;
+  else if (shiftType == 1U) shifted = source >> amount;
+  else if (shiftType == 2U && amount != 0U) {
+    const auto signBit = width == 32U ? 0x80000000ULL : 0x8000000000000000ULL;
+    shifted = source >> amount;
+    if ((source & signBit) != 0U) shifted |= ~std::uint64_t{0} << (width - amount);
+    shifted &= mask;
+  } else if (shiftType == 3U && amount != 0U) {
+    shifted = ((source >> amount) | (source << (width - amount))) & mask;
+  }
+  if (invert != 0U) shifted = (~shifted) & mask;
+  const auto left = lhs & mask;
+  auto value = left & shifted;
+  if (opc == 1U) value = left | shifted;
+  else if (opc == 2U) value = left ^ shifted;
+  value &= mask;
+  auto flags = previousFlags;
+  if (setFlags != 0U) {
+    const auto signBit = width == 32U ? 0x80000000ULL : 0x8000000000000000ULL;
+    flags = static_cast<std::uint32_t>(value == 0U) |
+            (static_cast<std::uint32_t>((value & signBit) != 0U) << 1U);
+  }
+  return {value, flags};
+}
 inline constexpr bool arm64_condition_holds(std::uint32_t condition,
                                             std::uint32_t flags) {
   return ARM64METAL_CONDITION_HOLDS(condition, flags);
@@ -221,6 +290,25 @@ inline constexpr char typed_integer_msl_source[] =
     ARM64METAL_STRINGIFY(ARM64METAL_ADD_SUB_IMM_NZCV(
         subtract, left, shifted, value, width, signBit))
     " : previousFlags; return AddSubImmediateResult{value, flags}; }\n"
+    "struct LogicalShiftedResult { ulong value; uint flags; };\\n"
+    "inline LogicalShiftedResult logical_shifted_apply(uint opc, uint invert, "
+    "ulong lhs, ulong rhs, uint shiftType, uint amount, uint width, "
+    "uint setFlags, uint previousFlags) { ulong mask = width == 32u ? "
+    "0xfffffffful : ~0ul; ulong source = rhs & mask; ulong shifted = source; "
+    "if (shiftType == 0u) shifted = (source << amount) & mask; "
+    "else if (shiftType == 1u) shifted = source >> amount; "
+    "else if (shiftType == 2u && amount != 0u) { ulong signBit = width == 32u "
+    "? 0x80000000ul : 0x8000000000000000ul; shifted = source >> amount; "
+    "if ((source & signBit) != 0ul) shifted |= ~0ul << (width - amount); "
+    "shifted &= mask; } else if (shiftType == 3u && amount != 0u) "
+    "shifted = ((source >> amount) | (source << (width - amount))) & mask; "
+    "if (invert != 0u) shifted = (~shifted) & mask; ulong left = lhs & mask; "
+    "ulong value = left & shifted; if (opc == 1u) value = left | shifted; "
+    "else if (opc == 2u) value = left ^ shifted; value &= mask; "
+    "uint flags = previousFlags; if (setFlags != 0u) { ulong signBit = "
+    "width == 32u ? 0x80000000ul : 0x8000000000000000ul; "
+    "flags = uint(value == 0ul) | (uint((value & signBit) != 0ul) << 1u); } "
+    "return LogicalShiftedResult{value, flags}; }\\n"
     "inline bool arm64_condition_holds(uint condition, uint flags) { return "
     ARM64METAL_STRINGIFY(ARM64METAL_CONDITION_HOLDS(condition, flags))
     "; }\n"

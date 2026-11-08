@@ -34,6 +34,7 @@ enum class Opcode : std::uint32_t {
   AddSubShiftedRegister = 19,
   LoadSignedScalar = 20,
   AddSubExtendedRegister = 22,
+  LogicalShiftedRegister = 23,
 };
 
 // Fixed-width semantic operands suitable for explicit interpreter packets.
@@ -62,6 +63,11 @@ enum class Opcode : std::uint32_t {
 // ADD/SUB extended register uses destination=Rd, source=Rn, immediate=Rm,
 // shift=(setFlags << 7) | (subtract << 6) | (option << 3) | amount,
 // and width=32 or 64. Rn/Rd register 31 is SP; Rm register 31 is ZR.
+// Logical shifted register uses destination=Rd, source=Rn, immediate=Rm,
+// shift=(amount << 5) | (shiftType << 3) | (invert << 2) | opc,
+// and width=32 or 64. Rn/Rm/Rd register 31 is ZR. Opc selects AND, ORR,
+// EOR, or ANDS, with invert selecting BIC, ORN, EON, or BICS. Shift types
+// 0/1/2/3 are LSL/LSR/ASR/ROR. ANDS/BICS update NZCV.
 struct Operation {
   Opcode opcode;
   std::uint32_t destination;
