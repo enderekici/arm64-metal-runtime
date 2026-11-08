@@ -108,6 +108,12 @@ public:
         std::uint32_t maximumProtection;
     };
 
+    struct TproMapping {
+        std::uint64_t unslidAddress;
+        std::uint64_t size;
+        std::int64_t guestAddress;
+    };
+
     struct HostExports {
         std::unordered_map<std::int64_t, std::string> functions;
         std::unordered_map<std::uint64_t, std::string> data;
@@ -129,6 +135,7 @@ public:
     const std::vector<std::uint8_t>& uuid() const noexcept;
     const std::unordered_map<std::string, std::uint64_t>& images() const noexcept;
     const std::vector<CacheRegion>& cacheRegions() const noexcept;
+    const std::vector<TproMapping>& tproMappings() const noexcept;
     std::optional<bool> newFormatTlvs() const noexcept;
     std::optional<std::int64_t> tlvGetAddrFastEntry() const;
 

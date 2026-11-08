@@ -190,6 +190,7 @@ struct SharedCache::Impl {
     std::optional<bool> hasNewFormatTlvs;
     std::vector<std::uint8_t> uuid;
     std::vector<CacheRegion> publicRegions;
+    std::vector<SharedCache::TproMapping> tproMappings;
 
     explicit Impl() {
         const std::string filename = "dyld_shared_cache_arm64e";
@@ -258,6 +259,46 @@ struct SharedCache::Impl {
                 fail("Dyld subcache UUID mismatch");
             }
             addMappings(file);
+        }
+        if (headerSize >= 520) {
+            constexpr std::size_t tproOffsetField = 512;
+            constexpr std::size_t tproCountField = 516;
+            constexpr std::size_t tproEntrySize = 16;
+            constexpr std::uint64_t tproDataFlag = 1ULL << 6U;
+            const auto tableOffset = static_cast<std::size_t>(readWord(*main, tproOffsetField, 4));
+            const auto tableCount = static_cast<std::size_t>(readWord(*main, tproCountField, 4));
+            if (tableCount != 0) {
+                if (tableOffset == 0 || tableOffset > main->size() ||
+                    tableCount > (main->size() - tableOffset) / tproEntrySize) {
+                    fail("Invalid dyld shared-cache TPRO mapping table");
+                }
+                tproMappings.reserve(tableCount);
+                for (std::size_t index = 0; index < tableCount; ++index) {
+                    const auto entry = tableOffset + index * tproEntrySize;
+                    const auto unslidAddress = readWord(*main, entry, 8);
+                    const auto size = readWord(*main, entry + 8, 8);
+                    if (size == 0 || size > std::numeric_limits<std::uint64_t>::max() - unslidAddress) {
+                        fail("Invalid dyld shared-cache TPRO mapping range");
+                    }
+                    const auto mapping = std::find_if(mappings.begin(), mappings.end(),
+                        [unslidAddress, size](const Mapping& candidate) {
+                            return (candidate.flags & tproDataFlag) != 0 &&
+                                unslidAddress >= candidate.start &&
+                                unslidAddress - candidate.start < candidate.size &&
+                                size <= candidate.size - (unslidAddress - candidate.start);
+                        });
+                    if (mapping == mappings.end()) {
+                        fail("Dyld shared-cache TPRO range is outside mapped cache data");
+                    }
+                    const auto guestAddress = this->guestAddress(unslidAddress);
+                    const auto guestLastAddress = this->guestAddress(unslidAddress + size - 1);
+                    if (guestLastAddress < guestAddress ||
+                        static_cast<std::uint64_t>(guestLastAddress - guestAddress) != size - 1) {
+                        fail("Dyld shared-cache TPRO range exceeds guest address space");
+                    }
+                    tproMappings.push_back({unslidAddress, size, guestAddress});
+                }
+            }
         }
         publicRegions.reserve(mappings.size());
         for (const auto& mapping : mappings) {
@@ -508,6 +549,7 @@ std::uint64_t SharedCache::mappedSize() const noexcept { return impl_->mappedSiz
 const std::vector<std::uint8_t>& SharedCache::uuid() const noexcept { return impl_->uuid; }
 const std::unordered_map<std::string, std::uint64_t>& SharedCache::images() const noexcept { return impl_->images; }
 const std::vector<SharedCache::CacheRegion>& SharedCache::cacheRegions() const noexcept { return impl_->publicRegions; }
+const std::vector<SharedCache::TproMapping>& SharedCache::tproMappings() const noexcept { return impl_->tproMappings; }
 std::optional<bool> SharedCache::newFormatTlvs() const noexcept { return impl_->hasNewFormatTlvs; }
 
 std::optional<std::int64_t> SharedCache::tlvGetAddrFastEntry() const {
