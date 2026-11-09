@@ -27,6 +27,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <new>
@@ -38,6 +39,7 @@
 #include <signal.h>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/socket.h>
@@ -2400,6 +2402,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     (void)inserted;
     auto* activeKernel = &initialKernel->second;
     std::int64_t activeEntry = initialEntry;
+    std::size_t startupIndex = 0;
+    std::string lastKernelSelectionPath = "initial-startup-entry";
     const auto selectKernel = [&](std::int64_t entry) {
         const bool selectorStub = image.cache_reader &&
             (image.cache_reader->stubTarget(entry).has_value() ||
@@ -2418,6 +2422,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         activeKernel = &found->second;
         activeEntry = entry;
+        lastKernelSelectionPath = "selectKernel-transition";
     };
     const auto clearInvalidatedProcessCodeCache = [&]() {
         if (!processCodeCacheInvalidated) return false;
@@ -2436,6 +2441,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         &memoryBuffer, &sizeBuffer, &writableBuffer, &residentBuffer,
         &memoryConfigBuffer};
     const DispatchSize one{1, 1, 1};
+    struct PreviousDispatch {
+        bool valid = false;
+        std::uint64_t startPc = 0;
+        std::uint64_t returnedPc = 0;
+        std::uint64_t status = 0;
+        std::uint64_t startBudget = 0;
+        std::uint64_t returnedBudget = 0;
+        std::int64_t selectedEntry = 0;
+        bool usedInterpreter = false;
+        std::size_t packetCount = 0;
+    } previousDispatch;
+    std::string lastHostTransition = "none";
     HostServiceState hostServiceState;
     if (performanceSummary.enabled()) {
         hostServiceState.recordPerformanceHostService = [&](double seconds) {
@@ -2443,13 +2460,77 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         };
     }
     const auto dispatchActiveKernel = [&]() {
+        auto* before = static_cast<std::uint64_t*>(stateBuffer.data());
+        const auto startPc = before[33];
+        const auto startBudget = before[36];
+        const auto selectedEntry = activeEntry;
+        const bool usedInterpreter = activeKernel->usesInterpreter;
+        const auto packetCount = usedInterpreter
+            ? activeKernel->interpretedPackets.size() : 0;
         DispatchTiming timing;
-        if (activeKernel->usesInterpreter) {
-            timing = interpreter->dispatch(backend, activeKernel->interpretedPackets,
-                                           stateBuffer, &interpreterMemoryAccess).timing;
-        } else {
-            timing = backend.dispatch(activeKernel->translated, bindings, one, one);
+        try {
+            if (usedInterpreter) {
+                timing = interpreter->dispatch(backend, activeKernel->interpretedPackets,
+                                               stateBuffer, &interpreterMemoryAccess).timing;
+            } else {
+                timing = backend.dispatch(activeKernel->translated, bindings, one, one);
+            }
+        } catch (const std::invalid_argument& error) {
+            constexpr std::string_view missingPc =
+                "Interpreter process PC is absent from the packet table";
+            if (!usedInterpreter || std::string_view(error.what()).find(missingPc) ==
+                                        std::string_view::npos) {
+                throw;
+            }
+            const auto& packets = activeKernel->interpretedPackets;
+            const auto currentPc = before[33];
+            std::ostringstream detail;
+            detail << error.what()
+                   << "; current_pc=0x" << hexadecimal(currentPc)
+                   << " active_entry=0x" << hexadecimal(
+                       static_cast<std::uint64_t>(selectedEntry))
+                   << " selected_path=" << lastKernelSelectionPath
+                   << " startup_index=" << startupIndex
+                   << " packet_count=" << packets.size();
+            if (!packets.empty()) {
+                detail << " packet_range=0x" << hexadecimal(packets.front().pc)
+                       << "..0x" << hexadecimal(packets.back().pc);
+                const auto found = std::find_if(packets.begin(), packets.end(),
+                    [currentPc](const auto& packet) { return packet.pc == currentPc; });
+                detail << " pc_membership=" << (found != packets.end() ? "present" : "absent");
+                if (found == packets.end()) {
+                    const auto next = std::lower_bound(packets.begin(), packets.end(), currentPc,
+                        [](const auto& packet, std::uint64_t pc) { return packet.pc < pc; });
+                    if (next != packets.begin()) {
+                        detail << " previous_packet=0x" << hexadecimal(std::prev(next)->pc);
+                    }
+                    if (next != packets.end()) {
+                        detail << " next_packet=0x" << hexadecimal(next->pc);
+                    }
+                }
+            } else {
+                detail << " packet_range=empty pc_membership=absent";
+            }
+            if (previousDispatch.valid) {
+                detail << " previous_dispatch_start=0x" << hexadecimal(previousDispatch.startPc)
+                       << " previous_dispatch_returned=0x" << hexadecimal(previousDispatch.returnedPc)
+                       << " previous_dispatch_status=" << previousDispatch.status
+                       << " previous_dispatch_budget=" << previousDispatch.startBudget
+                       << "->" << previousDispatch.returnedBudget
+                       << " previous_kernel_entry=0x" << hexadecimal(
+                           static_cast<std::uint64_t>(previousDispatch.selectedEntry))
+                       << " previous_kernel_kind="
+                       << (previousDispatch.usedInterpreter ? "interpreter" : "translated")
+                       << " previous_packet_count=" << previousDispatch.packetCount;
+            } else {
+                detail << " previous_dispatch=none";
+            }
+            detail << " last_host_transition=" << lastHostTransition;
+            throw std::invalid_argument(detail.str());
         }
+        const auto* after = static_cast<const std::uint64_t*>(stateBuffer.data());
+        previousDispatch = {true, startPc, after[33], after[34], startBudget, after[36],
+                            selectedEntry, usedInterpreter, packetCount};
         performanceSummary.recordDispatch(timing);
     };
     HostServiceState::GuestUnixSocket guestSyslogSink;
@@ -4288,7 +4369,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return canonical;
     };
-    std::size_t startupIndex = 0;
     const auto advanceStartup = [&]() {
         if (startupIndex + 1 >= startup.size()) return false;
         progressTrace.event("initializer-done", startup[startupIndex], startupIndex);
@@ -4304,6 +4384,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             startup[startupIndex], startupIndex);
         std::memcpy(stateBuffer.data(), processRegisters.data(),
                     processRegisters.size() * sizeof(std::uint64_t));
+        selectKernel(static_cast<std::int64_t>(startup[startupIndex]));
+        lastKernelSelectionPath = "startup-advance";
         return true;
     };
     const auto makeCacheResident = [&](std::uint64_t requested,
@@ -7366,6 +7448,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 static_cast<const std::uint64_t*>(stateBuffer.data()) +
                     stateBuffer.size() / sizeof(std::uint64_t));
             const auto service = registers[35];
+            lastHostTransition = "service=" + std::to_string(service) + "@pc=0x" +
+                hexadecimal(hostRegisters[33]);
             progressTrace.event("host-service", hostRegisters[33], service);
             if (service == kMemcpyChkFailureService ||
                 service == kMemsetChkFailureService) {
@@ -9702,6 +9786,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (status == 13) {
             const auto syscall = registers[16];
+            lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
+                hexadecimal(registers[33]);
             progressTrace.event("raw-syscall", registers[33], syscall);
             if (syscall == 336) {
                 constexpr std::uint64_t carryMask = 8U;
