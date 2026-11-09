@@ -7,7 +7,8 @@ namespace arm64metal {
 using Instruction = translate_core::Instruction;
 // Lower a process import to GPU code or a host-service boundary.
 Instruction hostCall(const std::string &name,
-                     std::optional<int64_t> returnAddress, bool cached);
+                     std::optional<int64_t> returnAddress, bool cached,
+                     std::optional<int64_t> callerAddress = std::nullopt);
 // Decode one process ARM64 instruction into Metal code and CFG successors.
 // Guest arithmetic, memory, SIMD and authentication execute only in Metal.
 // Throws std::runtime_error for unsupported or reserved encodings.

@@ -7527,9 +7527,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     target = *authenticated;
                 } else {
                     const auto resume = hostRegisters[33];
-                    const auto callerAbi = resume >= 4 && resume - 4 <=
+                    const auto callerPc = hostRegisters[guestFaultAddress] != kNoFault
+                        ? hostRegisters[guestFaultAddress]
+                        : resume >= 4 ? resume - 4 : 0;
+                    const auto callerAbi = callerPc != 0 && callerPc <=
                         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
-                        ? image.is_arm64e_code(static_cast<std::int64_t>(resume - 4))
+                        ? image.is_arm64e_code(static_cast<std::int64_t>(callerPc))
                         : std::nullopt;
                     if (!callerAbi || *callerAbi)
                         throw std::runtime_error("Guest exit callback requires an authenticated IA/0 pointer");

@@ -67,7 +67,8 @@ std::string mappedOffset(const std::string &address, const std::string &count,
 } // namespace
 
 Instruction hostCall(const std::string &name,
-                     std::optional<int64_t> returnAddress, bool cached) {
+                     std::optional<int64_t> returnAddress, bool cached,
+                     std::optional<int64_t> callerAddress) {
   if (auto lowered = guest_string_call(
           name,
           returnAddress ? std::optional<uint64_t>(*returnAddress)
@@ -143,6 +144,8 @@ Instruction hostCall(const std::string &name,
     throw GuestError("Unsupported executable import " + name);
   return {
       {returnAddress ? "x[30] = " + str(*returnAddress) + "ul;" : "",
+       callerAddress && (service->second == 166 || service->second == 167)
+           ? "x[874] = " + str(*callerAddress) + "ul;" : "",
        "x[33] = x[30];",
        "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
        "x[35] = " + str(service->second) + "ul; x[34] = 4; return;"},
@@ -416,7 +419,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     if (imports.count(target) && !usesGuestAllocator) {
       auto name = imports.at(target);
       return hostCall(
-          name, linked ? std::optional<int64_t>(next) : std::nullopt, cached);
+          name, linked ? std::optional<int64_t>(next) : std::nullopt, cached, pc);
     }
     auto destination =
         (guestStubs.count(target) ? guestStubs.at(target) : target);
