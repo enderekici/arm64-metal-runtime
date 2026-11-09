@@ -439,6 +439,10 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 5, 5), elementWidth, reverseGroupWidth,
                      vectorWidth};
   }
+  if ((bits & 0xfffffc00U) == 0x1e604000U) {
+    return Operation{Opcode::ScalarFloatingPoint, field(bits, 0, 5),
+                     field(bits, 5, 5), 0U, 20U, 64U};
+  }
   if ((bits & 0x7f3efc00U) == 0x1e220000U) {
     const auto floatWidth = field(bits, 22, 1) != 0 ? 64U : 32U;
     const auto sourceWidth = field(bits, 31, 1) != 0 ? 64U : 32U;
@@ -1059,7 +1063,9 @@ Instruction make_operation_instruction(Operation operation,
         (kind == 1U && operation.shift != 4U) ||
         (kind == 2U && operation.shift != 8U) ||
         (kind == 3U && operation.shift != 12U) ||
-        (kind == 4U && operation.shift < 16U) || kind > 4U ||
+        (kind == 4U && operation.shift < 16U) ||
+        (kind == 5U && (operation.shift != 20U || operation.width != 64U)) ||
+        kind > 5U ||
         ((kind != 1U && kind != 4U) && operation.immediate != 0U) ||
         (kind == 4U && (detail & 2U) != 0U && operation.immediate != 0U)) {
       throw std::invalid_argument("Typed scalar FP operands are invalid");
@@ -1099,6 +1105,11 @@ Instruction make_operation_instruction(Operation operation,
                      "] = fp_result.value; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+    } else if (kind == 5U) {
+      code.push_back("x[" + destination + "] = x[" +
+                     scalarRegister(operation.source) + "]; x[" +
+                     std::to_string(807U + 2U * operation.destination) +
+                     "] = 0ul;");
     } else {
       const auto right = (detail & 2U) != 0U
           ? std::string("0ul")

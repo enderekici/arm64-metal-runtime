@@ -69,6 +69,7 @@ Result Interpreter::dispatch(const Backend& backend,
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
     bool hasInitialPc = false;
     bool hasAuthenticatedReturn = false;
+    bool hasScalarFP = false;
     std::size_t initialPacketIndex = packets.size();
     bool hasMemoryAccess = false;
     std::uint64_t previousPc = 0;
@@ -294,6 +295,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter bitfield packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::ScalarFloatingPoint) {
+            hasScalarFP = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto kind = operation[4] >> 2U;
             const auto maxImmediate = kind == 1U ? 255U : kind == 4U ? 31U : 0U;
@@ -305,7 +307,9 @@ Result Interpreter::dispatch(const Backend& backend,
                  kind == 2U ? operation[4] != 8U :
                  kind == 3U ? operation[4] != 12U :
                  kind == 4U ?
-                     (operation[4] < 16U || operation[4] > 19U) : true) ||
+                     (operation[4] < 16U || operation[4] > 19U) :
+                 kind == 5U ?
+                     (operation[4] != 20U || operation[5] != 64U) : true) ||
                 ((kind != 1U && kind != 4U) && operation[3] != 0U) ||
                 (kind == 4U && (operation[4] & 2U) != 0U && operation[3] != 0U) ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
@@ -577,6 +581,11 @@ Result Interpreter::dispatch(const Backend& backend,
     if ((initialPacket.flags & packetBlockStart) == 0 && !memoryRetry) {
         throw std::invalid_argument(
             "Interpreter mid-block entry requires a host cache-retry marker");
+    }
+    if (hasScalarFP &&
+        processState.size() < 878 * sizeof(std::uint64_t)) {
+        throw std::invalid_argument(
+            "Interpreter scalar-FP operation requires vector register state");
     }
     if (hasMemoryAccess && (memoryAccess == nullptr ||
         memoryAccess->guestMemoryBuffer == nullptr || memoryAccess->guestSizeBuffer == nullptr ||

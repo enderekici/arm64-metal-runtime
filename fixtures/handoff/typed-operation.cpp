@@ -948,6 +948,12 @@ int main() {
   assert(scvtf.has_value() && scvtf->opcode == Opcode::ScalarFloatingPoint &&
          scvtf->destination == 3 && scvtf->source == 5 && scvtf->shift == 1 &&
          scvtf->width == 32);
+  const auto fmovD = decode_operation(0x1e604100U);  // fmov d0, d8
+  assert(fmovD.has_value() && fmovD->opcode == Opcode::ScalarFloatingPoint &&
+         fmovD->destination == 0 && fmovD->source == 8 && fmovD->immediate == 0 &&
+         fmovD->shift == 20 && fmovD->width == 64);
+  assert((serialize_operation(*fmovD) ==
+          arm64metal::translate_core::OperationPacket{32, 0, 8, 0, 20, 64}));
   const auto fmovImmediate = decode_operation(0x1e6d1001U);  // fmov d1, #0.75
   assert(fmovImmediate.has_value() &&
          fmovImmediate->opcode == Opcode::ScalarFloatingPoint &&
@@ -984,6 +990,9 @@ int main() {
   assert(make_operation_instruction(*fnegD, {0x1000}, LoweringMode::Process,
                                     std::uint64_t{1} << 48)
              .code[0].find("scalar_fp_negate(") != std::string::npos);
+  const auto loweredFmovD = make_operation_instruction(
+      *fmovD, {0x1000}, LoweringMode::Process, std::uint64_t{1} << 48);
+  assert(loweredFmovD.code[0] == "x[806] = x[822]; x[807] = 0ul;");
   const auto loweredFcmp = make_operation_instruction(
       *fcmpeS, {0x1000}, LoweringMode::Process, std::uint64_t{1} << 48);
   assert(loweredFcmp.code[0].find("scalar_fp_compare(") != std::string::npos &&

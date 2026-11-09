@@ -192,6 +192,7 @@ INTERPRETER_RUNTIME_GUARD_NATIVE := $(BUILD_DIR)/interpreter-pthread-runtime-own
 INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
 INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 INTERPRETER_SCALAR_FP_COMPARE_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-compare-main
+INTERPRETER_SCALAR_FMOV_D_MAIN := $(BUILD_DIR)/interpreter-scalar-fmov-d-main
 INTERPRETER_SCALAR_FP_COMPARE_CASES := $(addprefix $(BUILD_DIR)/interpreter-scalar-fp-compare-case-,1 2 3 4 5)
 ADC_SBC_CARRY_DECODE_TEST := $(BUILD_DIR)/adc-sbc-carry-decode-test
 GUEST_FORMAT_NATIVE := $(BUILD_DIR)/guest-printf-formats-native
@@ -990,6 +991,10 @@ $(INTERPRETER_SCALAR_FP_MAIN): ../fixtures/interpreter/scalar-fp-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_SCALAR_FMOV_D_MAIN): ../fixtures/interpreter/scalar-fmov-d-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
 $(INTERPRETER_SCALAR_FP_COMPARE_MAIN): ../fixtures/interpreter/scalar-fp-compare-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -1004,6 +1009,31 @@ verify-scalar-fp-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_MAI
 		set +e; "$(INTERPRETER_SCALAR_FP_MAIN)"; status=$$?; set -e; \
 		test "$$status" -eq 42; \
 		echo "scalar-fp native guest exit=$$status"
+
+.PHONY: verify-scalar-fmov-d-native verify-scalar-fmov-d-interpreter
+verify-scalar-fmov-d-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FMOV_D_MAIN)
+	@set -eu; \
+		"$(INTERPRETER_TYPED_NATIVE)"; \
+		set +e; "$(INTERPRETER_SCALAR_FMOV_D_MAIN)"; status=$$?; set -e; \
+		test "$$status" -eq 42; \
+		echo "scalar-fmov-d native guest exit=$$status"
+
+verify-scalar-fmov-d-interpreter: $(APP) $(INTERPRETER_SCALAR_FMOV_D_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/scalar-fmov-d-interpreter.XXXXXX"); \
+		set +e; \
+		"$(INTERPRETER_SCALAR_FMOV_D_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_SCALAR_FMOV_D_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_SCALAR_FMOV_D_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		test "$$native_rc" -eq 42 && test "$$translated_rc" -eq 42 && test "$$interpreter_rc" -eq 42 && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/interpreter.err" && \
+		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/interpreter.err" && \
+		echo "scalar-fmov-d native/translated/interpreter verified: $$run_dir"
 
 verify-scalar-fp-interpreter: $(APP) $(INTERPRETER_SCALAR_FP_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; \

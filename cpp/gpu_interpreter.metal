@@ -421,14 +421,15 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                          kind == 1u ? packed != 4u :
                          kind == 2u ? packed != 8u :
                          kind == 3u ? packed != 12u :
-                         kind == 4u ? (packed < 16u || packed > 19u) : true) ||
+                         kind == 4u ? (packed < 16u || packed > 19u) :
+                         kind == 5u ? (packed != 20u || width != 64u) : true) ||
                         ((kind != 1u && kind != 4u) && immediate != 0u) ||
                         (kind == 4u && (detail & 2u) != 0u && immediate != 0u)) {
                         state[33] = pc;
                         state[34] = 7;
                         return;
                     }
-                    ScalarFPResult result;
+                    ScalarFPResult result = ScalarFPResult{0ul, 0u};
                     if (kind == 0u) {
                         const uint sourceWidth = (packed & 2u) != 0u ? 64u : 32u;
                         const uint signedInput = packed & 1u;
@@ -443,6 +444,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                             state[806u + 2u * rn], width, uint(state[870]));
                     } else if (kind == 3u) {
                         result = scalar_fp_negate(state[806u + 2u * rn], width);
+                    } else if (kind == 5u) {
+                        result = ScalarFPResult{state[806u + 2u * rn], 0u};
                     } else {
                         const ulong right = (detail & 2u) != 0u
                             ? 0ul : state[806u + 2u * immediate];

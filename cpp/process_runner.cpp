@@ -758,7 +758,9 @@ ProcessKernelPlan plan_process_kernel(
                   scalarFPKind == 2U ? operation.shift == 8U :
                   scalarFPKind == 3U ? operation.shift == 12U :
                   scalarFPKind == 4U ?
-                      (operation.shift >= 16U && operation.shift <= 19U) : false) &&
+                      (operation.shift >= 16U && operation.shift <= 19U) :
+                  scalarFPKind == 5U ?
+                      (operation.shift == 20U && operation.width == 64U) : false) &&
                  ((scalarFPKind == 1U || scalarFPKind == 4U) ||
                   operation.immediate == 0U) &&
                  (scalarFPKind != 4U || (operation.shift & 2U) == 0U ||
