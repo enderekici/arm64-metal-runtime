@@ -3109,6 +3109,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::set<std::uint32_t> guestDeadPortNames;
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::set<std::uint32_t> guestSemaphoreNames;
+    // This reference is held by the emulated task object, independently of
+    // the guest namespace's send urefs for the same port name.
+    std::optional<std::uint32_t> guestTaskDebugControlPort;
+    bool guestTaskDebugControlPortDead = false;
     std::uint32_t nextGuestSemaphoreName = 0x20000003U;
     struct GuestLocalPortRightTransfer {
         std::uint32_t name;
@@ -10540,6 +10544,132 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                if (messageId == 3410) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x10000002;
+                    constexpr std::uint32_t machSendInvalidRight = 0x1000000a;
+                    constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
+                    constexpr std::uint32_t machMessageComplex = 0x80000000;
+                    constexpr std::uint32_t machCopySend = 19;
+                    constexpr std::uint32_t requestSize = 52;
+                    constexpr std::uint32_t responseSize = 36;
+                    constexpr std::uint32_t minimumTrailerSize = 8;
+                    constexpr std::uint32_t taskDebugControlPort = 10;
+                    constexpr std::uint32_t replyMessageId = 3510;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto taskSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachTaskPort ||
+                        taskSendRight == guestSendRightUrefs.end() ||
+                        taskSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
+                    const auto message = static_cast<std::uint32_t>(registers[4] >> 32);
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) !=
+                            (machMessageComplex | 0x1513U) ||
+                        (registers[2] >> 32) != requestSize ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        message != 3410 || static_cast<std::uint32_t>(registers[5]) != 1 ||
+                        receiveName != reply || registers[6] >
+                            std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    struct TaskSetSpecialPortRequest {
+                        mach_msg_header_t header;
+                        mach_msg_body_t body;
+                        mach_msg_port_descriptor_t specialPort;
+                        NDR_record_t ndr;
+                        std::int32_t whichPort;
+                    };
+                    struct TaskSetSpecialPortReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct TaskSetSpecialPortMinimumTrailer {
+                        mach_msg_trailer_type_t type;
+                        mach_msg_trailer_size_t size;
+                    };
+                    static_assert(sizeof(TaskSetSpecialPortRequest) == requestSize);
+                    static_assert(sizeof(TaskSetSpecialPortReply) == responseSize);
+                    static_assert(sizeof(TaskSetSpecialPortMinimumTrailer) ==
+                                  minimumTrailerSize);
+                    const auto* requestBytes = guestMemory.buffer(registers[0], requestSize);
+                    TaskSetSpecialPortRequest request{};
+                    std::memcpy(&request, requestBytes, sizeof(request));
+                    if (request.header.msgh_bits !=
+                            (machMessageComplex | 0x1513U) ||
+                        request.header.msgh_size != requestSize ||
+                        request.header.msgh_remote_port != remote ||
+                        request.header.msgh_local_port != reply ||
+                        request.header.msgh_voucher_port != MACH_PORT_NULL ||
+                        request.header.msgh_id != 3410 ||
+                        request.body.msgh_descriptor_count != 1 ||
+                        request.specialPort.disposition != machCopySend ||
+                        request.specialPort.type != MACH_MSG_PORT_DESCRIPTOR ||
+                        std::memcmp(&request.ndr, &NDR_record, sizeof(request.ndr)) != 0) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    kern_return_t result = KERN_SUCCESS;
+                    const auto specialName = request.specialPort.name;
+                    if (specialName != MACH_PORT_NULL) {
+                        const auto specialRight = guestSendRightUrefs.find(specialName);
+                        if (specialRight == guestSendRightUrefs.end() ||
+                            specialRight->second == 0 ||
+                            guestReceiveRights.find(specialName) ==
+                                guestReceiveRights.end() ||
+                            guestDeadPortNames.find(specialName) !=
+                                guestDeadPortNames.end()) {
+                            registers[0] = machSendInvalidRight;
+                            registers[34] = 0;
+                            continue;
+                        }
+                    }
+                    if (request.whichPort !=
+                        static_cast<std::int32_t>(taskDebugControlPort)) {
+                        result = KERN_INVALID_ARGUMENT;
+                    } else {
+                        // COPY_SEND leaves the caller's urefs unchanged. The
+                        // task's held reference is tracked separately from them.
+                        guestTaskDebugControlPort = specialName;
+                        guestTaskDebugControlPortDead = false;
+                    }
+
+                    if (registers[6] < responseSize + minimumTrailerSize) {
+                        registers[0] = machReceiveTooLarge;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    auto* replyBuffer = guestMemory.buffer(
+                        registers[0], responseSize + minimumTrailerSize, true);
+                    TaskSetSpecialPortReply response{};
+                    response.header.msgh_bits = 0x1200;
+                    response.header.msgh_size = responseSize;
+                    response.header.msgh_remote_port = MACH_PORT_NULL;
+                    response.header.msgh_local_port = reply;
+                    response.header.msgh_voucher_port = MACH_PORT_NULL;
+                    response.header.msgh_id = replyMessageId;
+                    response.ndr = NDR_record;
+                    response.returnCode = result;
+                    std::memcpy(replyBuffer, &response, sizeof(response));
+                    const TaskSetSpecialPortMinimumTrailer trailer{
+                        MACH_MSG_TRAILER_FORMAT_0, minimumTrailerSize};
+                    std::memcpy(replyBuffer + responseSize, &trailer, sizeof(trailer));
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 3409) {
                     constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
                     constexpr std::uint32_t machSendInvalidData = 0x10000002;
@@ -10548,6 +10678,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr kern_return_t kernDenied = 53;
                     constexpr std::uint32_t taskKernelPort = 1;
                     constexpr std::uint32_t taskBootstrapPort = 4;
+                    constexpr std::uint32_t taskDebugControlPort = 10;
                     constexpr std::uint32_t machMessageComplex = 0x80000000;
                     constexpr std::uint32_t requestSize = 36;
                     constexpr std::uint32_t successReplySize = 40;
@@ -10599,11 +10730,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
 
                     kern_return_t result = KERN_SUCCESS;
+                    std::uint32_t specialPortName =
+                        static_cast<std::uint32_t>(guestMachBootstrapPort);
+                    bool specialPortIsDead = false;
                     if (whichPort == static_cast<std::int32_t>(taskKernelPort) ||
                         whichPort == -1) {
                         result = kernDenied;
                     } else if (whichPort == 0 || whichPort == 7) {
                         result = kernInvalidArgument;
+                    } else if (whichPort ==
+                               static_cast<std::int32_t>(taskDebugControlPort)) {
+                        if (!guestTaskDebugControlPort.has_value()) {
+                            throw std::runtime_error(
+                                "Guest task debug-control port has not been initialized");
+                        }
+                        specialPortName = *guestTaskDebugControlPort;
+                        specialPortIsDead = guestTaskDebugControlPortDead;
                     } else if (whichPort != static_cast<std::int32_t>(taskBootstrapPort)) {
                         throw std::runtime_error(
                             "Unsupported guest task_get_special_port selector");
@@ -10651,8 +10793,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         prepareHeader(response.header, sizeof(response),
                                       machMessageComplex | 0x1200);
                         response.body.msgh_descriptor_count = 1;
-                        response.specialPort.name = acquireGuestFixedSendRight(
-                            static_cast<std::uint32_t>(guestMachBootstrapPort));
+                        response.specialPort.name = specialPortName == MACH_PORT_NULL
+                            ? MACH_PORT_NULL
+                            : specialPortIsDead ? MACH_PORT_DEAD
+                            : acquireGuestFixedSendRight(specialPortName);
                         response.specialPort.disposition = MACH_MSG_TYPE_MOVE_SEND;
                         response.specialPort.type = MACH_MSG_PORT_DESCRIPTOR;
                         std::memcpy(replyBuffer, &response, sizeof(response));
@@ -12124,6 +12268,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         if (sendRight != guestSendRightUrefs.end() &&
                             sendRight->second != 0) {
                             guestDeadPortNames.insert(name);
+                        }
+                        if (guestTaskDebugControlPort == name) {
+                            guestTaskDebugControlPortDead = true;
                         }
                         guestReceiveRights.erase(right);
                         // Dropping this port's queue also drops any in-transit descriptors.
