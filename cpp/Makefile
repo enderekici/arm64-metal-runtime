@@ -1189,6 +1189,7 @@ verify-mach-vm-region-native: $(BUILD_DIR)/mach-vm-region-native
 	cmp "$(BUILD_DIR)/mach-vm-region.expected.out" "$(BUILD_DIR)/mach-vm-region.native.out"
 
 HOST_VM_SERVICE_TEST := $(BUILD_DIR)/host-vm-service-test
+HOST_FILE_METADATA_SERVICE_TEST := $(BUILD_DIR)/host-file-metadata-service-test
 MACH_VM_READ_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-read-overwrite
 
 verify-mach-vm-named-services:
@@ -1198,6 +1199,15 @@ verify-mach-vm-named-services:
 		$(filter-out main.cpp,$(APP_SOURCES)) ../fixtures/handoff/host-vm-service-test.cpp \
 		-framework Foundation -framework Metal -framework Security -o "$(HOST_VM_SERVICE_TEST)"
 	"$(HOST_VM_SERVICE_TEST)"
+
+verify-host-file-metadata-services: $(HOST_FILE_METADATA_SERVICE_TEST)
+	"$(HOST_FILE_METADATA_SERVICE_TEST)"
+
+$(HOST_FILE_METADATA_SERVICE_TEST): $(filter-out main.cpp,$(APP_SOURCES)) \
+		../fixtures/handoff/host-file-metadata-service-test.cpp
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang++ $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks $^ \
+		-framework Foundation -framework Metal -framework Security -o "$@"
 
 verify-mach-vm-deferred-reclamation-native: $(MACH_VM_DEFERRED_RECLAMATION_NATIVE)
 	"$(MACH_VM_DEFERRED_RECLAMATION_NATIVE)" >"$(BUILD_DIR)/mach-vm-deferred-reclamation.native.out"

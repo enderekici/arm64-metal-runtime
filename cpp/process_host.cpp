@@ -835,6 +835,74 @@ HostServiceResult dispatch_guest_host_service(
         }, guest_string_reader);
     };
     switch (service) {
+        case 240: {  // chmod
+            const auto path = string_at(registers[0]);
+            const auto result = ::chmod(path.c_str(), static_cast<mode_t>(registers[1]));
+            if (result != 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 241: {  // fchmod on a descriptor owned by the guest process
+            const auto descriptor = static_cast<std::int32_t>(registers[0]);
+            if (!owns_descriptor(descriptor)) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::fchmod(descriptor, static_cast<mode_t>(registers[1]));
+            if (result != 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 242:  // futimens on a descriptor owned by the guest process
+        case 243: {  // utimensat; only AT_FDCWD or guest-owned directory descriptors
+            struct GuestTimespec { std::int64_t seconds; std::int64_t nanoseconds; };
+            static_assert(sizeof(GuestTimespec) == 16);
+            static_assert(offsetof(GuestTimespec, nanoseconds) == 8);
+            std::array<struct timespec, 2> times{};
+            const auto timesAddress = registers[service == 242 ? 1 : 2];
+            const struct timespec* timesPointer = nullptr;
+            if (timesAddress != 0) {
+                const auto* guestTimes = memory.buffer(
+                    timesAddress, sizeof(GuestTimespec) * 2);
+                for (std::size_t index = 0; index < times.size(); ++index) {
+                    GuestTimespec guestTime{};
+                    std::memcpy(&guestTime, guestTimes + index * sizeof(GuestTimespec),
+                                sizeof(guestTime));
+                    times[index].tv_sec = static_cast<time_t>(guestTime.seconds);
+                    times[index].tv_nsec = static_cast<long>(guestTime.nanoseconds);
+                }
+                timesPointer = times.data();
+            }
+            int result = -1;
+            if (service == 242) {
+                const auto descriptor = static_cast<std::int32_t>(registers[0]);
+                if (!owns_descriptor(descriptor)) {
+                    set_errno(EBADF);
+                    registers[0] = failure;
+                    break;
+                }
+                result = ::futimens(descriptor, timesPointer);
+            } else {
+                const auto directory = static_cast<std::int32_t>(registers[0]);
+                const auto flags = static_cast<int>(registers[3]);
+                if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+                    set_errno(EBADF);
+                    registers[0] = failure;
+                    break;
+                }
+                if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
+                    set_errno(EINVAL);
+                    registers[0] = failure;
+                    break;
+                }
+                const auto path = string_at(registers[1]);
+                result = ::utimensat(directory, path.c_str(), timesPointer, flags);
+            }
+            if (result != 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
         case 183: {  // bootstrap_look_up (restricted, read-only service discovery)
             constexpr std::uint32_t bootstrapUnknownService = BOOTSTRAP_UNKNOWN_SERVICE;
             std::uint8_t* output = nullptr;
