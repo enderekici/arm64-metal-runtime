@@ -2743,9 +2743,14 @@ HostServiceResult dispatch_guest_host_service(
                         } else {
                             const auto pathBytes = static_cast<std::size_t>(
                                 terminator - hostPath.data()) + 1;
-                            auto* guestPath = memory.buffer(
-                                guestPathAddress, pathBytes, true);
-                            std::memcpy(guestPath, hostPath.data(), pathBytes);
+                            if (guestPathAddress == 0) {
+                                result = -1;
+                                errno = EFAULT;
+                            } else {
+                                auto* guestPath = memory.buffer(
+                                    guestPathAddress, pathBytes, true);
+                                std::memcpy(guestPath, hostPath.data(), pathBytes);
+                            }
                         }
                     }
                 } catch (const std::out_of_range&) {
