@@ -15,7 +15,7 @@
 namespace arm64metal {
 namespace {
 
-constexpr std::uint64_t kSignalReturnSentinel = ~std::uint64_t{0};
+constexpr std::uint64_t kSignalReturnSentinel = guestReturnSentinel;
 constexpr std::size_t kGuestSiginfoSize = 104;
 constexpr std::size_t kGuestUcontextSize = 56;
 constexpr std::size_t kGuestMcontextSize = 816;

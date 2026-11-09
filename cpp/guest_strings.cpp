@@ -267,7 +267,8 @@ std::optional<GuestInstruction> guest_string_call(
     } else {
         result.code.push_back(make_body(name, cached, map_offset));
     }
-    result.code.push_back("if (x[30] == ~0ul) { x[34] = 0; return; }");
+    result.code.push_back("if (x[30] == " + std::to_string(guest_code_limit) +
+                          "ul) { x[34] = 0; return; }");
     result.code.push_back("if (x[30] >= " + std::to_string(guest_code_limit) +
                           "ul) { x[34] = 3; return; }");
     result.code.push_back("pc = x[30]; break;");

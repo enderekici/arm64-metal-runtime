@@ -2,6 +2,7 @@
 
 #include "metal_backend.hpp"
 #include "translate_core.hpp"
+#include "guest_state.hpp"
 
 #include <array>
 #include <cstddef>
@@ -51,7 +52,7 @@ inline constexpr std::size_t authShadowStateWords =
            shadowDepth <= authShadowFrameCapacity;
 }
 inline constexpr std::size_t resultRegisterIndex = 0;
-inline constexpr std::uint64_t noReturnAddress = UINT64_MAX;
+inline constexpr std::uint64_t noReturnAddress = guestReturnSentinel;
 
 using ProcessState = std::array<std::uint64_t, processRegisterCount>;
 

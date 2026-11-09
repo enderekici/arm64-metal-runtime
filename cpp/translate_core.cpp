@@ -634,7 +634,8 @@ Instruction make_operation_instruction(Operation operation,
           "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
           "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { "
           "if (x[auth_slot + 2] != ~0ul) { ++x[auth_slot + 2]; } break; } }",
-          "if (x[30] == ~0ul) { x[34] = 0; return; }",
+          "if (x[30] == " + std::to_string(guest_code_limit) +
+              "ul) { x[34] = 0; return; }",
           "if (x[30] >= " + std::to_string(guest_code_limit) +
               "ul) { x[34] = 3; return; }",
           "x[33] = x[30];",
@@ -1129,7 +1130,8 @@ Instruction make_operation_instruction(Operation operation,
           "if (x[auth_slot + 2] != ~0ul) { ++x[auth_slot + 2]; } else { "
           "if (auth_index != x[37]) { x[34] = 6; return; } --x[37]; "
           "x[33] = " + std::to_string(guest_pc) + "ul; x[34] = 16; return; } break; } }",
-          "if (x[30] == ~0ul) { x[34] = 0; return; }",
+          "if (x[30] == " + std::to_string(guest_code_limit) +
+              "ul) { x[34] = 0; return; }",
           "if (x[30] >= " + std::to_string(guest_code_limit) +
               "ul) { x[34] = 3; return; }",
           "x[33] = x[30];",

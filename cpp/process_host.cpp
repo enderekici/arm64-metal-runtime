@@ -318,7 +318,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     result.registers[1] = result.vectorBase;
     result.registers[2] = result.environmentAddress;
     result.registers[3] = result.appleAddress;
-    result.registers[30] = std::numeric_limits<std::uint64_t>::max();
+    result.registers[30] = guestReturnSentinel;
     result.registers[31] = result.stack.end;
     result.registers[33] = input.entry;
     result.registers[guestPACGAKey] = input.randomPACGAKey0 == 0 ? random_word()

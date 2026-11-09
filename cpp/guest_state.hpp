@@ -12,6 +12,11 @@
 
 namespace arm64metal {
 
+inline constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48U;
+inline constexpr std::uint64_t guestReturnSentinel = guestCodeLimit;
+static_assert((guestReturnSentinel & 3U) == 0 &&
+              (guestReturnSentinel & (std::uint64_t{1} << 62U)) == 0);
+
 // Authenticate an IA-key, zero-modifier guest callback token against the full
 // current process state. No unsigned-pointer fallback. The returned target is
 // aligned and within the guest code address range; the caller must additionally

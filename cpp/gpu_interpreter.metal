@@ -1393,7 +1393,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     }
                 }
                 const ulong target = state[source];
-                if (target == ~0ul) {
+                if (target == (1ul << 48)) {
                     state[34] = 0;
                     return;
                 }
@@ -1472,7 +1472,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 if (step == 2u) {
                     const ulong target = state[30];
-                    if (target == ~0ul) {
+                    if (target == (1ul << 48)) {
                         state[34] = 0;
                         return;
                     }

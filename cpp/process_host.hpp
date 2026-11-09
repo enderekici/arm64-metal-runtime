@@ -32,7 +32,6 @@ inline constexpr std::size_t guestPACGAKey = 878;
 inline constexpr std::size_t guestTokenStart = 880;
 inline constexpr std::int32_t guestUnixSyslogCaptureDescriptor = -1;
 inline constexpr std::int32_t guestUnixClosedEndpoint = -2;
-inline constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
 inline constexpr std::uint64_t guestMappingBase = std::uint64_t{1} << 44U;
 inline constexpr std::uint64_t guestMappingLimit = std::uint64_t{1} << 45U;
 static_assert(guestMappingBase < guestMappingLimit);

@@ -103,6 +103,7 @@ AUTH_RETURN_BAD_SP_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-main
 AUTH_RETURN_BAD_LR_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-lr-retab-main
 AUTH_RETURN_BAD_SP_RETAB_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-retab-main
 AUTH_RETURN_BAD_SP_NESTED_MAIN := $(BUILD_DIR)/authenticated-return-bad-sp-nested-main
+RETURN_SENTINEL_MAIN := $(BUILD_DIR)/return-sentinel-main
 INTERPRETER_ADDP_2D_MAIN := $(BUILD_DIR)/interpreter-addp-2d-main
 ADDP_2D_PROCESS_TEST := $(BUILD_DIR)/addp-2d-process-decode-test
 XTN_PROCESS_TEST := $(BUILD_DIR)/xtn-process-decode-test
@@ -552,6 +553,21 @@ verify-authenticated-return-interpreter: $(APP) $(INTERPRETER_METALLIB) $(AUTH_R
 	run_case bad-lr-retab "$(AUTH_RETURN_BAD_LR_RETAB_MAIN)" 138 36,23,36; \
 	run_case bad-sp-retab "$(AUTH_RETURN_BAD_SP_RETAB_MAIN)" 138 36,10,36; \
 	echo 'Typed PACIBSP/AUTIBSP/RETAB packet PC traces and guest outcomes passed'
+
+$(RETURN_SENTINEL_MAIN): ../fixtures/interpreter/return-sentinel-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+.PHONY: verify-return-sentinel-native verify-return-sentinel-interpreter
+verify-return-sentinel-native: $(RETURN_SENTINEL_MAIN)
+	@set +e; ulimit -c 0; "$(RETURN_SENTINEL_MAIN)"; status=$$?; set -e; \
+		test "$$status" -eq 42; echo "PAC/TBZ startup return sentinel native exit=$$status"
+
+verify-return-sentinel-interpreter: $(APP) $(INTERPRETER_METALLIB) $(RETURN_SENTINEL_MAIN)
+	@set +e; ARM64_METAL_INTERPRETER=1 \
+		ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" \
+		"$(APP)" launch "$(abspath $(RETURN_SENTINEL_MAIN))"; status=$$?; set -e; \
+		test "$$status" -eq 42; echo "PAC/TBZ startup return sentinel Metal exit=$$status"
 
 
 $(INTERPRETER_ADDP_2D_MAIN): ../fixtures/interpreter/addp-2d-main.s

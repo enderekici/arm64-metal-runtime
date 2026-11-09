@@ -53,7 +53,7 @@ GuestThread GuestScheduler::make_thread_frame(
     thread.tsdAddress = tsdAddress;
     thread.registers.assign(guestSchedulerRegisterCount, 0);
     thread.registers[0] = argument;
-    thread.registers[30] = std::numeric_limits<std::uint64_t>::max();
+    thread.registers[30] = guestReturnSentinel;
     thread.registers[31] = static_cast<std::uint64_t>(stack.end);
     thread.registers[33] = entry;
     thread.registers[guestSchedulerFPCR] = fpcr;

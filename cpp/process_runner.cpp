@@ -1382,7 +1382,7 @@ void enter_startup_frame(std::vector<std::uint64_t>& registers,
                          std::uint64_t address) {
     std::fill_n(registers.begin(), 36, 0);
     for (std::size_t index = 0; index < 5; ++index) registers[index] = bootstrap.registers[index];
-    registers[30] = kNoFault;
+    registers[30] = guestReturnSentinel;
     registers[31] = bootstrap.stack.end;
     registers[33] = address;
 }
@@ -7105,7 +7105,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         acquireExitLease(frame, handler->owner_image);
         callbackFramesByThread[guestScheduler.current_id()].push_back(std::move(frame));
         live[0] = handler->argument;
-        live[30] = kNoFault;
+        live[30] = guestReturnSentinel;
         live[33] = handler->target;
         selectKernel(static_cast<std::int64_t>(handler->target));
         return true;
@@ -7153,7 +7153,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                       live + 806);
             live[37] = frame.authenticationDepth;
             live[0] = handler->argument;
-            live[30] = kNoFault;
+            live[30] = guestReturnSentinel;
             live[33] = handler->target;
             callbackFramesByThread[guestScheduler.current_id()].push_back(std::move(frame));
             selectKernel(static_cast<std::int64_t>(handler->target));
@@ -7192,7 +7192,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         auto* registers = static_cast<std::uint64_t*>(stateBuffer.data());
         if (clearInvalidatedProcessCodeCache()) {
             const auto continuation = registers[33];
-            if (continuation != kNoFault) {
+            if (continuation != guestReturnSentinel) {
                 if (continuation > static_cast<std::uint64_t>(
                                        std::numeric_limits<std::int64_t>::max())) {
                     throw std::runtime_error("Guest continuation exceeds translated code range");
@@ -7210,7 +7210,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         registers[guestCacheFaultWidth] = 0;
         // A guest callback may tail-call a host service. Its sentinel return
         // must complete the callback without compiling the sentinel as code.
-        if (registers[33] == kNoFault) {
+        if (registers[33] == guestReturnSentinel) {
             registers[34] = 0;
         } else if (progressTrace.enabled() || jitExecutionTrace.enabled()) {
             ++dispatchSequence;
@@ -7254,7 +7254,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (status == 0) {
             if (signalRuntime.has_frames(guestScheduler.current_id()) && resumeSignalFrame()) continue;
-            if (!callbackFrames.empty() && registers[30] == kNoFault &&
+            if (!callbackFrames.empty() && registers[30] == guestReturnSentinel &&
                 (!callbackFrames.back().exitDso ||
                  callbackFrames.back().exitThread == guestScheduler.current_id())) {
                 auto frame = std::move(callbackFrames.back());
@@ -7277,7 +7277,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         live[37] = frame.authenticationDepth;
                         acquireExitLease(frame, handler->owner_image);
                         live[0] = handler->argument;
-                        live[30] = kNoFault;
+                        live[30] = guestReturnSentinel;
                         live[33] = handler->target;
                         callbackFrames.push_back(std::move(frame));
                         selectKernel(static_cast<std::int64_t>(handler->target));
@@ -7325,7 +7325,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy(notification.arguments.begin(), notification.arguments.end(),
                               callbackRegisters);
-                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[30] = guestReturnSentinel;
                     callbackRegisters[33] = notification.callback;
                     selectKernel(static_cast<std::int64_t>(notification.callback));
                     continue;
@@ -7343,7 +7343,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy(pending.arguments.front().begin(),
                               pending.arguments.front().end(), callbackRegisters);
-                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[30] = guestReturnSentinel;
                     callbackRegisters[33] = callback;
                     selectKernel(static_cast<std::int64_t>(callback));
                     continue;
@@ -7359,7 +7359,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               pending.savedVectorAndAuth.end(), callbackRegisters + 806);
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy_n(bootstrap.registers.begin(), 5, callbackRegisters);
-                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[30] = guestReturnSentinel;
                     callbackRegisters[33] = target;
                     selectKernel(static_cast<std::int64_t>(target));
                     continue;
@@ -7378,7 +7378,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               callbackFrames.back().savedVectorAndAuth.end(), callbackRegisters + 806);
                     callbackRegisters[37] = callbackFrames.back().authenticationDepth;
                     std::copy(args.begin(), args.end(), callbackRegisters);
-                    callbackRegisters[30] = kNoFault;
+                    callbackRegisters[30] = guestReturnSentinel;
                     callbackRegisters[33] = callbackFrames.back().callback;
                     selectKernel(static_cast<std::int64_t>(callbackFrames.back().callback));
                     continue;
@@ -7420,12 +7420,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(),
                           restored + 806);
                 restored[37] = frame.authenticationDepth;
-                if (restored[33] != kNoFault) {
+                if (restored[33] != guestReturnSentinel) {
                     selectKernel(static_cast<std::int64_t>(restored[33]));
                 }
                 continue;
             }
-            if (registers[30] == kNoFault && guestScheduler.current_id() != 1) {
+            if (registers[30] == guestReturnSentinel && guestScheduler.current_id() != 1) {
                 discardThreadCallbacks(guestScheduler.current_id());
                 if (beginImageExitDrain(takePendingDynamicUnloads(), std::nullopt,
                                         std::nullopt)) continue;
@@ -7590,7 +7590,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
                 callbackRegisters[0] = hostRegisters[cxxMethod ? 2U : 1U];
-                callbackRegisters[30] = kNoFault;
+                callbackRegisters[30] = guestReturnSentinel;
                 callbackRegisters[33] = callback;
                 callbackRegisters[34] = 0;
                 selectKernel(static_cast<std::int64_t>(callback));
@@ -7669,7 +7669,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackRegisters[37] = pending.authenticationDepth;
                 std::copy(pending.arguments.front().begin(),
                           pending.arguments.front().end(), callbackRegisters);
-                callbackRegisters[30] = kNoFault;
+                callbackRegisters[30] = guestReturnSentinel;
                 callbackRegisters[33] = callback;
                 selectKernel(static_cast<std::int64_t>(callback));
                 continue;
@@ -8922,7 +8922,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                     callbackRegisters);
                                         callbackRegisters[33] = first;
                                     }
-                                    callbackRegisters[30] = kNoFault;
+                                    callbackRegisters[30] = guestReturnSentinel;
                                     selectKernel(static_cast<std::int64_t>(
                                         callbackRegisters[33]));
                                     continue;
@@ -9251,7 +9251,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live[1] = *batch;
                 live[2] = *block;
                 live[3] = 0;
-                live[30] = kNoFault;
+                live[30] = guestReturnSentinel;
                 live[33] = callback;
                 selectKernel(static_cast<std::int64_t>(callback));
                 continue;
@@ -9388,7 +9388,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto first = callbackFrames.back().arguments.front();
                 auto* current = static_cast<std::uint64_t*>(stateBuffer.data());
                 std::copy(first.begin(), first.end(), current);
-                current[30] = kNoFault;
+                current[30] = guestReturnSentinel;
                 current[33] = callback;
                 ++callbackFrames.back().nextArgument;
                 selectKernel(static_cast<std::int64_t>(callback));
@@ -9485,7 +9485,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackRegisters[37] = pending.authenticationDepth;
                 const auto& first = pending.imageNotifications.front();
                 std::copy(first.arguments.begin(), first.arguments.end(), callbackRegisters);
-                callbackRegisters[30] = kNoFault;
+                callbackRegisters[30] = guestReturnSentinel;
                 callbackRegisters[33] = first.callback;
                 selectKernel(static_cast<std::int64_t>(first.callback));
                 continue;
@@ -9603,7 +9603,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::copy_n(hostRegisters.begin(), 36,
                         static_cast<std::uint64_t*>(stateBuffer.data()));
             if (result.exited) return result.exitStatus;
-            if (hostRegisters[33] == kNoFault && callbackFrames.empty()) {
+            if (hostRegisters[33] == guestReturnSentinel && callbackFrames.empty()) {
                 if (signalRuntime.has_frames(guestScheduler.current_id()) && resumeSignalFrame()) continue;
                 if (advanceStartup()) continue;
             }
