@@ -11531,6 +11531,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     auto* output = guestMemory.buffer(registers[3], sizeof(std::uint32_t), true);
                     std::uint32_t flags = 0;
                     std::memcpy(&flags, options, sizeof(flags));
+                    mach_port_options_t portOptions{};
+                    std::memcpy(&portOptions, options, sizeof(portOptions));
+                    if (std::getenv("ARM64_METAL_TRACE_MACH_PORT_CONSTRUCT") != nullptr) {
+                        std::cerr << "arm64-metal trace mach-port-construct"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " lr=0x" << hexadecimal(registers[30])
+                                  << " flags=0x" << hexadecimal(flags)
+                                  << " type=0x" << hexadecimal(flags & MPO_PORT_TYPE_MASK)
+                                  << " qlimit=" << portOptions.mpl.mpl_qlimit
+                                  << " context-present=" << (registers[2] != 0)
+                                  << " service-info-present="
+                                  << (portOptions.service_port_info != nullptr)
+                                  << " service-name-present="
+                                  << (portOptions.service_port_name != 0)
+                                  << " work-interval-present="
+                                  << (portOptions.work_interval_port != 0)
+                                  << " output-present=" << (registers[3] != 0) << '\n';
+                    }
                     if ((flags & ~(guardedPortFlag | replyPortFlag)) != 0) {
                         throw std::runtime_error("Unsupported guest Mach port construction flags");
                     }
