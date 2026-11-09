@@ -174,6 +174,12 @@ INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE := $(BUILD_DIR)/interpreter-demand-c
 INTERPRETER_DEMAND_CACHE_SIGNED_WORD_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-signed-word.s
 INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN := $(BUILD_DIR)/interpreter-demand-cache-signed-word-main
 INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-signed-word-native
+INTERPRETER_DEMAND_CACHE_VECTOR_POST_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-vector-post.s
+INTERPRETER_DEMAND_CACHE_VECTOR_POST_MAIN := $(BUILD_DIR)/interpreter-demand-cache-vector-post-main
+INTERPRETER_DEMAND_CACHE_VECTOR_POST_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-vector-post-native
+INTERPRETER_DEMAND_CACHE_VECTOR_PRE_SOURCE := $(BUILD_DIR)/interpreter/demand-cache-retry-vector-pre.s
+INTERPRETER_DEMAND_CACHE_VECTOR_PRE_MAIN := $(BUILD_DIR)/interpreter-demand-cache-vector-pre-main
+INTERPRETER_DEMAND_CACHE_VECTOR_PRE_NATIVE := $(BUILD_DIR)/interpreter-demand-cache-vector-pre-native
 INTERPRETER_GENERATOR := $(BUILD_DIR)/generate-interpreter-msl
 INTERPRETER_SOURCE := $(BUILD_DIR)/interpreter/gpu_interpreter.generated.metal
 INTERPRETER_CBZ_CBNZ_MAIN := $(BUILD_DIR)/interpreter-cbz-cbnz-main
@@ -1282,6 +1288,26 @@ $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN): $(INTERPRETER_DEMAND_CACHE_SIGNED_
 $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE): ../fixtures/interpreter/demand-cache-retry-native.c
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DPAIR_LOAD=0 -DACCESS_WIDTH=4 "$<" -lz -o "$@"
 
+$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" vector-post >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_MAIN): $(INTERPRETER_DEMAND_CACHE_VECTOR_POST_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_NATIVE): ../fixtures/interpreter/demand-cache-vector-writeback-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DVECTOR_PRE=0 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_SOURCE): $(INTERPRETER_DEMAND_CACHE_GENERATOR)
+	@mkdir -p "$(dir $@)"
+	"$(INTERPRETER_DEMAND_CACHE_GENERATOR)" vector-pre >"$@"
+
+$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_MAIN): $(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_SOURCE)
+	xcrun clang -arch arm64 "$<" -lz -o "$@"
+
+$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_NATIVE): ../fixtures/interpreter/demand-cache-vector-writeback-native.c
+	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror -DVECTOR_PRE=1 "$<" -lz -o "$@"
+
 .PHONY: interpreter-metallib
 interpreter-metallib: $(INTERPRETER_METALLIB)
 
@@ -1798,7 +1824,41 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		cmp "$$run_dir/literal-load.native.err" "$$run_dir/literal-load.interpreter.no-trace.err" || exit 1; \
 		echo "verify-interpreter receipts: $$run_dir"
 
-verify-interpreter-demand-cache: $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)
+.PHONY: verify-interpreter-demand-cache-vector
+verify-interpreter-demand-cache-vector: $(APP) $(INTERPRETER_DEMAND_CACHE_VECTOR_POST_MAIN) $(INTERPRETER_DEMAND_CACHE_VECTOR_POST_NATIVE) $(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_MAIN) $(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_NATIVE) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache-vector.XXXXXX"); \
+	run_case() { \
+		case_name=$$1; main=$$2; native=$$3; \
+		set +e; \
+		"$$native" >"$$run_dir/$$case_name.native.out" 2>"$$run_dir/$$case_name.native.err"; native_rc=$$?; \
+		ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 "$(APP)" launch "$$main" >"$$run_dir/$$case_name.translated.out" 2>"$$run_dir/$$case_name.translated.err"; translated_rc=$$?; \
+		ARM64_METAL_INTERPRETER=1 ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 "$(APP)" launch "$$main" >"$$run_dir/$$case_name.interpreter.out" 2>"$$run_dir/$$case_name.interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		printf '%s\n' "$$native_rc" >"$$run_dir/$$case_name.native.rc"; \
+		printf '%s\n' "$$translated_rc" >"$$run_dir/$$case_name.translated.rc"; \
+		printf '%s\n' "$$interpreter_rc" >"$$run_dir/$$case_name.interpreter.rc"; \
+		test "$$native_rc" -ne 99 && test "$$translated_rc" -eq "$$native_rc" && test "$$interpreter_rc" -eq "$$native_rc"; \
+		cmp "$$run_dir/$$case_name.native.out" "$$run_dir/$$case_name.translated.out"; \
+		cmp "$$run_dir/$$case_name.native.out" "$$run_dir/$$case_name.interpreter.out"; \
+		cmp "$$run_dir/$$case_name.native.err" "$$run_dir/$$case_name.translated.err"; \
+		sed '/^arm64-metal trace /d' "$$run_dir/$$case_name.interpreter.err" >"$$run_dir/$$case_name.interpreter.no-trace.err"; \
+		cmp "$$run_dir/$$case_name.native.err" "$$run_dir/$$case_name.interpreter.no-trace.err"; \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/$$case_name.interpreter.err"; \
+		awk '/event=interpreter-packet/ && $$6 == "detail=43" { packets[$$5]=1 } \
+		     /event=interpreter-cache-fault/ { faults++; fault_pc=$$5; fault_addr=$$6; fault_line=NR; if (fault_addr !~ /^detail=/) bad=1 } \
+		     /event=interpreter-cache-fault-width/ { widths++; if ($$5 != fault_pc || $$6 != "detail=16") bad=1 } \
+		     /event=interpreter-cache-resident/ { residents++; if (NR <= fault_line || $$5 != fault_pc || $$6 != fault_addr) bad=1; resident_line=NR } \
+		     /event=interpreter-dispatch/ && residents && !resumed && NR > resident_line { resumed=1; if ($$5 != fault_pc) bad=1 } \
+		     /event=compile-start/ { compile=1 } \
+		     END { if (!fault_pc || !packets[fault_pc] || faults != 1 || widths != 1 || residents != 1 || !resumed || compile || bad) exit 1 }' \
+			"$$run_dir/$$case_name.interpreter.err"; \
+		printf '%s vector demand-cache retry: exit=%s fault-pc=%s fault=%s receipts=%s\n' "$$case_name" "$$interpreter_rc" "$$(awk '/event=interpreter-cache-fault/ {print $$5, $$6; exit}' "$$run_dir/$$case_name.interpreter.err")" "$$run_dir"; \
+	}; \
+	run_case post "$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_MAIN)" "$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_NATIVE)"; \
+	run_case pre "$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_MAIN)" "$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_NATIVE)"; \
+	echo "Vector Q pre/post demand-cache controls passed; receipts=$$run_dir"
+
+verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $(INTERPRETER_DEMAND_CACHE_MAIN) $(INTERPRETER_DEMAND_CACHE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SCALAR_MAIN) $(INTERPRETER_DEMAND_CACHE_SCALAR_NATIVE) $(INTERPRETER_DEMAND_CACHE_INDEXED_MAIN) $(INTERPRETER_DEMAND_CACHE_INDEXED_NATIVE) $(INTERPRETER_DEMAND_CACHE_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_BYTE_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_HALF_NATIVE) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_MAIN) $(INTERPRETER_DEMAND_CACHE_SIGNED_WORD_NATIVE) $(INTERPRETER_METALLIB)
 	@set -eu; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/interpreter-demand-cache.XXXXXX"); \
 		set +e; \

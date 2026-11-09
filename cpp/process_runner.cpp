@@ -9153,20 +9153,30 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         opcode == translate_core::Opcode::LoadUnsignedMinMax;
                     const bool literalAccess =
                         opcode == translate_core::Opcode::LoadLiteral;
+                    const bool vectorAccess =
+                        opcode == translate_core::Opcode::LoadVectorMemory ||
+                        opcode == translate_core::Opcode::StoreVectorMemory;
                     const auto expectedWidth = literalAccess
                         ? (faultPacket->operation[4] == 1U ? 8U : 4U)
                         : faultPacket->operation[5] / 8U * (pairAccess ? 2U : 1U);
                     const auto accessWidth = literalAccess
                         ? expectedWidth : faultPacket->operation[5] / 8U;
-                    if ((!scalarAccess && !pairAccess && !literalAccess) ||
+                    const bool supportedAccessWidth = vectorAccess
+                        ? (accessWidth == 1U || accessWidth == 2U ||
+                           accessWidth == 4U || accessWidth == 8U ||
+                           accessWidth == 16U)
+                        : (accessWidth == 1U || accessWidth == 2U ||
+                           accessWidth == 4U || accessWidth == 8U);
+                    if ((!scalarAccess && !pairAccess && !literalAccess &&
+                         !vectorAccess) ||
                         (!literalAccess && faultPacket->operation[5] % 8U != 0) ||
-                        (!literalAccess && accessWidth != 1U && accessWidth != 2U &&
-                         accessWidth != 4U && accessWidth != 8U) ||
+                        (!literalAccess && !supportedAccessWidth) ||
                         width != expectedWidth) {
                         throw std::runtime_error(
                             "Interpreter cache retry does not match its memory packet");
                     }
                     progressTrace.event("interpreter-cache-fault", faultPc, requested);
+                    progressTrace.event("interpreter-cache-fault-width", faultPc, width);
                 }
                 if (!makeCacheResident(requested, width)) {
                     throw std::runtime_error("Guest cache fault could not be resolved at PC 0x" +

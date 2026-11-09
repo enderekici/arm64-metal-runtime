@@ -13,20 +13,26 @@ int main(int argc, char** argv) {
     const bool signedByteLoad = argc == 2 && std::string_view(argv[1]) == "signed-byte";
     const bool signedHalfLoad = argc == 2 && std::string_view(argv[1]) == "signed-half";
     const bool signedWordLoad = argc == 2 && std::string_view(argv[1]) == "signed-word";
+    const bool vectorPostLoad = argc == 2 && std::string_view(argv[1]) == "vector-post";
+    const bool vectorPreLoad = argc == 2 && std::string_view(argv[1]) == "vector-pre";
     if (argc > 2 || (argc == 2 && !scalarLoad && !indexedLoad &&
                      !byteLoad && !halfLoad && !signedByteLoad &&
-                     !signedHalfLoad && !signedWordLoad)) return 2;
+                     !signedHalfLoad && !signedWordLoad && !vectorPostLoad &&
+                     !vectorPreLoad)) return 2;
     const bool useX1 = indexedLoad || byteLoad || halfLoad || signedByteLoad ||
-                       signedHalfLoad || signedWordLoad;
+                       signedHalfLoad || signedWordLoad || vectorPostLoad ||
+                       vectorPreLoad;
     const std::string_view loadInstruction = signedByteLoad
         ? "    ldrsb w0, [x1]\n"
         : (signedHalfLoad ? "    ldrsh w0, [x1]\n"
         : (signedWordLoad ? "    ldrsw x0, [x1]\n"
+        : (vectorPostLoad ? "    ldr q0, [x1], #16\n"
+        : (vectorPreLoad ? "    ldr q0, [x1, #16]!\n"
         : (byteLoad ? "    ldrb w0, [x1]\n"
         : (halfLoad ? "    ldrh w0, [x1]\n"
         : (indexedLoad ? "    ldr x0, [x1, #0]!\n"
         : (scalarLoad ? "    ldr x0, [x0]\n"
-                       : "    ldp x0, x1, [x0]\n"))))));
+                       : "    ldp x0, x1, [x0]\n"))))))));
     arm64metal::SharedCache cache;
     const auto symbol = cache.resolveExport("/usr/lib/libz.1.dylib", "_zlibVersion");
     if (!symbol || symbol->guest_address <= 0) return 3;
@@ -45,8 +51,27 @@ int main(int argc, char** argv) {
                   << std::hex << part
                   << ", lsl #" << std::dec << shift << "\n";
     }
+    if (vectorPostLoad || vectorPreLoad) {
+        std::cout << "    sub sp, sp, #16\n"
+                     "    add x2, x1, #16\n";
+    }
     std::cout << loadInstruction
-              << "    ret\n"
+              ;
+    if (vectorPostLoad || vectorPreLoad) {
+        std::cout << "    cmp x1, x2\n"
+                     "    b.ne .Lwriteback_fail\n"
+                     "    str q0, [sp]\n"
+                     "    ldrb w0, [sp]\n"
+                     "    add sp, sp, #16\n"
+                     "    ret\n"
+                     ".Lwriteback_fail:\n"
+                     "    mov w0, #99\n"
+                     "    add sp, sp, #16\n"
+                     "    ret\n";
+    } else {
+        std::cout << "    ret\n";
+    }
+    std::cout
               << ".section __DATA,__data\n"
               << ".p2align 3\n"
               << ".quad _zlibVersion\n";
