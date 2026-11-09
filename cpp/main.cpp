@@ -418,7 +418,7 @@ int run_command(const std::vector<std::string>& args,
       }
     };
     requireProbe(compiled == 1 && sourceCompiles == 0, "AOT pipeline counters");
-    requireProbe(dispatches == 39, "completed dispatch count");
+    requireProbe(dispatches == 43, "completed dispatch count");
     requireProbe(first.state[34] == 0 && first.state[0] == 42 &&
                      second.state[34] == 0 && second.state[0] == 0xbeef0000u,
                  "independent MOVZ programs");
