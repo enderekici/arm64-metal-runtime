@@ -15,7 +15,6 @@ namespace {
 
 inline constexpr std::uint64_t guestTokenTag = 0xa64e000000000000ULL;
 inline constexpr std::uint64_t guestDataAddressMask = (std::uint64_t{1} << 47) - 1;
-inline constexpr std::uint64_t guestDataTokenMarker = std::uint64_t{1} << 55;
 inline constexpr std::uint64_t guestDataTokenBuckets = 255;
 inline constexpr std::uint64_t guestTokenIndexShift = 3;
 
@@ -450,7 +449,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     ulong encode_guest_pointer(ulong address, ulong key, ulong index) {
         if (key == 2 && address <= @GUEST_DATA_ADDRESS_MASK@ul) {
             ulong code = index % @GUEST_DATA_TOKEN_BUCKETS@ul + 1;
-            return @GUEST_DATA_TOKEN_MARKER@ul | (code << 47) | address;
+            return (code << 47) | address;
         }
         return @GUEST_TOKEN_TAG@ul | ((index + 1) << @GUEST_TOKEN_INDEX_SHIFT@) | (address & 7ul);
     }
@@ -586,12 +585,11 @@ std::string render_source(std::string_view rendered_cases) {
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 16> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 15> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
       {"@GUEST_DATA_ADDRESS_MASK@", decimal(guestDataAddressMask)},
       {"@GUEST_DATA_TOKEN_BUCKETS@", decimal(guestDataTokenBuckets)},
-      {"@GUEST_DATA_TOKEN_MARKER@", decimal(guestDataTokenMarker)},
       {"@GUEST_FPCR@", decimal(guestFPCR)},
       {"@GUEST_FPSR@", decimal(guestFPSR)},
       {"@GUEST_PACGA_KEY@", decimal(guestPACGAKey)},

@@ -569,6 +569,22 @@ verify-return-sentinel-interpreter: $(APP) $(INTERPRETER_METALLIB) $(RETURN_SENT
 		"$(APP)" launch "$(abspath $(RETURN_SENTINEL_MAIN))"; status=$$?; set -e; \
 		test "$$status" -eq 42; echo "PAC/TBZ startup return sentinel Metal exit=$$status"
 
+DATA_AUTH_ISA_MAIN := $(BUILD_DIR)/data-auth-isa-main
+$(DATA_AUTH_ISA_MAIN): ../fixtures/interpreter/data-auth-isa-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+.PHONY: verify-data-auth-isa-native verify-data-auth-isa
+verify-data-auth-isa-native: $(DATA_AUTH_ISA_MAIN)
+	@set +e; ulimit -c 0; "$(DATA_AUTH_ISA_MAIN)"; status=$$?; set -e; \
+		test "$$status" -eq 42; echo "Data-A ISA masking native exit=$$status"
+
+verify-data-auth-isa: $(APP) $(DATA_AUTH_ISA_MAIN)
+	@set +e; "$(DATA_AUTH_ISA_MAIN)"; native=$$?; \
+		"$(APP)" launch "$(abspath $(DATA_AUTH_ISA_MAIN))"; guest=$$?; set -e; \
+		test "$$native" -eq 42; test "$$guest" -eq 42; \
+		echo "Data-A ISA masking native=$$native guest=$$guest"
+
 
 $(INTERPRETER_ADDP_2D_MAIN): ../fixtures/interpreter/addp-2d-main.s
 	@mkdir -p "$(BUILD_DIR)"

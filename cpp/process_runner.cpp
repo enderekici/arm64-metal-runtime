@@ -936,12 +936,11 @@ std::uint64_t encode_guest_pointer(std::uint64_t address, std::uint64_t key,
                                    std::size_t index) {
     constexpr std::uint64_t addressMask = (std::uint64_t{1} << 47U) - 1;
     constexpr std::uint64_t tokenTag = 0xa64e000000000000ULL;
-    constexpr std::uint64_t dataTokenMarker = std::uint64_t{1} << 55U;
     constexpr std::uint64_t dataTokenBuckets = 255;
     constexpr std::uint64_t tokenIndexShift = 3;
     if (key == 2 && address <= addressMask) {
         const auto code = static_cast<std::uint64_t>(index) % dataTokenBuckets + 1;
-        return dataTokenMarker | (code << 47U) | address;
+        return (code << 47U) | address;
     }
     return tokenTag | (static_cast<std::uint64_t>(index + 1) << tokenIndexShift) |
            (address & 7U);
