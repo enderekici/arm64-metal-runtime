@@ -153,11 +153,14 @@ public:
     [[nodiscard]] bool set_mask(std::int32_t how, std::uint32_t value);
     void raise(std::int32_t signal);
     void ingest(std::uint32_t incoming);
+    [[nodiscard]] bool has_unblocked_pending(std::uint32_t threadPending) const noexcept;
     [[nodiscard]] std::optional<std::pair<std::int32_t, Action>> next(
         std::uint32_t& threadPending);
     void enter(std::int32_t signal, const Action& action);
 
 private:
+    [[nodiscard]] std::uint32_t unblocked_pending(std::uint32_t threadPending) const noexcept;
+
     std::map<std::int32_t, Action> actions_;
     std::uint32_t pending_ = 0;
     std::uint32_t mask_ = 0;

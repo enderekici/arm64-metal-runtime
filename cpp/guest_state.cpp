@@ -242,9 +242,17 @@ void GuestSignals::ingest(std::uint32_t incoming) {
     }
 }
 
+std::uint32_t GuestSignals::unblocked_pending(std::uint32_t threadPending) const noexcept {
+    return (pending_ | threadPending) & ~mask_;
+}
+
+bool GuestSignals::has_unblocked_pending(std::uint32_t threadPending) const noexcept {
+    return unblocked_pending(threadPending) != 0;
+}
+
 std::optional<std::pair<std::int32_t, GuestSignals::Action>> GuestSignals::next(
     std::uint32_t& threadPending) {
-    const auto ready = (pending_ | threadPending) & ~mask_;
+    const auto ready = unblocked_pending(threadPending);
     if (ready == 0) return std::nullopt;
     const auto bitValue = lowest_bit(ready);
     const auto signal = static_cast<std::int32_t>(__builtin_ctz(bitValue) + 1);

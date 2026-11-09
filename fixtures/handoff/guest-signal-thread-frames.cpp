@@ -53,6 +53,48 @@ int main() {
     action.handler = 0x4000;
     signals.set_action(action, SIGUSR1);
 
+    {
+        GuestSignalRuntime fastRuntime;
+        GuestSignalRuntime directRuntime;
+        GuestSignals fastSignals;
+        fastSignals.set_action(action, SIGUSR1);
+        fastSignals.raise(SIGUSR1);
+        auto directSignals = fastSignals;
+        std::vector<std::uint64_t> fastRegisters(guestSignalVectorEnd, 0);
+        auto directRegisters = fastRegisters;
+        auto processPending = GuestSignals::bit(SIGUSR1);
+        auto directProcessPending = processPending;
+        std::uint32_t threadPending = 0;
+        auto directThreadPending = threadPending;
+        auto threadMask = GuestSignals::bit(SIGUSR1) |
+                          GuestSignals::bit(SIGKILL) | GuestSignals::bit(SIGSTOP);
+        auto directThreadMask = threadMask;
+
+        assert(!fastRuntime.has_pending_delivery(fastSignals, threadPending,
+            threadMask, fastRegisters.size()));
+        const auto directResult = directRuntime.deliver(directSignals,
+            directProcessPending, directThreadPending, directThreadMask,
+            directRegisters, 0, 0, 1);
+        assert(directResult.outcome == GuestSignalOutcome::None);
+        assert(threadMask == directThreadMask && threadMask == GuestSignals::bit(SIGUSR1));
+        assert(processPending == directProcessPending &&
+               threadPending == directThreadPending && fastRegisters == directRegisters);
+
+        threadMask = 0;
+        directThreadMask = 0;
+        assert(fastRuntime.has_pending_delivery(fastSignals, threadPending,
+            threadMask, fastRegisters.size()));
+        const auto fastResult = fastRuntime.deliver(fastSignals, processPending,
+            threadPending, threadMask, fastRegisters, 0, 0, 1);
+        const auto unmaskedDirectResult = directRuntime.deliver(directSignals,
+            directProcessPending, directThreadPending, directThreadMask,
+            directRegisters, 0, 0, 1);
+        assert(fastResult.outcome == unmaskedDirectResult.outcome &&
+               fastResult.outcome == GuestSignalOutcome::HandlerEntered);
+        assert(threadMask == directThreadMask && processPending == directProcessPending &&
+               threadPending == directThreadPending && fastRegisters == directRegisters);
+    }
+
     std::vector<std::uint64_t> first(guestSignalVectorEnd, 0);
     std::vector<std::uint64_t> second(guestSignalVectorEnd, 0);
     first[guestSignalPC] = 0x1110;

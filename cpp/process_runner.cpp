@@ -6713,6 +6713,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::vector<std::uint64_t> signalRegisterSnapshot;
     const auto deliverPendingSignal = [&]() -> std::optional<std::int32_t> {
         hostServiceState.ingest_host_signals();
+        if (!signalRuntime.has_pending_delivery(hostServiceState.signals,
+                hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
+                stateBuffer.size() / sizeof(std::uint64_t))) {
+            return std::nullopt;
+        }
         const auto* stateRegisters = static_cast<const std::uint64_t*>(stateBuffer.data());
         const auto stateWords = stateBuffer.size() / sizeof(std::uint64_t);
         signalRegisterSnapshot.assign(stateRegisters, stateRegisters + stateWords);

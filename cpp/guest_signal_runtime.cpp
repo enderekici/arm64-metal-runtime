@@ -71,10 +71,14 @@ bool unsupported_default_stop(std::int32_t signal) noexcept {
            signal == SIGTTOU || signal == SIGCONT;
 }
 
-void validate_registers(const std::vector<std::uint64_t>& registers) {
-    if (registers.size() < guestSignalVectorEnd) {
+void validate_register_words(std::size_t registerWords) {
+    if (registerWords < guestSignalVectorEnd) {
         throw std::invalid_argument("Guest signal register file is incomplete");
     }
+}
+
+void validate_registers(const std::vector<std::uint64_t>& registers) {
+    validate_register_words(registers.size());
 }
 
 } // namespace
@@ -98,6 +102,16 @@ std::uint32_t GuestSignalRuntime::ingest_host_signals(
 std::uint32_t GuestSignalRuntime::poll_host_signal_queue(GuestSignals& signals) {
     const auto incoming = guest_signal_take();
     return ingest_host_signals(signals, incoming);
+}
+
+bool GuestSignalRuntime::has_pending_delivery(
+    GuestSignals& signals, std::uint32_t& threadPending,
+    std::uint32_t& threadMask, std::size_t registerWords) const {
+    validate_register_words(registerWords);
+    signals.set_mask_value(threadMask);
+    if (signals.has_unblocked_pending(threadPending)) return true;
+    threadMask = signals.mask();
+    return false;
 }
 
 GuestSignalDelivery GuestSignalRuntime::deliver(

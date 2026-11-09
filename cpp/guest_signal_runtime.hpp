@@ -71,6 +71,13 @@ public:
         std::uint64_t authenticationDepth, std::uint64_t executionContext,
         std::uint64_t threadId, GuestMemory* memory = nullptr);
 
+    // Normalize the thread mask and identify the no-delivery case before a
+    // caller snapshots the register file. When this returns false, delivery
+    // would only validate registers and synchronize the normalized mask.
+    [[nodiscard]] bool has_pending_delivery(
+        GuestSignals& signals, std::uint32_t& threadPending,
+        std::uint32_t& threadMask, std::size_t registerWords) const;
+
     [[nodiscard]] GuestSignalDelivery deliver_synchronous(
         GuestSignals& signals, std::uint32_t& threadMask,
         std::vector<std::uint64_t>& registers, GuestMemory& memory,
