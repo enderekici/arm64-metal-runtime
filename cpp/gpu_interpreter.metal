@@ -29,6 +29,16 @@ inline int find_packet(device const InstructionPacket *packets,
     return low < packetCount && packets[low].pc == pc ? int(low) : -1;
 }
 
+inline bool is_memory_retry_entry(device const InstructionPacket *packet,
+                                  device const ulong *state, ulong pc) {
+    const uint opcode = packet->operation[0];
+    return (opcode == 6u || opcode == 7u ||
+            opcode == 13u || opcode == 14u ||
+            opcode == 17u || opcode == 18u ||
+            opcode == 20u || opcode == 37u || opcode == 38u) &&
+           state[35] == (pc | 0x8000000000000000ul);
+}
+
 kernel void run_interpreter(device ulong *state [[buffer(0)]],
                             device const InstructionPacket *packets [[buffer(1)]],
                             constant uint &packetCount [[buffer(2)]],
@@ -39,27 +49,22 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                             device const ulong *config [[buffer(7)]]) {
     ulong pc = state[33];
     for (uint block = 0; block < 8192; ++block) {
-        if (state[36] == 0) {
-            state[33] = pc;
-            state[34] = 1;
-            return;
-        }
         const int firstIndex = find_packet(packets, packetCount, pc);
         if (firstIndex < 0) {
             state[33] = pc;
             state[34] = 7;
             return;
         }
-        const uint firstOpcode = packets[firstIndex].operation[0];
-        const bool memoryRetry =
-            (firstOpcode == 6u || firstOpcode == 7u ||
-             firstOpcode == 13u || firstOpcode == 14u ||
-             firstOpcode == 17u || firstOpcode == 18u ||
-             firstOpcode == 20u || firstOpcode == 37u || firstOpcode == 38u) &&
-            state[35] == (pc | 0x8000000000000000ul);
+        const bool memoryRetry = is_memory_retry_entry(
+            packets + firstIndex, state, pc);
         if ((packets[firstIndex].flags & 1u) == 0u && !memoryRetry) {
             state[33] = pc;
             state[34] = 7;
+            return;
+        }
+        if (state[36] == 0) {
+            state[33] = pc;
+            state[34] = 1;
             return;
         }
         if (memoryRetry) state[35] = 0ul;
@@ -1508,5 +1513,16 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
         }
     }
     state[33] = pc;
+    const int continuationIndex = find_packet(packets, packetCount, pc);
+    if (continuationIndex < 0) {
+        state[34] = 7;
+        return;
+    }
+    const bool memoryRetry = is_memory_retry_entry(
+        packets + continuationIndex, state, pc);
+    if ((packets[continuationIndex].flags & 1u) == 0u && !memoryRetry) {
+        state[34] = 7;
+        return;
+    }
     state[34] = state[36] == 0 ? 1 : 8;
 }

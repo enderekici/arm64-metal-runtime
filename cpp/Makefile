@@ -1463,7 +1463,7 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		"$(INTERPRETER_ADD_SUB_NATIVE)" >>"$$run_dir/interpreter.native.out"; \
 		"$(INTERPRETER_ADD_SUB_FLAGS_NATIVE)" >>"$$run_dir/interpreter.native.out"; \
 		cmp "$$run_dir/interpreter.native.out" "$$run_dir/interpreter.gpu.out"; \
-		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=39' "$$run_dir/interpreter.gpu.err"; \
+		grep -qx 'pipeline_compiles=1 runtime_source_compiles=0 completed_dispatches=43' "$$run_dir/interpreter.gpu.err"; \
 		set +e; \
 		"$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.native.out" 2>"$$run_dir/interpreter-process.native.err"; native_rc=$$?; \
 		"$(APP)" launch "$(INTERPRETER_MINIMAL_MAIN)" >"$$run_dir/interpreter-process.translated.out" 2>"$$run_dir/interpreter-process.translated.err"; translated_rc=$$?; \

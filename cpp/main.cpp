@@ -266,6 +266,20 @@ int run_command(const std::vector<std::string>& args,
         {0x3500009fu, 0, 23}};
     const std::vector<InstructionPacket> missingTargetProgram{
         packet(0x14000002u, 0x6000, blockStart | blockEnd, 1, 0x6008)};
+    const std::vector<InstructionPacket> missingFallthroughProgram{
+        packet(0xd2800540u, 0x6100, blockStart | blockEnd, 1, 0x6104)};
+    const std::vector<InstructionPacket> nonEntryTargetProgram{
+        packet(0xd2800540u, 0x6200, blockStart | blockEnd, 1, 0x6204),
+        packet(0xd2800020u, 0x6204)};
+    constexpr std::size_t interpreterBlockCap = 8192;
+    constexpr std::uint64_t cappedProgramEntry = 0x800000;
+    std::vector<InstructionPacket> cappedMissingTargetProgram;
+    cappedMissingTargetProgram.reserve(interpreterBlockCap);
+    for (std::size_t index = 0; index < interpreterBlockCap; ++index) {
+      const auto pc = cappedProgramEntry + static_cast<std::uint64_t>(index * 4);
+      cappedMissingTargetProgram.push_back(packet(0xd2800000u, pc,
+          blockStart | blockEnd, 1, pc + 4));
+    }
 
     auto backend = arm64metal::Backend::createDefault();
     const auto initialCompiles = backend.compiledPipelineCount();
@@ -362,6 +376,26 @@ int run_command(const std::vector<std::string>& args,
     missingTargetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 2;
     const auto missingTarget = interpreter.run(
         backend, missingTargetProgram, missingTargetState);
+    auto missingTargetLastBudgetState = missingTargetState;
+    missingTargetLastBudgetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+    const auto missingTargetLastBudget = interpreter.run(
+        backend, missingTargetProgram, missingTargetLastBudgetState);
+    ProcessState missingFallthroughState{};
+    missingFallthroughState[33] = 0x6100;
+    missingFallthroughState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+    const auto missingFallthrough = interpreter.run(
+        backend, missingFallthroughProgram, missingFallthroughState);
+    ProcessState nonEntryTargetState{};
+    nonEntryTargetState[33] = 0x6200;
+    nonEntryTargetState[arm64metal::gpu_interpreter::blockBudgetIndex] = 1;
+    const auto nonEntryTarget = interpreter.run(
+        backend, nonEntryTargetProgram, nonEntryTargetState);
+    ProcessState cappedMissingTargetState{};
+    cappedMissingTargetState[33] = cappedProgramEntry;
+    cappedMissingTargetState[arm64metal::gpu_interpreter::blockBudgetIndex] =
+        interpreterBlockCap + 1;
+    const auto cappedMissingTarget = interpreter.run(
+        backend, cappedMissingTargetProgram, cappedMissingTargetState);
     std::vector<arm64metal::gpu_interpreter::Result> conditionalResults;
     conditionalResults.reserve(conditionalCases.size());
     for (const auto& test : conditionalCases) {
@@ -460,6 +494,24 @@ int run_command(const std::vector<std::string>& args,
     requireProbe(missingTarget.state[34] == 7 && missingTarget.state[33] == 0x6008 &&
                      missingTarget.state[0] == 99 && missingTarget.state[36] == 1,
                  "missing branch target");
+    requireProbe(missingTargetLastBudget.state[34] == 7 &&
+                     missingTargetLastBudget.state[33] == 0x6008 &&
+                     missingTargetLastBudget.state[0] == 99 &&
+                     missingTargetLastBudget.state[36] == 0,
+                 "missing branch target at final budget");
+    requireProbe(missingFallthrough.state[34] == 7 &&
+                     missingFallthrough.state[33] == 0x6104 &&
+                     missingFallthrough.state[36] == 0,
+                 "missing fallthrough at final budget");
+    requireProbe(nonEntryTarget.state[34] == 7 &&
+                     nonEntryTarget.state[33] == 0x6204 &&
+                     nonEntryTarget.state[36] == 0,
+                 "non-entry successor at final budget");
+    requireProbe(cappedMissingTarget.state[34] == 7 &&
+                     cappedMissingTarget.state[33] ==
+                         cappedProgramEntry + interpreterBlockCap * 4 &&
+                     cappedMissingTarget.state[36] == 1,
+                 "missing successor at interpreter hard cap");
     for (std::size_t index = 0; index < conditionalCases.size(); ++index) {
       const auto& result = conditionalResults[index].state;
       if (result[34] != 0 || result[0] != conditionalCases[index].expected ||
