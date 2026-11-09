@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -84,10 +85,39 @@ int main() {
   assert(info.st_atimespec.tv_sec == 1577935000 && info.st_atimespec.tv_nsec == 123456000);
   assert(info.st_mtimespec.tv_sec == 1577935001 && info.st_mtimespec.tv_nsec == 789000000);
 
+  const auto invalid_directory = static_cast<std::uint64_t>(
+      static_cast<std::int64_t>(-99));
+  store_times(512, 1577935200);
+  assert(::utimensat(-99, path.c_str(), nullptr, 0) == 0);
+  assert(call(243, invalid_directory, 128, 512, 0) == 0);
+  assert(::stat(path.c_str(), &info) == 0);
+  assert(info.st_atimespec.tv_sec == 1577935200 && info.st_atimespec.tv_nsec == 123456000);
+  assert(info.st_mtimespec.tv_sec == 1577935201 && info.st_mtimespec.tv_nsec == 789000000);
+
+  assert(call(240, 0, 0600) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  assert(call(240, 4096, 0600) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  assert(call(243, invalid_directory, 128, 4096, 0) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  assert(call(243, invalid_directory, 4096, 512, 0) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  assert(call(243, invalid_directory, 0, 512, 0) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  assert(call(243, invalid_directory, 256, 512, 0) == UINT64_MAX);
+  assert(guest_errno() == EBADF);
+  assert(call(242, static_cast<std::uint64_t>(descriptor), 4096) == UINT64_MAX);
+  assert(guest_errno() == EFAULT);
+  const auto before_null_times = ::time(nullptr);
+  assert(call(242, static_cast<std::uint64_t>(descriptor), 0) == 0);
+  assert(::stat(path.c_str(), &info) == 0);
+  assert(info.st_mtimespec.tv_sec >= before_null_times &&
+         info.st_mtimespec.tv_sec <= ::time(nullptr));
+
   assert(call(241, static_cast<std::uint64_t>(descriptor + 1000), 0600) == UINT64_MAX);
   assert(guest_errno() == EBADF);
-  assert(call(243, static_cast<std::uint64_t>(AT_FDCWD), 128, 512, 1) == UINT64_MAX);
-  assert(guest_errno() == EINVAL);
+  assert(::utimensat(AT_FDCWD, path.c_str(), nullptr, 1) == 0);
+  assert(call(243, static_cast<std::uint64_t>(AT_FDCWD), 128, 512, 1) == 0);
 
   assert(::unlink(path.c_str()) == 0);
   assert(::rmdir(directory) == 0);

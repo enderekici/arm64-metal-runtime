@@ -730,6 +730,19 @@ HostServiceResult dispatch_guest_host_service(
                         &guest_error, sizeof(guest_error));
         }
     };
+    const auto guest_path = [&](std::uint64_t address, std::string& path) {
+        if (address == 0) {
+            set_errno(EFAULT);
+            return false;
+        }
+        try {
+            path = string_at(address);
+            return true;
+        } catch (const std::exception&) {
+            set_errno(EFAULT);
+            return false;
+        }
+    };
     const auto standard_descriptor_open = [&](std::int32_t descriptor) {
         if (descriptor == STDIN_FILENO) return !state.closedStreams.count(bootstrap.stdinSlot);
         if (descriptor == STDOUT_FILENO) return !state.closedStreams.count(bootstrap.stdoutSlot);
@@ -843,7 +856,11 @@ HostServiceResult dispatch_guest_host_service(
     };
     switch (service) {
         case 240: {  // chmod
-            const auto path = string_at(registers[0]);
+            std::string path;
+            if (!guest_path(registers[0], path)) {
+                registers[0] = failure;
+                break;
+            }
             const auto result = ::chmod(path.c_str(), static_cast<mode_t>(registers[1]));
             if (result != 0) set_errno(errno);
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
@@ -870,8 +887,14 @@ HostServiceResult dispatch_guest_host_service(
             const auto timesAddress = registers[service == 242 ? 1 : 2];
             const struct timespec* timesPointer = nullptr;
             if (timesAddress != 0) {
-                const auto* guestTimes = memory.buffer(
-                    timesAddress, sizeof(GuestTimespec) * 2);
+                const std::uint8_t* guestTimes = nullptr;
+                try {
+                    guestTimes = memory.buffer(timesAddress, sizeof(GuestTimespec) * 2);
+                } catch (const std::exception&) {
+                    set_errno(EFAULT);
+                    registers[0] = failure;
+                    break;
+                }
                 for (std::size_t index = 0; index < times.size(); ++index) {
                     GuestTimespec guestTime{};
                     std::memcpy(&guestTime, guestTimes + index * sizeof(GuestTimespec),
@@ -892,18 +915,20 @@ HostServiceResult dispatch_guest_host_service(
                 result = ::futimens(descriptor, timesPointer);
             } else {
                 const auto directory = static_cast<std::int32_t>(registers[0]);
-                const auto flags = static_cast<int>(registers[3]);
-                if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+                // Darwin's libsystem wrapper only translates this bit; other
+                // flags are ignored before calling setattrlistat.
+                const auto flags = static_cast<int>(registers[3]) & AT_SYMLINK_NOFOLLOW;
+                std::string path;
+                if (!guest_path(registers[1], path)) {
+                    registers[0] = failure;
+                    break;
+                }
+                if ((path.empty() || path.front() != '/') && directory != AT_FDCWD &&
+                    !owns_descriptor(directory)) {
                     set_errno(EBADF);
                     registers[0] = failure;
                     break;
                 }
-                if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
-                    set_errno(EINVAL);
-                    registers[0] = failure;
-                    break;
-                }
-                const auto path = string_at(registers[1]);
                 result = ::utimensat(directory, path.c_str(), timesPointer, flags);
             }
             if (result != 0) set_errno(errno);
