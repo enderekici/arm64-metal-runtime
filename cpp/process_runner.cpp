@@ -6710,23 +6710,25 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         selectKernel(entry);
         return true;
     };
+    std::vector<std::uint64_t> signalRegisterSnapshot;
     const auto deliverPendingSignal = [&]() -> std::optional<std::int32_t> {
         hostServiceState.ingest_host_signals();
-        std::vector<std::uint64_t> live(
-            static_cast<const std::uint64_t*>(stateBuffer.data()),
-            static_cast<const std::uint64_t*>(stateBuffer.data()) +
-                stateBuffer.size() / sizeof(std::uint64_t));
+        const auto* stateRegisters = static_cast<const std::uint64_t*>(stateBuffer.data());
+        const auto stateWords = stateBuffer.size() / sizeof(std::uint64_t);
+        signalRegisterSnapshot.assign(stateRegisters, stateRegisters + stateWords);
         const auto delivery = signalRuntime.deliver(
             hostServiceState.signals, hostServiceState.queuedProcessSignals,
             hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
-            live, live[37], static_cast<std::uint64_t>(activeEntry),
+            signalRegisterSnapshot, signalRegisterSnapshot[37],
+            static_cast<std::uint64_t>(activeEntry),
             guestScheduler.current_id(), &guestMemory);
         if (delivery.outcome == GuestSignalOutcome::ProcessExit) return delivery.exitStatus;
         if (delivery.outcome == GuestSignalOutcome::UnsupportedStop) {
             throw std::runtime_error("Guest stop and continue signals are unsupported");
         }
         if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
-            std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
+            std::memcpy(stateBuffer.data(), signalRegisterSnapshot.data(),
+                        signalRegisterSnapshot.size() * sizeof(std::uint64_t));
             selectKernel(static_cast<std::int64_t>(delivery.handler));
         }
         return std::nullopt;
