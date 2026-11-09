@@ -46,6 +46,7 @@
 #include <sys/un.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <sys/xattr.h>
 #include <mach/mach.h>
 #include <mach/kern_return.h>
 #include <mach/host_info.h>
@@ -10796,6 +10797,45 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 381) {
                 const auto policy = guest_cstring(guestMemory, registers[0]);
+                if (policy == "Quarantine" && registers[1] == 82) {
+                    std::array<std::uint64_t, 3> arguments{};
+                    const auto* argumentBytes = guestMemory.buffer(
+                        registers[2], sizeof(arguments));
+                    std::memcpy(arguments.data(), argumentBytes, sizeof(arguments));
+                    const auto descriptor = static_cast<std::int32_t>(arguments[0]);
+                    if (arguments[0] > static_cast<std::uint64_t>(
+                            std::numeric_limits<std::int32_t>::max()) ||
+                        arguments[1] == 0 || arguments[1] <
+                            ExecutableImage::minimum_image_address) {
+                        registers[0] = EFAULT;
+                        registers[32] |= 8U;
+                    } else {
+                        try {
+                            (void)guestMemory.buffer(arguments[1], sizeof(std::uint64_t));
+                            const auto savedHostErrno = errno;
+                            errno = 0;
+                            const auto quarantineSize = ::fgetxattr(descriptor,
+                                "com.apple.quarantine", nullptr, 0, 0, 0);
+                            const auto quarantineError = errno;
+                            errno = savedHostErrno;
+                            if (quarantineSize < 0 && quarantineError == ENOATTR) {
+                                registers[0] = ENOATTR;
+                                registers[32] &= ~std::uint64_t{8};
+                            } else if (quarantineSize >= 0) {
+                                throw std::runtime_error(
+                                    "Unsupported guest quarantine metadata via getinfo_fd");
+                            } else {
+                                registers[0] = quarantineError == 0 ? EIO : quarantineError;
+                                registers[32] |= 8U;
+                            }
+                        } catch (const std::out_of_range&) {
+                            registers[0] = EFAULT;
+                            registers[32] |= 8U;
+                        }
+                    }
+                    registers[34] = 0;
+                    continue;
+                }
                 if (registers[1] != 2 || policy != "Sandbox") {
                     throw std::runtime_error("Unsupported guest MAC policy or call");
                 }

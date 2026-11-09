@@ -1161,19 +1161,28 @@ HostServiceResult dispatch_guest_host_service(
             break;
         }
         case 8: {  // mbtowc
-            if (registers[0] % alignof(wchar_t) != 0) {
+            if (registers[0] != 0 && registers[0] % alignof(wchar_t) != 0) {
                 throw std::runtime_error("Guest mbtowc output is misaligned");
             }
-            if (registers[1] == 0 || registers[1] >= memory.size() || registers[2] == 0) {
-                throw std::runtime_error("Guest mbtowc arguments unsupported");
+            if (registers[1] == 0) {
+                registers[0] = static_cast<std::uint64_t>(
+                    static_cast<std::int64_t>(std::mbtowc(nullptr, nullptr, 0)));
+                break;
+            }
+            if (registers[1] >= memory.size()) {
+                throw std::runtime_error("Guest mbtowc input pointer unsupported");
             }
             const auto available = memory.size() - static_cast<std::size_t>(registers[1]);
-            const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(registers[2], available));
+            const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(
+                registers[2], available));
             const auto* source = reinterpret_cast<const char*>(memory.buffer(registers[1], length));
-            auto* destination = memory.buffer(registers[0], sizeof(wchar_t), true);
             wchar_t output = 0;
-            const auto result = std::mbtowc(&output, source, length);
-            if (result >= 0) std::memcpy(destination, &output, sizeof(output));
+            const auto result = std::mbtowc(registers[0] == 0 ? nullptr : &output,
+                                             source, length);
+            if (registers[0] != 0 && result >= 0) {
+                std::memcpy(memory.buffer(registers[0], sizeof(output), true),
+                            &output, sizeof(output));
+            }
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
             break;
         }
@@ -2979,6 +2988,40 @@ HostServiceResult dispatch_guest_host_service(
             const auto result = std::mbrlen(input, length, &state);
             std::memcpy(state_bytes, &state, sizeof(state));
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 87: {  // mbrtowc with guest-owned multibyte conversion state
+            if (registers[2] > std::numeric_limits<std::size_t>::max()) {
+                throw std::out_of_range("Guest mbrtowc length exceeds host size_t");
+            }
+            if (registers[0] != 0 && registers[0] % alignof(wchar_t) != 0) {
+                throw std::runtime_error("Guest mbrtowc output is misaligned");
+            }
+            const auto length = static_cast<std::size_t>(registers[2]);
+            const auto* input = registers[1] == 0 ? nullptr
+                : reinterpret_cast<const char*>(memory.buffer(registers[1], length));
+            auto* guestState = registers[3] == 0 ? nullptr
+                : memory.buffer(registers[3], sizeof(std::mbstate_t), true);
+            std::mbstate_t state{};
+            if (guestState != nullptr) std::memcpy(&state, guestState, sizeof(state));
+            wchar_t output = 0;
+            const auto savedHostErrno = errno;
+            errno = 0;
+            const auto result = std::mbrtowc(registers[0] == 0 ? nullptr : &output,
+                                              input, length, guestState == nullptr
+                                                  ? nullptr : &state);
+            const auto conversionErrno = errno;
+            errno = savedHostErrno;
+            if (guestState != nullptr) std::memcpy(guestState, &state, sizeof(state));
+            if (registers[0] != 0 && result != static_cast<std::size_t>(-1) &&
+                result != static_cast<std::size_t>(-2)) {
+                std::memcpy(memory.buffer(registers[0], sizeof(output), true),
+                            &output, sizeof(output));
+            }
+            if (result == static_cast<std::size_t>(-1)) {
+                set_errno(conversionErrno == 0 ? EILSEQ : conversionErrno);
+            }
+            registers[0] = result;
             break;
         }
         case 25: {  // fileno
