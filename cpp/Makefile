@@ -605,13 +605,24 @@ verify-interpreter-vector-memory-native: $(INTERPRETER_VECTOR_MEMORY_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_VECTOR_MEMORY_MAIN)"; rc=$$?; set -e; \
 		test "$$rc" -eq 42; echo "Single-vector memory native guest exit=$$rc"
 
+# Standalone fixtures map Mach-O text file offsets from minimum_image_address.
 verify-interpreter-vector-memory: $(APP) $(INTERPRETER_VECTOR_MEMORY_MAIN) $(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/vector-memory.XXXXXX"); \
 	binary_sha=$$(shasum -a 256 "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '{print $$1}'); \
 	entry_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '/^_main:/ {main=1; next} main && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
 	fallback_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '/^_vector_memory_fallback:/ {fallback=1; next} fallback && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
-	guest_entry=0x42d8; fallback_guest=$$(printf '0x%x' $$((0x42d8 + 0x$$fallback_addr - 0x$$entry_addr))); \
-	test -n "$$entry_addr" && test -n "$$fallback_addr"; \
+	text_mapping=$$(otool -l "$(INTERPRETER_VECTOR_MEMORY_MAIN)" | awk '/sectname __text/ {text=1; next} text && $$1 == "addr" {address=$$2} text && $$1 == "offset" {print address, $$2; exit}'); \
+	set -- $$text_mapping; text_vmaddr=$$1; text_fileoff=$$2; \
+	test -n "$$entry_addr" && test -n "$$fallback_addr" && test -n "$$text_vmaddr" && test -n "$$text_fileoff"; \
+	guest_entry=$$(printf '0x%x' $$((0x4000 + text_fileoff + 0x$$entry_addr - text_vmaddr))); \
+	fallback_guest=$$(printf '0x%x' $$((0x4000 + text_fileoff + 0x$$fallback_addr - text_vmaddr))); \
+	unmapped_entry_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" | awk '/^_main:/ {main=1; next} main && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
+	unmapped_load_addr=$$(xcrun llvm-objdump --disassemble --macho "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" | awk '/^_vector_memory_fault_load:/ {fault=1; next} fault && /^[0-9a-f]+:/ {gsub(":", "", $$1); print $$1; exit}'); \
+	unmapped_text_mapping=$$(otool -l "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" | awk '/sectname __text/ {text=1; next} text && $$1 == "addr" {address=$$2} text && $$1 == "offset" {print address, $$2; exit}'); \
+	set -- $$unmapped_text_mapping; unmapped_text_vmaddr=$$1; unmapped_text_fileoff=$$2; \
+	test -n "$$unmapped_entry_addr" && test -n "$$unmapped_load_addr" && test -n "$$unmapped_text_vmaddr" && test -n "$$unmapped_text_fileoff"; \
+	unmapped_guest_entry=$$(printf '0x%x' $$((0x4000 + unmapped_text_fileoff + 0x$$unmapped_entry_addr - unmapped_text_vmaddr))); \
+	unmapped_guest_load=$$(printf '0x%x' $$((0x4000 + unmapped_text_fileoff + 0x$$unmapped_load_addr - unmapped_text_vmaddr))); \
 	set +e; \
 	"$(INTERPRETER_VECTOR_MEMORY_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
 	"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
@@ -636,10 +647,10 @@ verify-interpreter-vector-memory: $(APP) $(INTERPRETER_VECTOR_MEMORY_MAIN) $(INT
 			"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/unmapped.out" 2>"$$run_dir/unmapped.err"; unmapped_rc=$$?; \
 		set -e; \
 		if test "$$unmapped_rc" -ne 0 && \
-			grep -q 'interpreter-dispatch.*pc=0x42d8' "$$run_dir/unmapped.err" && \
-			grep -q 'interpreter-packet pc=0x42dc detail=43' "$$run_dir/unmapped.err" && \
+			grep -q "interpreter-dispatch.*pc=$$unmapped_guest_entry" "$$run_dir/unmapped.err" && \
+			grep -q "interpreter-packet pc=$$unmapped_guest_load detail=43" "$$run_dir/unmapped.err" && \
 			grep -q 'Guest process memory access fault at 0x0' "$$run_dir/unmapped.err"; then \
-			echo "Single-vector memory native/translated/AOT and fault fixtures passed; sha256=$$binary_sha entry=$$guest_entry fallback=$$fallback_guest receipts=$$run_dir"; \
+			echo "Single-vector memory native/translated/AOT and fault fixtures passed; sha256=$$binary_sha entry=$$guest_entry fallback=$$fallback_guest fault-entry=$$unmapped_guest_entry fault-load=$$unmapped_guest_load receipts=$$run_dir"; \
 		else \
 			cat "$$run_dir/unmapped.err" >&2; echo "Unmapped vector-load fault fixture failed: rc=$$unmapped_rc receipts=$$run_dir" >&2; exit 1; \
 		fi; \
