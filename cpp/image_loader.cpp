@@ -265,8 +265,10 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
           if (length < 24) fail("Truncated guest build version");
           const auto minimum = file.word(cursor + 12);
           auto sdk = file.word(cursor + 16);
+          const auto sdkLoadCommand = sdk;
           if (sdk == 0) sdk = minimum;
-          build_version = GuestBuildVersion{file.word(cursor + 8), minimum, sdk};
+          build_version = GuestBuildVersion{file.word(cursor + 8), minimum, sdk,
+                                            sdkLoadCommand};
         }
         break;
       case 0x24:
@@ -274,8 +276,9 @@ MachImage::MachImage(const std::filesystem::path& path, bool executable, std::si
           if (length < 16) fail("Truncated guest minimum version");
           const auto minimum = file.word(cursor + 8);
           auto sdk = file.word(cursor + 12);
+          const auto sdkLoadCommand = sdk;
           if (sdk == 0) sdk = minimum;
-          build_version = GuestBuildVersion{1, minimum, sdk};
+          build_version = GuestBuildVersion{1, minimum, sdk, sdkLoadCommand};
         }
         break;
       case 0x8000001c: {

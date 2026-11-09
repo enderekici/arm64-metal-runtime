@@ -82,6 +82,44 @@ std::uint32_t dyld_base_platform(std::uint32_t platform) {
     }
 }
 
+std::uint32_t dyld_program_version(std::uint32_t platform, std::uint32_t version) {
+    const auto basePlatform = dyld_base_platform(platform);
+    if (basePlatform == 5) {  // bridgeOS versions are reported as iOS versions.
+        return version + 0x00090000U;
+    }
+    if (basePlatform == 4 && (version >> 16U) < 26U) {  // watchOS, before 26.
+        return version + 0x00070000U;
+    }
+    return version;
+}
+
+std::uint32_t dyld_program_sdk_version(const ExecutableImage& image) {
+    if (!image.build_version) return 0;
+    const auto& build = *image.build_version;
+    auto sdk = build.sdk_load_command;
+    if (sdk == 0 && dyld_base_platform(build.platform) == 1) {
+        // Match dyld's macOS fallback for binaries whose SDK load-command field is zero.
+        const auto linkedVersion = image.link_time_version("System.B");
+        constexpr std::array mappings{
+            std::pair<std::uint32_t, std::uint32_t>{0x00580103U, 0x000a0400U},
+            std::pair<std::uint32_t, std::uint32_t>{0x006f0000U, 0x000a0500U},
+            std::pair<std::uint32_t, std::uint32_t>{0x007b0000U, 0x000a0600U},
+            std::pair<std::uint32_t, std::uint32_t>{0x009f0000U, 0x000a0700U},
+            std::pair<std::uint32_t, std::uint32_t>{0x00a90300U, 0x000a0800U},
+            std::pair<std::uint32_t, std::uint32_t>{0x04ad0000U, 0x000a0900U},
+        };
+        if (linkedVersion != std::numeric_limits<std::uint32_t>::max()) {
+            std::uint32_t lastSdk = 0;
+            for (const auto& [minimumDylibVersion, inferredSdk] : mappings) {
+                if (linkedVersion < minimumDylibVersion) return lastSdk;
+                lastSdk = inferredSdk;
+            }
+            sdk = lastSdk;
+        }
+    }
+    return dyld_program_version(build.platform, sdk);
+}
+
 bool dyld_is_simulator_platform(std::uint32_t platform) {
     return platform == 7 || platform == 8 || platform == 9 || platform == 12;
 }
@@ -1065,6 +1103,10 @@ DyldApisFacade initialize_dyld_apis(
         "__guest_dyld_shared_cache_contains_path");
     const auto dlopenFromService = addSyntheticService(
         "__guest_dlopen_from_facade");
+    const auto programSdkVersionService = addSyntheticService(
+        "__guest_dyld_get_program_sdk_version");
+    const auto programMinOsVersionService = addSyntheticService(
+        "__guest_dyld_get_program_min_os_version");
 
     constexpr std::uint64_t objectBytes = 16;
     constexpr std::uint64_t vtableBytes = 0x428;
@@ -1104,6 +1146,9 @@ DyldApisFacade initialize_dyld_apis(
     const auto dlopenFromSlot = vtable + 0x2e0;
     const auto dlopenFromModifier = (dlopenFromSlot & addressMask) |
                                     0xd48c000000000000ULL;
+    const auto programSdkVersionSlot = vtable + 0x188;
+    const auto programSdkVersionModifier = (programSdkVersionSlot & addressMask) |
+                                           0x6fd4000000000000ULL;
     store_u64(bootstrap.memory, basePlatformSlot,
               append_guest_pointer_token(bootstrap, basePlatformService, 0,
                                          basePlatformModifier));
@@ -1125,6 +1170,15 @@ DyldApisFacade initialize_dyld_apis(
     store_u64(bootstrap.memory, dlopenFromSlot,
               append_guest_pointer_token(bootstrap, dlopenFromService, 0,
                                          dlopenFromModifier));
+    store_u64(bootstrap.memory, programSdkVersionSlot,
+              append_guest_pointer_token(bootstrap, programSdkVersionService, 0,
+                                         programSdkVersionModifier));
+    const auto programMinOsVersionSlot = vtable + 0x190;
+    const auto programMinOsVersionModifier =
+        (programMinOsVersionSlot & addressMask) | 0x3683000000000000ULL;
+    store_u64(bootstrap.memory, programMinOsVersionSlot,
+              append_guest_pointer_token(bootstrap, programMinOsVersionService, 0,
+                                         programMinOsVersionModifier));
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
@@ -1949,7 +2003,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
-    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 10U : 0U;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 12U : 0U;
     if (image.authentication.size() >
         std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
         throw std::length_error("Initial guest authentication table size overflow");
@@ -7567,6 +7621,31 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else {
                     registers[0] = canonicalPath ? 1U : 0U;
                 }
+                continue;
+            }
+            if (service == 227) {
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "Dyld program SDK method did not use the published API object");
+                }
+                hostRegisters[0] = image.build_version &&
+                    image.build_version->platform == bootstrap.activePlatform
+                    ? dyld_program_sdk_version(image) : 0;
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
+            if (service == 228) {
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "Dyld program min OS method did not use the published API object");
+                }
+                hostRegisters[0] = image.build_version &&
+                    image.build_version->platform == bootstrap.activePlatform
+                    ? dyld_program_version(image.build_version->platform,
+                                           image.build_version->minimum) : 0;
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
             if (service == 201) {
