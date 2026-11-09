@@ -49,6 +49,7 @@
 #include <mach/mach_host.h>
 #include <mach/clock.h>
 #include <mach/ndr.h>
+#include <mach/task_info.h>
 #include <tuple>
 #include <thread>
 #include <tuple>
@@ -10402,6 +10403,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         static_cast<std::uint32_t>(registers[5] >> 32) == reply &&
                         (registers[6] >> 32) == 0 && registers[7] == 0 &&
                         guestReceiveRights.find(reply) != guestReceiveRights.end() &&
+                        registers[0] != 0 &&
                         guestMemory.is_guest_readable(registers[0], requestSize);
                     if (expectedShape) {
                         const auto* request = guestMemory.buffer(registers[0], requestSize);
@@ -10422,6 +10424,151 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   << " lr=0x" << hexadecimal(registers[30])
                                   << " shape=unsupported\n";
                     }
+                }
+                if (messageId == 3405) {
+                    constexpr std::uint32_t machSendInvalidDestination = 0x10000003;
+                    constexpr std::uint32_t machSendInvalidData = 0x10000002;
+                    constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
+                    constexpr std::uint32_t requestSize = 40;
+                    constexpr std::uint32_t errorReplySize = 36;
+                    constexpr std::uint32_t successReplySize = 72;
+                    constexpr std::uint32_t minimumTrailerSize = 8;
+                    constexpr std::uint32_t replyMessageId = 3505;
+                    constexpr std::uint32_t taskAuditTokenFlavor = TASK_AUDIT_TOKEN;
+                    constexpr std::uint32_t taskAuditTokenCount = TASK_AUDIT_TOKEN_COUNT;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const auto taskSendRight = guestSendRightUrefs.find(remote);
+                    if (remote != guestMachTaskPort ||
+                        taskSendRight == guestSendRightUrefs.end() ||
+                        taskSendRight->second == 0) {
+                        registers[0] = machSendInvalidDestination;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
+                    if (registers[1] != 0x2'0000'0003ULL ||
+                        static_cast<std::uint32_t>(registers[2]) != 0x1513 ||
+                        (registers[2] >> 32) != requestSize ||
+                        static_cast<std::uint32_t>(registers[4]) != 0 ||
+                        static_cast<std::uint32_t>(registers[5]) != 0 ||
+                        receiveName != reply || registers[6] >
+                            std::numeric_limits<std::uint32_t>::max() ||
+                        (registers[6] >> 32) != 0 || registers[7] != 0 ||
+                        guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    if (registers[0] == 0 ||
+                        !guestMemory.is_guest_readable(registers[0], requestSize)) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    struct TaskInfoRequest {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        task_flavor_t flavor;
+                        mach_msg_type_number_t count;
+                    };
+                    struct TaskInfoErrorReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                    };
+                    struct TaskInfoSuccessReply {
+                        mach_msg_header_t header;
+                        NDR_record_t ndr;
+                        kern_return_t returnCode;
+                        mach_msg_type_number_t count;
+                        integer_t info[taskAuditTokenCount];
+                    };
+                    struct TaskInfoMinimumTrailer {
+                        mach_msg_trailer_type_t type;
+                        mach_msg_trailer_size_t size;
+                    };
+                    static_assert(sizeof(TaskInfoRequest) == requestSize);
+                    static_assert(sizeof(TaskInfoErrorReply) == errorReplySize);
+                    static_assert(sizeof(TaskInfoSuccessReply) == successReplySize);
+                    static_assert(sizeof(TaskInfoMinimumTrailer) == minimumTrailerSize);
+                    const auto* requestBytes = guestMemory.buffer(registers[0], requestSize);
+                    TaskInfoRequest request{};
+                    std::memcpy(&request, requestBytes, sizeof(request));
+                    if (request.header.msgh_bits != 0x1513 ||
+                        request.header.msgh_size != requestSize ||
+                        request.header.msgh_remote_port != remote ||
+                        request.header.msgh_local_port != reply ||
+                        request.header.msgh_voucher_port != MACH_PORT_NULL ||
+                        request.header.msgh_id != 3405 ||
+                        std::memcmp(&request.ndr, &NDR_record, sizeof(request.ndr)) != 0) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+
+                    if (request.flavor != taskAuditTokenFlavor) {
+                        throw std::runtime_error(
+                            "Unsupported task_info flavor on guest self task");
+                    }
+
+                    kern_return_t result = KERN_INVALID_ARGUMENT;
+                    audit_token_t token{};
+                    if (request.count >= taskAuditTokenCount) {
+                        auto hostCount = static_cast<mach_msg_type_number_t>(
+                            taskAuditTokenCount);
+                        result = ::task_info(::mach_task_self(), taskAuditTokenFlavor,
+                            reinterpret_cast<task_info_t>(&token), &hostCount);
+                        if (result == KERN_SUCCESS && hostCount != taskAuditTokenCount) {
+                            result = KERN_FAILURE;
+                        }
+                    }
+
+                    const auto responseSize = result == KERN_SUCCESS
+                        ? successReplySize : errorReplySize;
+                    if (registers[6] < responseSize + minimumTrailerSize) {
+                        registers[0] = machReceiveTooLarge;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    const auto outputSize = responseSize + minimumTrailerSize;
+                    if (!guestMemory.is_guest_readable(registers[0], outputSize) ||
+                        guestMemory.is_readonly(registers[0], outputSize)) {
+                        registers[0] = machSendInvalidData;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    auto* replyBuffer = guestMemory.buffer(registers[0], outputSize, true);
+                    const auto prepareHeader = [reply](mach_msg_header_t& header,
+                                                       std::uint32_t size) {
+                        header.msgh_bits = 0x1200;
+                        header.msgh_size = size;
+                        header.msgh_remote_port = MACH_PORT_NULL;
+                        header.msgh_local_port = reply;
+                        header.msgh_voucher_port = MACH_PORT_NULL;
+                        header.msgh_id = replyMessageId;
+                    };
+                    if (result == KERN_SUCCESS) {
+                        TaskInfoSuccessReply response{};
+                        prepareHeader(response.header, sizeof(response));
+                        response.ndr = NDR_record;
+                        response.returnCode = KERN_SUCCESS;
+                        response.count = taskAuditTokenCount;
+                        std::memcpy(response.info, &token, sizeof(token));
+                        std::memcpy(replyBuffer, &response, sizeof(response));
+                    } else {
+                        TaskInfoErrorReply response{};
+                        prepareHeader(response.header, sizeof(response));
+                        response.ndr = NDR_record;
+                        response.returnCode = result;
+                        std::memcpy(replyBuffer, &response, sizeof(response));
+                    }
+                    const TaskInfoMinimumTrailer trailer{
+                        MACH_MSG_TRAILER_FORMAT_0, minimumTrailerSize};
+                    std::memcpy(replyBuffer + responseSize, &trailer, sizeof(trailer));
+                    registers[0] = 0;
+                    registers[34] = 0;
+                    continue;
                 }
                 const bool clockServiceMessage = messageId == 1000 &&
                     guestClockServiceIds.find(static_cast<std::uint32_t>(registers[3])) !=
