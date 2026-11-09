@@ -736,6 +736,11 @@ HostServiceResult dispatch_guest_host_service(
     const auto owns_descriptor = [&](std::int32_t descriptor) {
         return state.openDescriptors.count(descriptor) != 0;
     };
+    const auto owns_directory_for = [&](std::int32_t descriptor,
+                                        const std::string& path) {
+        return (!path.empty() && path.front() == '/') || descriptor == AT_FDCWD ||
+               owns_descriptor(descriptor);
+    };
     const auto ready_for_io = [](std::int32_t descriptor, short events) {
         pollfd item{descriptor, events, 0};
         const auto result = ::poll(&item, 1, 0);
@@ -2616,6 +2621,11 @@ HostServiceResult dispatch_guest_host_service(
         }
         case 230: {  // mkdirat
             std::string path;
+            if (registers[1] == 0) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
             try {
                 path = string_at(registers[1]);
             } catch (const std::out_of_range&) {
@@ -2624,7 +2634,7 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             const auto directory = static_cast<std::int32_t>(registers[0]);
-            if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+            if (!owns_directory_for(directory, path)) {
                 set_errno(EBADF);
                 registers[0] = failure;
                 break;
@@ -2638,6 +2648,11 @@ HostServiceResult dispatch_guest_host_service(
         case 231: {  // linkat
             std::string oldPath;
             std::string newPath;
+            if (registers[1] == 0 || registers[3] == 0) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
             try {
                 oldPath = string_at(registers[1]);
                 newPath = string_at(registers[3]);
@@ -2648,8 +2663,8 @@ HostServiceResult dispatch_guest_host_service(
             }
             const auto oldDirectory = static_cast<std::int32_t>(registers[0]);
             const auto newDirectory = static_cast<std::int32_t>(registers[2]);
-            if ((oldDirectory != AT_FDCWD && !owns_descriptor(oldDirectory)) ||
-                (newDirectory != AT_FDCWD && !owns_descriptor(newDirectory))) {
+            if (!owns_directory_for(oldDirectory, oldPath) ||
+                !owns_directory_for(newDirectory, newPath)) {
                 set_errno(EBADF);
                 registers[0] = failure;
                 break;
@@ -2669,6 +2684,11 @@ HostServiceResult dispatch_guest_host_service(
         case 232: {  // symlinkat
             std::string target;
             std::string path;
+            if (registers[0] == 0 || registers[2] == 0) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
             try {
                 target = string_at(registers[0]);
                 path = string_at(registers[2]);
@@ -2678,7 +2698,7 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             const auto directory = static_cast<std::int32_t>(registers[1]);
-            if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+            if (!owns_directory_for(directory, path)) {
                 set_errno(EBADF);
                 registers[0] = failure;
                 break;
@@ -2717,6 +2737,91 @@ HostServiceResult dispatch_guest_host_service(
             const auto result = service == 234
                 ? ::link(first.c_str(), second.c_str())
                 : ::symlink(first.c_str(), second.c_str());
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 236: {  // openat
+            std::string path;
+            if (registers[1] == 0) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            try {
+                path = string_at(registers[1]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto directory = static_cast<std::int32_t>(registers[0]);
+            if (!owns_directory_for(directory, path)) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto flags = static_cast<std::int32_t>(registers[2]);
+            constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
+                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY;
+            if ((flags & ~allowed) != 0) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
+            }
+            int descriptor = -1;
+            if ((flags & O_CREAT) != 0) {
+                mode_t mode = 0;
+                try {
+                    if (registers[31] == 0) throw std::out_of_range("Guest stack pointer is null");
+                    mode = static_cast<mode_t>(load_u64(registers[31]));
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = failure;
+                    break;
+                }
+                descriptor = ::openat(directory, path.c_str(), flags | O_CLOEXEC, mode);
+            } else {
+                descriptor = ::openat(directory, path.c_str(), flags | O_CLOEXEC);
+            }
+            if (descriptor >= 0) {
+                state.openDescriptors.insert(descriptor);
+                if ((flags & O_ACCMODE) != O_RDONLY) {
+                    state.writableDescriptors.insert(descriptor);
+                }
+            } else {
+                set_errno(errno);
+            }
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(descriptor));
+            break;
+        }
+        case 237: {  // unlinkat
+            std::string path;
+            if (registers[1] == 0) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            try {
+                path = string_at(registers[1]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto directory = static_cast<std::int32_t>(registers[0]);
+            if (!owns_directory_for(directory, path)) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto flags = static_cast<int>(registers[2]);
+            if (flags != 0 && flags != AT_REMOVEDIR) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::unlinkat(directory, path.c_str(), flags);
             if (result < 0) set_errno(errno);
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
             break;

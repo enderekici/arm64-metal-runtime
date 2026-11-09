@@ -63,6 +63,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mkdir", 233, true, true},
     {"_link", 234, true, true},
     {"_symlink", 235, true, true},
+    {"_openat", 236, true, true},
+    {"_unlinkat", 237, true, true},
     {"_printf", 33, true, true},
     {"_fcntl", 34, true, true},
     {"_isatty", 35, true, true},
