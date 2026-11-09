@@ -10390,6 +10390,39 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
+                if (messageId == 3405 &&
+                    std::getenv("ARM64_METAL_TRACE_TASK_INFO") != nullptr) {
+                    constexpr std::uint32_t requestSize = 40;
+                    const auto remote = static_cast<std::uint32_t>(registers[3]);
+                    const bool expectedShape = registers[1] == 0x2'0000'0003ULL &&
+                        static_cast<std::uint32_t>(registers[2]) == 0x1513 &&
+                        (registers[2] >> 32) == requestSize && remote == guestMachTaskPort &&
+                        static_cast<std::uint32_t>(registers[4]) == 0 &&
+                        static_cast<std::uint32_t>(registers[5]) == 0 &&
+                        static_cast<std::uint32_t>(registers[5] >> 32) == reply &&
+                        (registers[6] >> 32) == 0 && registers[7] == 0 &&
+                        guestReceiveRights.find(reply) != guestReceiveRights.end() &&
+                        guestMemory.is_guest_readable(registers[0], requestSize);
+                    if (expectedShape) {
+                        const auto* request = guestMemory.buffer(registers[0], requestSize);
+                        std::int32_t flavor = 0;
+                        std::uint32_t inputCount = 0;
+                        std::memcpy(&flavor, request + 32, sizeof(flavor));
+                        std::memcpy(&inputCount, request + 36, sizeof(inputCount));
+                        std::cerr << "arm64-metal trace task-info-request"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " lr=0x" << hexadecimal(registers[30])
+                                  << " task=guest-self flavor=" << flavor
+                                  << " input-count=" << inputCount
+                                  << " receive-capacity=" << static_cast<std::uint32_t>(registers[6])
+                                  << '\n';
+                    } else {
+                        std::cerr << "arm64-metal trace task-info-request"
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " lr=0x" << hexadecimal(registers[30])
+                                  << " shape=unsupported\n";
+                    }
+                }
                 const bool clockServiceMessage = messageId == 1000 &&
                     guestClockServiceIds.find(static_cast<std::uint32_t>(registers[3])) !=
                         guestClockServiceIds.end();
