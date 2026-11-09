@@ -1009,6 +1009,32 @@ std::uint64_t append_guest_pointer_token(ProcessBootstrapResult& bootstrap,
     return encode_guest_pointer(address, key, index);
 }
 
+std::uint64_t append_guest_pointer_token(std::vector<std::uint64_t>& registers,
+                                        std::uint64_t address,
+                                        std::uint64_t key,
+                                        std::uint64_t modifier) {
+    const auto count = static_cast<std::size_t>(registers[guestTokenCount]);
+    const auto capacity = static_cast<std::size_t>(registers[guestTokenCapacity]);
+    if (registers.size() < guestTokenStart || count > capacity ||
+        capacity > (registers.size() - guestTokenStart) / 3) {
+        throw std::runtime_error("Guest authentication table is full");
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto slot = guestTokenStart + 3 * index;
+        if (registers[slot] == address && registers[slot + 1] == modifier &&
+            registers[slot + 2] == key) {
+            return encode_guest_pointer(address, key, index);
+        }
+    }
+    if (count >= capacity) throw std::runtime_error("Guest authentication table is full");
+    const auto slot = guestTokenStart + 3 * count;
+    registers[slot] = address;
+    registers[slot + 1] = modifier;
+    registers[slot + 2] = key;
+    registers[guestTokenCount] = count + 1;
+    return encode_guest_pointer(address, key, count);
+}
+
 struct DyldApisFacade {
     std::uint64_t object = 0;
     std::uint64_t initializeService = 0;
@@ -7882,7 +7908,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     hostRegisters[0] = 0;
                 } else if (const auto resolved = resolveDlsym(handle, name)) {
                     clearGuestDlerror();
-                    hostRegisters[0] = *resolved;
+                    const auto resume = hostRegisters[33];
+                    const auto callerAbi = resume >= 4 && resume - 4 <=
+                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+                        ? image.is_arm64e_code(static_cast<std::int64_t>(resume - 4))
+                        : std::nullopt;
+                    const bool executable = *resolved <= static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) &&
+                        image.is_code(static_cast<std::int64_t>(*resolved));
+                    // arm64e dlsym signs code pointers with IA/0; data pointers stay raw.
+                    if (callerAbi && *callerAbi && executable) {
+                        const auto token = static_cast<std::size_t>(
+                            hostRegisters[guestTokenCount]);
+                        hostRegisters[0] = append_guest_pointer_token(
+                            hostRegisters, *resolved, 0, 0);
+                        auto* stateRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                        stateRegisters[guestTokenCount] = hostRegisters[guestTokenCount];
+                        const auto slot = guestTokenStart + 3 * token;
+                        std::copy_n(hostRegisters.begin() + static_cast<std::ptrdiff_t>(slot), 3,
+                                    stateRegisters + slot);
+                    } else {
+                        hostRegisters[0] = *resolved;
+                    }
                 } else {
                     setGuestDlerror("dlsym: symbol not found: " + name);
                     hostRegisters[0] = 0;

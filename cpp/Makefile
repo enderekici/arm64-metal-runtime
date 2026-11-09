@@ -39,7 +39,7 @@ $(INTERPRETER_ASSETS_TEST): ../fixtures/handoff/interpreter-assets-selection.cpp
 verify-interpreter-assets: $(INTERPRETER_ASSETS_TEST)
 	"$(INTERPRETER_ASSETS_TEST)"
 
-.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-stack-guard-retry verify-interpreter-mprotect-cross-page-retry verify-interpreter-pthread-runtime-owned-guard verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-vector-memory-native verify-interpreter-vector-memory verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases clean
+.PHONY: all components app verify-interpreter verify-interpreter-demand-cache verify-interpreter-stack-guard-retry verify-interpreter-mprotect-cross-page-retry verify-interpreter-pthread-runtime-owned-guard verify-interpreter-literal-load-native verify-interpreter-ret-chain-native verify-interpreter-ret-chain verify-interpreter-ldumin-ldumax-native verify-interpreter-ldumin-ldumax verify-interpreter-cmeq-zero-native verify-interpreter-cmeq-zero verify-interpreter-vector-extreme-native verify-interpreter-vector-extreme verify-interpreter-vector-memory-native verify-interpreter-vector-memory verify-interpreter-assets verify-guest-format verify-guest-image-registry verify-guest-exit-registry verify-dyld-finalizer-metadata-native verify-memcpy-chk verify-memset-chk verify-kdebug-trace64-native verify-semaphore-native verify-semaphore-scheduler verify-signal-thread-frames verify-threaded-raise-signals-native verify-jit-code-cache-native verify-pthread-kill-native verify-open-nocancel-native verify-open-append-native verify-proc-info-native verify-af-unix-socket-native verify-af-unix-connect-native verify-af-unix-connect-efault-native verify-af-unix-datagram-native verify-af-unix-datagram-blocking-native verify-af-unix-close-blocked-native verify-vector-crypto verify-mach-vm-overwrite-native verify-mach-vm-sparse-reservation-native verify-mach-vm-region-native verify-mach-vm-named-services verify-adc-sbc-carry-native verify-scalar-fp-native verify-scalar-fp-interpreter verify-scalar-fp-compare-native verify-scalar-fp-compare-interpreter diagnose-scalar-fp-compare-translated verify-authenticated-return verify-authenticated-return-native verify-authenticated-return-cpu verify-authenticated-return-interpreter verify-addp-2d-native verify-xtn-native verify-umaxp-native verify-guest-heap-allocate-at verify-cache-backing-leases verify-dlsym-arm64e-pac-native verify-dlsym-arm64e-pac clean
 all: components
 
 components: $(COMPONENT_OBJECTS)
@@ -585,6 +585,37 @@ verify-data-auth-isa: $(APP) $(DATA_AUTH_ISA_MAIN)
 		"$(APP)" launch "$(abspath $(DATA_AUTH_ISA_MAIN))"; guest=$$?; set -e; \
 		test "$$native" -eq 42; test "$$guest" -eq 42; \
 		echo "Data-A ISA masking native=$$native guest=$$guest"
+
+DYLSYM_ARM64E_PAC := $(BUILD_DIR)/dlsym-arm64e-pac
+DYLSYM_ARM64_PAC := $(BUILD_DIR)/dlsym-arm64-pac
+DYLSYM_PAC_SOURCE := ../fixtures/handoff/dlsym-arm64e-pac.c
+$(DYLSYM_ARM64E_PAC): $(DYLSYM_PAC_SOURCE)
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64e -Wall -Wextra -Werror -Wno-cast-function-type-strict \
+		-Wl,-export_dynamic "$<" -o "$@"
+
+.PHONY: verify-dlsym-arm64e-pac-native verify-dlsym-arm64-pac-native verify-dlsym-arm64e-pac
+$(DYLSYM_ARM64_PAC): $(DYLSYM_PAC_SOURCE)
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -Wno-cast-function-type-strict \
+		-Wl,-export_dynamic "$<" -o "$@"
+
+verify-dlsym-arm64e-pac-native: $(DYLSYM_ARM64E_PAC)
+	@set +e; ulimit -c 0; "$(DYLSYM_ARM64E_PAC)"; status=$$?; set -e; \
+		test "$$status" -eq 42; echo "arm64e dlsym function/data native exit=$$status"
+
+verify-dlsym-arm64-pac-native: $(DYLSYM_ARM64_PAC)
+	@set +e; ulimit -c 0; "$(DYLSYM_ARM64_PAC)"; status=$$?; set -e; \
+		test "$$status" -eq 42; echo "arm64 dlsym function/data native exit=$$status"
+
+verify-dlsym-arm64e-pac: $(APP) $(DYLSYM_ARM64E_PAC) $(DYLSYM_ARM64_PAC)
+	@set +e; "$(DYLSYM_ARM64E_PAC)"; native_e=$$?; \
+		"$(APP)" launch "$(abspath $(DYLSYM_ARM64E_PAC))"; guest_e=$$?; \
+		"$(DYLSYM_ARM64_PAC)"; native=$$?; \
+		"$(APP)" launch "$(abspath $(DYLSYM_ARM64_PAC))"; guest=$$?; set -e; \
+		test "$$native_e" -eq 42; test "$$guest_e" -eq 42; \
+		test "$$native" -eq 42; test "$$guest" -eq 42; \
+		echo "dlsym function/data arm64e native=$$native_e guest=$$guest_e arm64 native=$$native guest=$$guest"
 
 
 $(INTERPRETER_ADDP_2D_MAIN): ../fixtures/interpreter/addp-2d-main.s
