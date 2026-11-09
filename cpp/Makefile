@@ -637,8 +637,8 @@ verify-interpreter-vector-memory: $(APP) $(INTERPRETER_VECTOR_MEMORY_MAIN) $(INT
 		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
 		awk -v entry="$$guest_entry" -v fallback="$$fallback_guest" ' \
 			/event=interpreter-packet/ { if (/detail=43([[:space:]]|$$)/) load++; if (/detail=44([[:space:]]|$$)/) store++ } \
-			/event=interpreter-dispatch/ && index($$0, "pc=" entry " ") { entry_dispatch=NR } \
-			/event=dispatch-done/ && index($$0, "pc=" fallback " ") { fallback_done=NR } \
+			/event=interpreter-dispatch/ && index($$0, "pc=" entry " ") && !entry_dispatch { entry_dispatch=NR } \
+			/event=dispatch-done/ && index($$0, "pc=" fallback " ") && !fallback_done && !first_compile { fallback_done=NR } \
 			/event=compile-start/ { if (!first_compile) { first_compile=NR; if (index($$0, "pc=" fallback " ")) fallback_compile=NR } } \
 			END { exit !(load == 16 && store == 20 && entry_dispatch > 0 && fallback_done > entry_dispatch && fallback_compile > fallback_done && first_compile == fallback_compile) }' \
 			"$$run_dir/interpreter.err"; then \
