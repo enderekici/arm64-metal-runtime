@@ -5,6 +5,7 @@
 #include "host_service_registry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <climits>
 #include <cstring>
@@ -27,6 +28,7 @@
 #include <sys/attr.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/param.h>
 #include <sys/time.h>
 #include <sys/sysctl.h>
 #include <signal.h>
@@ -2727,6 +2729,29 @@ HostServiceResult dispatch_guest_host_service(
                     result = found == state.standardStatusFlags.end() ? native
                         : ((native & ~O_NONBLOCK) | (found->second & O_NONBLOCK));
                 } else result = native;
+            } else if (operation == F_GETPATH) {
+                std::array<char, MAXPATHLEN> hostPath{};
+                try {
+                    const auto guestPathAddress = load_u64(registers[31]);
+                    result = ::fcntl(descriptor, operation, hostPath.data());
+                    if (result >= 0) {
+                        const auto* terminator = static_cast<const char*>(
+                            std::memchr(hostPath.data(), 0, hostPath.size()));
+                        if (terminator == nullptr) {
+                            result = -1;
+                            errno = ENAMETOOLONG;
+                        } else {
+                            const auto pathBytes = static_cast<std::size_t>(
+                                terminator - hostPath.data()) + 1;
+                            auto* guestPath = memory.buffer(
+                                guestPathAddress, pathBytes, true);
+                            std::memcpy(guestPath, hostPath.data(), pathBytes);
+                        }
+                    }
+                } catch (const std::out_of_range&) {
+                    result = -1;
+                    errno = EFAULT;
+                }
             } else if (operation == F_SETFD || operation == F_SETFL) {
                 std::int32_t value = 0;
                 std::memcpy(&value, memory.buffer(registers[31], sizeof(value)), sizeof(value));
