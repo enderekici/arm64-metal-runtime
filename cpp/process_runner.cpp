@@ -12201,6 +12201,39 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-44))) {
+                constexpr std::uint32_t kernFailure = 5;
+                constexpr std::uint32_t kernSuccess = 0;
+                constexpr std::uint32_t kernResourceShortage = 3;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto processId = static_cast<std::int32_t>(registers[1]);
+                const auto taskRight = guestSendRightUrefs.find(target);
+                const bool currentTask = target == guestMachTaskPort &&
+                    taskRight != guestSendRightUrefs.end() && taskRight->second != 0;
+                const bool currentProcess = processId == static_cast<std::int32_t>(getpid());
+                std::uint32_t result = currentTask && currentProcess
+                    ? kernSuccess : kernFailure;
+                std::uint32_t outputName = MACH_PORT_NULL;
+                if (result == kernSuccess) {
+                    const auto taskName = getGuestTaskNamePort();
+                    if (taskName.has_value()) {
+                        outputName = acquireGuestFixedSendRight(*taskName);
+                    } else {
+                        result = kernResourceShortage;
+                    }
+                }
+                if (registers[2] >= bootstrap.pageSize) {
+                    try {
+                        auto* output = guestMemory.buffer(registers[2], sizeof(outputName), true);
+                        std::memcpy(output, &outputName, sizeof(outputName));
+                    } catch (const std::exception&) {
+                        // Native task_name_for_pid ignores copyout failures.
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-46))) {
                 constexpr std::uint64_t kernInvalidTask = 5;
                 if (static_cast<std::uint32_t>(registers[0]) != guestMachTaskPort) {

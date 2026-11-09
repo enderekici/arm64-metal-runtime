@@ -647,6 +647,29 @@ output_untouched=1 result=PASS`.
 The guest run validates only its synthetic task-name role right; any separate
 ClientIPC identity token remains independent.
 
+## `task_name_for_pid` self-only trap (`-44`)
+
+`task-name-for-pid-self.c` uses the installed three-argument Mach trap wrapper
+for the current task only. It verifies a distinct task-name send right, then
+checks that an impossible negative PID returns `KERN_FAILURE` and clears a
+valid output word; a bad output address on that failure path also returns
+`KERN_FAILURE`, matching the installed trap's ignored `copyout` status. The
+runtime maps only the current guest task and current process ID to the synthetic
+guest task-name capability; it never forwards arbitrary PID lookups to the host.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/task-name-for-pid-self.c -o /tmp/task-name-for-pid-self
+/tmp/task-name-for-pid-self
+ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  .build/cpp/arm64-metal launch /tmp/task-name-for-pid-self
+```
+
+The native control prints `own=0 own_nonnull=1 own_distinct=1 type=0 send=1
+release=0 missing=5 missing_null=1 invalid_output=5 result=PASS`. The guest
+command is staged for differential replay; it was not run in this CPU-only
+change.
+
 ## Guarded strict port construction (`0x31`)
 
 `mach-port-construct-31.c` uses the raw construct, type, and destruct traps,
