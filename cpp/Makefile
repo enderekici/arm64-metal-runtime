@@ -1585,7 +1585,9 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/add-sub-sp.interpreter.err" && \
 		grep -q 'interpreter-block-ready.*pc=0x42d8 detail=10' "$$run_dir/add-sub-sp.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*pc=0x42d8 detail=10' "$$run_dir/add-sub-sp.interpreter.err" && \
-		grep -q 'dispatch-done.*pc=0x42d8 detail=2' "$$run_dir/add-sub-sp.interpreter.err" && \
+		awk '/event=interpreter-dispatch/ { if ($$5 != "pc=0x42d8" || $$6 != "detail=10" || dispatched++) bad=1; next } \
+		     /event=dispatch-done/ { if (!dispatched || $$5 != "pc=0x42d8" || $$6 !~ /^detail=[0-9]+$$/ || completed++) bad=1 } \
+		     END { if (dispatched != 1 || completed != 1 || bad) exit 1 }' "$$run_dir/add-sub-sp.interpreter.err" && \
 		test "$$(grep -c 'event=interpreter-dispatch' "$$run_dir/add-sub-sp.interpreter.err")" -eq 1 && \
 		awk '/event=compile-start/ { found=1 } END { exit found }' "$$run_dir/add-sub-sp.interpreter.err" || exit 1; \
 		set +e; \
