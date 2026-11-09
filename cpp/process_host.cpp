@@ -2614,6 +2614,113 @@ HostServiceResult dispatch_guest_host_service(
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(descriptor));
             break;
         }
+        case 230: {  // mkdirat
+            std::string path;
+            try {
+                path = string_at(registers[1]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto directory = static_cast<std::int32_t>(registers[0]);
+            if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::mkdirat(directory, path.c_str(),
+                                          static_cast<mode_t>(registers[2]));
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 231: {  // linkat
+            std::string oldPath;
+            std::string newPath;
+            try {
+                oldPath = string_at(registers[1]);
+                newPath = string_at(registers[3]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto oldDirectory = static_cast<std::int32_t>(registers[0]);
+            const auto newDirectory = static_cast<std::int32_t>(registers[2]);
+            if ((oldDirectory != AT_FDCWD && !owns_descriptor(oldDirectory)) ||
+                (newDirectory != AT_FDCWD && !owns_descriptor(newDirectory))) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto flags = static_cast<int>(registers[4]);
+            if ((flags & ~AT_SYMLINK_FOLLOW) != 0) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::linkat(oldDirectory, oldPath.c_str(), newDirectory,
+                                         newPath.c_str(), flags);
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 232: {  // symlinkat
+            std::string target;
+            std::string path;
+            try {
+                target = string_at(registers[0]);
+                path = string_at(registers[2]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto directory = static_cast<std::int32_t>(registers[1]);
+            if (directory != AT_FDCWD && !owns_descriptor(directory)) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::symlinkat(target.c_str(), directory, path.c_str());
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 233: {  // mkdir
+            std::string path;
+            try {
+                path = string_at(registers[0]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = ::mkdir(path.c_str(), static_cast<mode_t>(registers[1]));
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 234:  // link
+        case 235: {  // symlink
+            std::string first;
+            std::string second;
+            try {
+                first = string_at(registers[0]);
+                second = string_at(registers[1]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            const auto result = service == 234
+                ? ::link(first.c_str(), second.c_str())
+                : ::symlink(first.c_str(), second.c_str());
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
         case 22: {  // close
             const auto descriptor = static_cast<std::int32_t>(registers[0]);
             std::uint64_t stream = 0;

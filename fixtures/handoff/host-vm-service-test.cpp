@@ -3,10 +3,15 @@
 
 #include <array>
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <stdexcept>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 #include <mach/mach.h>
 #include <mach/vm_statistics.h>
@@ -14,6 +19,12 @@
 using namespace arm64metal;
 
 int main() {
+  assert(decoder_host_service_ids().at("_mkdirat") == 230);
+  assert(decoder_host_service_ids().at("_linkat") == 231);
+  assert(decoder_host_service_ids().at("_symlinkat") == 232);
+  assert(runner_host_service_ids().at("_mkdirat") == 230);
+  assert(runner_host_service_ids().at("_linkat") == 231);
+  assert(runner_host_service_ids().at("_symlinkat") == 232);
   assert(decoder_host_service_ids().at("_pthread_threadid_np") == 196);
   assert(decoder_host_service_ids().at("_mach_vm_read_overwrite") == 197);
   assert(decoder_host_service_ids().at("___memset_chk") == 198);
@@ -55,13 +66,97 @@ int main() {
   HostServiceState state;
   bool protectCalled = false;
   state.machVmProtect = [&](std::uint64_t address, std::uint64_t size,
-                            bool setMaximum, std::uint32_t protection) {
+                            bool setMaximum, std::uint32_t protection, bool mprotect) {
     protectCalled = address == 4096 && size == 8192 && setMaximum &&
-                    protection == 5;
+                    protection == 5 && !mprotect;
     return std::uint32_t{0};
   };
   GuestMemory protectMemory(std::vector<std::uint8_t>(256));
   std::vector<std::uint64_t> registers(36);
+  char ownedTemplate[] = "/tmp/arm64-metal-tar-extract.XXXXXX";
+  const auto ownedRoot = ::mkdtemp(ownedTemplate);
+  assert(ownedRoot != nullptr);
+  const auto rootDescriptor = ::open(ownedRoot, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  assert(rootDescriptor >= 0);
+  state.openDescriptors.insert(rootDescriptor);
+  bootstrap.errnoSlot = 240;
+  const auto storePath = [&](std::uint64_t address, const std::string& value) {
+    auto* destination = protectMemory.buffer(address, value.size() + 1, true);
+    std::memcpy(destination, value.c_str(), value.size() + 1);
+  };
+  storePath(8, "child");
+  registers[0] = static_cast<std::uint64_t>(rootDescriptor);
+  registers[1] = 8;
+  registers[2] = 0755;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 230);
+  assert(registers[0] == 0);
+  const auto childDescriptor = ::openat(rootDescriptor, "child", O_RDONLY | O_DIRECTORY);
+  assert(childDescriptor >= 0);
+  const auto payloadDescriptor = ::openat(childDescriptor, "file",
+                                           O_CREAT | O_EXCL | O_WRONLY, 0600);
+  assert(payloadDescriptor >= 0);
+  assert(::write(payloadDescriptor, "owned", 5) == 5);
+  assert(::close(payloadDescriptor) == 0);
+  storePath(32, "child/file");
+  storePath(64, "child/hard");
+  registers[0] = static_cast<std::uint64_t>(rootDescriptor);
+  registers[1] = 32;
+  registers[2] = static_cast<std::uint64_t>(rootDescriptor);
+  registers[3] = 64;
+  registers[4] = 0;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 231);
+  assert(registers[0] == 0);
+  struct stat sourceStat {};
+  struct stat hardStat {};
+  assert(::fstatat(rootDescriptor, "child/file", &sourceStat, 0) == 0);
+  assert(::fstatat(rootDescriptor, "child/hard", &hardStat, 0) == 0);
+  assert(sourceStat.st_ino == hardStat.st_ino);
+  storePath(96, "child/file");
+  storePath(128, "child/sym");
+  registers[0] = 96;
+  registers[1] = static_cast<std::uint64_t>(rootDescriptor);
+  registers[2] = 128;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 232);
+  assert(registers[0] == 0);
+  char symlinkTarget[32] = {};
+  assert(::readlinkat(rootDescriptor, "child/sym", symlinkTarget,
+                      sizeof(symlinkTarget)) == 10);
+  assert(std::string(symlinkTarget, 10) == "child/file");
+  const auto priorDirectory = ::open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  assert(priorDirectory >= 0);
+  assert(::fchdir(rootDescriptor) == 0);
+  storePath(160, "cwd-child");
+  registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(AT_FDCWD));
+  registers[1] = 160;
+  registers[2] = 0700;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 230);
+  assert(registers[0] == 0);
+  assert(::fchdir(priorDirectory) == 0);
+  assert(::close(priorDirectory) == 0);
+  registers[0] = 987654;
+  registers[1] = 8;
+  registers[2] = 0755;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 230);
+  std::uint32_t guestError = 0;
+  std::memcpy(&guestError, protectMemory.buffer(bootstrap.errnoSlot, sizeof(guestError)),
+              sizeof(guestError));
+  assert(registers[0] == static_cast<std::uint64_t>(-1) && guestError == EBADF);
+  registers[0] = static_cast<std::uint64_t>(rootDescriptor);
+  registers[1] = 300;
+  registers[2] = 0755;
+  (void)dispatch_guest_host_service(registers, protectMemory, bootstrap, state, 230);
+  std::memcpy(&guestError, protectMemory.buffer(bootstrap.errnoSlot, sizeof(guestError)),
+              sizeof(guestError));
+  assert(registers[0] == static_cast<std::uint64_t>(-1) && guestError == EFAULT);
+  assert(::unlinkat(rootDescriptor, "child/sym", 0) == 0);
+  assert(::unlinkat(rootDescriptor, "child/hard", 0) == 0);
+  assert(::unlinkat(rootDescriptor, "child/file", 0) == 0);
+  assert(::unlinkat(rootDescriptor, "cwd-child", AT_REMOVEDIR) == 0);
+  assert(::close(childDescriptor) == 0);
+  assert(::unlinkat(rootDescriptor, "child", AT_REMOVEDIR) == 0);
+  state.openDescriptors.erase(rootDescriptor);
+  assert(::close(rootDescriptor) == 0);
+  assert(::rmdir(ownedRoot) == 0);
   registers[0] = bootstrap.guestTaskPort;
   registers[1] = 4096;
   registers[2] = 8192;
