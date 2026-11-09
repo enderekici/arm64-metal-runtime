@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <climits>
 #include <cstring>
 #include <charconv>
@@ -693,6 +694,23 @@ HostServiceResult dispatch_guest_host_service(
     std::vector<std::uint64_t>& registers, GuestMemory& memory,
     const ProcessBootstrapResult& bootstrap, HostServiceState& state,
     std::uint64_t service) {
+    struct PerformanceScope {
+        HostServiceState& state;
+        bool enabled;
+        std::chrono::steady_clock::time_point started;
+
+        explicit PerformanceScope(HostServiceState& hostState)
+            : state(hostState), enabled(static_cast<bool>(state.recordPerformanceHostService)),
+              started(enabled ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{}) {}
+
+        ~PerformanceScope() {
+            if (enabled) {
+                state.recordPerformanceHostService(std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - started).count());
+            }
+        }
+    } performanceScope(state);
     if (registers.size() < 36) {
         throw std::invalid_argument("Guest host service requires a complete register file");
     }

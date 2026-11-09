@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -1724,6 +1725,70 @@ private:
     std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
 };
 
+class ProcessPerformanceSummary {
+public:
+    ProcessPerformanceSummary()
+        : started_(std::chrono::steady_clock::now()) {
+        const char* enabled = std::getenv("ARM64_METAL_PERF_SUMMARY");
+        enabled_ = enabled != nullptr && std::strcmp(enabled, "1") == 0;
+    }
+
+    ~ProcessPerformanceSummary() {
+        if (!enabled_) return;
+        const auto wallSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::fprintf(stderr,
+            "arm64-metal perf wall_s=%.6f dispatches=%llu "
+            "dispatch_cpu_inclusive_s=%.6f gpu_timestamp_s=%.6f "
+            "gpu_timestamp_dispatches=%llu/%llu compile_count=%llu "
+            "compile_s=%.6f host_service_calls=%llu "
+            "host_service_s=%.6f host_service_scope=central_dispatcher\n",
+            wallSeconds,
+            static_cast<unsigned long long>(dispatchCount_),
+            dispatchCpuSeconds_, gpuTimestampSeconds_,
+            static_cast<unsigned long long>(gpuTimestampDispatchCount_),
+            static_cast<unsigned long long>(dispatchCount_),
+            static_cast<unsigned long long>(compileCount_), compileSeconds_,
+            static_cast<unsigned long long>(hostServiceCount_), hostServiceSeconds_);
+    }
+
+    [[nodiscard]] bool enabled() const noexcept { return enabled_; }
+
+    void recordDispatch(const DispatchTiming& timing) noexcept {
+        if (!enabled_) return;
+        ++dispatchCount_;
+        dispatchCpuSeconds_ += timing.cpuSeconds;
+        if (timing.gpuSeconds > 0.0) {
+            ++gpuTimestampDispatchCount_;
+            gpuTimestampSeconds_ += timing.gpuSeconds;
+        }
+    }
+
+    void recordCompile(double seconds) noexcept {
+        if (!enabled_) return;
+        ++compileCount_;
+        compileSeconds_ += seconds;
+    }
+
+    void recordHostService(double seconds) noexcept {
+        if (!enabled_) return;
+        ++hostServiceCount_;
+        hostServiceSeconds_ += seconds;
+    }
+
+private:
+    std::chrono::steady_clock::time_point started_;
+    bool enabled_ = false;
+    std::uint64_t dispatchCount_ = 0;
+    std::uint64_t gpuTimestampDispatchCount_ = 0;
+    std::uint64_t compileCount_ = 0;
+    std::uint64_t hostServiceCount_ = 0;
+    double dispatchCpuSeconds_ = 0.0;
+    double gpuTimestampSeconds_ = 0.0;
+    double compileSeconds_ = 0.0;
+    double hostServiceSeconds_ = 0.0;
+};
+
 class JitExecutionTrace {
 public:
     JitExecutionTrace() {
@@ -1822,6 +1887,7 @@ std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
 std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
+    ProcessPerformanceSummary performanceSummary;
     ProgressTrace progressTrace;
     SchedulerTrace schedulerTrace;
     WorkqueueTrace workqueueTrace;
@@ -2280,8 +2346,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto cases = translate_core::render_blocks(plan.instructions, entry, "ul");
         const auto source = process_msl::render_source(cases);
         auto translated = backend.compileCompute(source, "run_process");
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const auto compileSeconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - started).count();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(compileSeconds)).count();
+        performanceSummary.recordCompile(compileSeconds);
         progressTrace.event("compile-done", static_cast<std::uint64_t>(entry),
                             static_cast<std::uint64_t>(elapsed));
         return CompiledProcessKernel{std::move(translated), {}, false};
@@ -2335,6 +2404,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         &memoryConfigBuffer};
     const DispatchSize one{1, 1, 1};
     HostServiceState hostServiceState;
+    if (performanceSummary.enabled()) {
+        hostServiceState.recordPerformanceHostService = [&](double seconds) {
+            performanceSummary.recordHostService(seconds);
+        };
+    }
+    const auto dispatchActiveKernel = [&]() {
+        DispatchTiming timing;
+        if (activeKernel->usesInterpreter) {
+            timing = interpreter->dispatch(backend, activeKernel->interpretedPackets,
+                                           stateBuffer, &interpreterMemoryAccess).timing;
+        } else {
+            timing = backend.dispatch(activeKernel->translated, bindings, one, one);
+        }
+        performanceSummary.recordDispatch(timing);
+    };
     HostServiceState::GuestUnixSocket guestSyslogSink;
     guestSyslogSink.type = SOCK_DGRAM;
     guestSyslogSink.boundPath = "/var/run/syslog";
@@ -7020,11 +7104,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     progressTrace.event("interpreter-dispatch", registers[33],
                                         activeKernel->interpretedPackets.size());
                 }
-                (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
-                                            stateBuffer, &interpreterMemoryAccess);
-            } else {
-                (void)backend.dispatch(activeKernel->translated, bindings, one, one);
             }
+            dispatchActiveKernel();
             if (jitExecutionTrace.enabled()) {
                 const auto owner = executableJitOwnerFor(dispatchedPc);
                 if (owner) {
@@ -7040,11 +7121,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 progressTrace.event("dispatch-done", registers[33],
                                     static_cast<std::uint64_t>(elapsed));
             }
-        } else if (activeKernel->usesInterpreter) {
-            (void)interpreter->dispatch(backend, activeKernel->interpretedPackets,
-                                        stateBuffer, &interpreterMemoryAccess);
         } else {
-            (void)backend.dispatch(activeKernel->translated, bindings, one, one);
+            dispatchActiveKernel();
         }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto status = registers[34];

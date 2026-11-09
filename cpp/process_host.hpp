@@ -283,6 +283,8 @@ struct HostServiceState {
     bool jitWriteProtected = true;
     bool guestMapJitEligible = false;
     std::function<bool(bool)> setJitWriteProtection;
+    // Optional aggregate timing hook for the central host-service dispatcher.
+    std::function<void(double)> recordPerformanceHostService;
 
     HostServiceState() = default;
     HostServiceState(const HostServiceState&) = delete;
