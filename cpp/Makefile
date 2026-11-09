@@ -1846,15 +1846,15 @@ verify-interpreter-demand-cache-vector: $(APP) $(INTERPRETER_DEMAND_CACHE_VECTOR
 		sed '/^arm64-metal trace /d' "$$run_dir/$$case_name.interpreter.err" >"$$run_dir/$$case_name.interpreter.no-trace.err"; \
 		cmp "$$run_dir/$$case_name.native.err" "$$run_dir/$$case_name.interpreter.no-trace.err"; \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/$$case_name.interpreter.err"; \
-		awk '/event=interpreter-packet/ && $$6 == "detail=43" { packets[$$5]=1 } \
-		     /event=interpreter-cache-fault/ { faults++; fault_pc=$$5; fault_addr=$$6; fault_line=NR; if (fault_addr !~ /^detail=/) bad=1 } \
-		     /event=interpreter-cache-fault-width/ { widths++; if ($$5 != fault_pc || $$6 != "detail=16") bad=1 } \
-		     /event=interpreter-cache-resident/ { residents++; if (NR <= fault_line || $$5 != fault_pc || $$6 != fault_addr) bad=1; resident_line=NR } \
-		     /event=interpreter-dispatch/ && residents && !resumed && NR > resident_line { resumed=1; if ($$5 != fault_pc) bad=1 } \
-		     /event=compile-start/ { compile=1 } \
+		awk '$$4 == "event=interpreter-packet" && $$6 == "detail=43" { packets[$$5]=1 } \
+		     $$4 == "event=interpreter-cache-fault" { faults++; fault_pc=$$5; fault_addr=$$6; fault_line=NR; if (fault_addr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault-width" { widths++; if ($$5 != fault_pc || $$6 != "detail=16") bad=1 } \
+		     $$4 == "event=interpreter-cache-resident" { residents++; if (NR <= fault_line || $$5 != fault_pc || $$6 != fault_addr) bad=1; resident_line=NR } \
+		     $$4 == "event=interpreter-dispatch" && residents && !resumed && NR > resident_line { resumed=1; if ($$5 != fault_pc) bad=1 } \
+		     $$4 == "event=compile-start" { compile=1 } \
 		     END { if (!fault_pc || !packets[fault_pc] || faults != 1 || widths != 1 || residents != 1 || !resumed || compile || bad) exit 1 }' \
 			"$$run_dir/$$case_name.interpreter.err"; \
-		printf '%s vector demand-cache retry: exit=%s fault-pc=%s fault=%s receipts=%s\n' "$$case_name" "$$interpreter_rc" "$$(awk '/event=interpreter-cache-fault/ {print $$5, $$6; exit}' "$$run_dir/$$case_name.interpreter.err")" "$$run_dir"; \
+		printf '%s vector demand-cache retry: exit=%s fault-pc=%s fault=%s receipts=%s\n' "$$case_name" "$$interpreter_rc" "$$(awk '$$4 == "event=interpreter-cache-fault" {print $$5, $$6; exit}' "$$run_dir/$$case_name.interpreter.err")" "$$run_dir"; \
 	}; \
 	run_case post "$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_MAIN)" "$(INTERPRETER_DEMAND_CACHE_VECTOR_POST_NATIVE)"; \
 	run_case pre "$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_MAIN)" "$(INTERPRETER_DEMAND_CACHE_VECTOR_PRE_NATIVE)"; \
@@ -1881,7 +1881,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/interpreter.err"; \
@@ -1903,7 +1903,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/scalar.native.err" "$$run_dir/scalar.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/scalar.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/scalar.interpreter.err"; \
@@ -1925,7 +1925,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/indexed.native.err" "$$run_dir/indexed.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/indexed.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/indexed.interpreter.err"; \
@@ -1947,7 +1947,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/byte.native.err" "$$run_dir/byte.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/byte.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/byte.interpreter.err"; \
@@ -1969,7 +1969,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/half.native.err" "$$run_dir/half.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/half.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/half.interpreter.err"; \
@@ -1991,7 +1991,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/signed-byte.native.err" "$$run_dir/signed-byte.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-byte.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-byte.interpreter.err"; \
@@ -2013,7 +2013,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/signed-half.native.err" "$$run_dir/signed-half.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-half.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-half.interpreter.err"; \
@@ -2035,7 +2035,7 @@ verify-interpreter-demand-cache: verify-interpreter-demand-cache-vector $(APP) $
 		cmp "$$run_dir/signed-word.native.err" "$$run_dir/signed-word.interpreter.no-trace.err"; \
 		grep -q 'interpreter-block-ready.*detail=5' "$$run_dir/signed-word.interpreter.err"; \
 		awk '/event=interpreter-dispatch/ && !first { first=1; firstpc=$$5 } \
-		     /event=interpreter-cache-fault/ { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
+		     $$4 == "event=interpreter-cache-fault" { fault=1; faultpc=$$5; faultaddr=$$6; faultline=NR; if (faultaddr !~ /^detail=/) bad=1 } \
 		     /event=interpreter-cache-resident/ { resident=1; if (!fault || NR <= faultline || $$5 != faultpc || $$6 != faultaddr) bad=1; residentline=NR } \
 		     /event=interpreter-dispatch/ && resident && !resumed && NR > residentline { resumed=1; if ($$5 != faultpc) bad=1 } \
 		     END { if (!first || !fault || !resident || !resumed || firstpc == faultpc || bad) exit 1 }' "$$run_dir/signed-word.interpreter.err"; \
