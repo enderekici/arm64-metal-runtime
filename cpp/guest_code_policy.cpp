@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <limits.h>
 #include <memory>
 #include <string>
@@ -106,6 +107,20 @@ bool dictionary_uint32(CFDictionaryRef dictionary, CFStringRef key,
   if (!CFNumberGetValue(value, kCFNumberSInt32Type, &number)) return false;
   result = static_cast<std::uint32_t>(number);
   return true;
+}
+
+std::string dictionary_string(CFDictionaryRef dictionary, CFStringRef key) {
+  if (dictionary == nullptr) return {};
+  const auto value = static_cast<CFStringRef>(CFDictionaryGetValue(dictionary, key));
+  if (value == nullptr || CFGetTypeID(value) != CFStringGetTypeID()) return {};
+  const auto length = CFStringGetLength(value);
+  const auto capacity = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8);
+  if (capacity < 0 || capacity >= std::numeric_limits<CFIndex>::max()) return {};
+  std::string result(static_cast<std::size_t>(capacity) + 1, '\0');
+  if (!CFStringGetCString(value, result.data(), static_cast<CFIndex>(result.size()),
+                          kCFStringEncodingUTF8)) return {};
+  result.resize(std::char_traits<char>::length(result.c_str()));
+  return result;
 }
 
 }  // namespace
@@ -206,6 +221,7 @@ GuestCodePolicy guest_code_policy(const std::filesystem::path& executable,
   if (result.security_status != errSecSuccess || !information) return result;
 
   result.validation = GuestCodeValidation::valid;
+  result.identity = dictionary_string(information.get(), kSecCodeInfoIdentifier);
   (void)dictionary_uint32(information.get(), kSecCodeInfoFlags, result.signing_flags);
   result.hardened_runtime = (result.signing_flags & 0x00010000U) != 0;
   result.ad_hoc = (result.signing_flags & 0x00000002U) != 0;

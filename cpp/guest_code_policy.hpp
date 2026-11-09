@@ -16,6 +16,7 @@ enum class GuestCodeValidation { unavailable, invalid, valid };
 struct GuestCodePolicy {
   GuestCodeValidation validation = GuestCodeValidation::unavailable;
   std::uint32_t signing_flags = 0;
+  std::string identity;
   std::array<std::uint8_t, 32> image_sha256{};
   bool hardened_runtime = false;
   bool ad_hoc = false;
