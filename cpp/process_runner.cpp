@@ -1060,6 +1060,8 @@ DyldApisFacade initialize_dyld_apis(
         "__guest_dyld_shared_cache_real_path");
     const auto sharedCacheContainsPathService = addSyntheticService(
         "__guest_dyld_shared_cache_contains_path");
+    const auto dlopenFromService = addSyntheticService(
+        "__guest_dlopen_from_facade");
 
     constexpr std::uint64_t objectBytes = 16;
     constexpr std::uint64_t vtableBytes = 0x428;
@@ -1096,6 +1098,9 @@ DyldApisFacade initialize_dyld_apis(
     const auto sharedCacheContainsPathSlot = vtable + 0x2d8;
     const auto sharedCacheContainsPathModifier =
         (sharedCacheContainsPathSlot & addressMask) | 0x11cb000000000000ULL;
+    const auto dlopenFromSlot = vtable + 0x2e0;
+    const auto dlopenFromModifier = (dlopenFromSlot & addressMask) |
+                                    0xd48c000000000000ULL;
     store_u64(bootstrap.memory, basePlatformSlot,
               append_guest_pointer_token(bootstrap, basePlatformService, 0,
                                          basePlatformModifier));
@@ -1114,6 +1119,9 @@ DyldApisFacade initialize_dyld_apis(
     store_u64(bootstrap.memory, sharedCacheContainsPathSlot,
               append_guest_pointer_token(bootstrap, sharedCacheContainsPathService, 0,
                                          sharedCacheContainsPathModifier));
+    store_u64(bootstrap.memory, dlopenFromSlot,
+              append_guest_pointer_token(bootstrap, dlopenFromService, 0,
+                                         dlopenFromModifier));
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
@@ -1873,7 +1881,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
-    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 7U : 0U;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 10U : 0U;
     if (image.authentication.size() >
         std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
         throw std::length_error("Initial guest authentication table size overflow");
@@ -8206,29 +8214,41 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
-            if (service == 135 || service == 136) {
-                if (service == 135) {
-                    const auto mode = static_cast<std::int32_t>(hostRegisters[1]);
-                    if (hostRegisters[0] == 0) {
+            if (service == 135 || service == 136 || service == 219) {
+                if (service == 135 || service == 219) {
+                    const bool facadeDlopenFrom = service == 219;
+                    const auto mode = static_cast<std::int32_t>(
+                        hostRegisters[facadeDlopenFrom ? 2U : 1U]);
+                    const auto pathAddress = hostRegisters[facadeDlopenFrom ? 1U : 0U];
+                    hostRegisters[0] = pathAddress;
+                    if (pathAddress == 0) {
                         hostRegisters[0] = imageHandles.open_main(mode);
                         clearGuestDlerror();
                     } else {
-                        const auto requestedPath = guest_cstring(guestMemory, hostRegisters[0]);
+                        const auto requestedPath = guest_cstring(guestMemory, pathAddress);
                         std::uint64_t callerHeader =
                             static_cast<std::uint64_t>(image.main_header);
                         const auto resume = hostRegisters[33];
-                        const auto callSite = resume >= 4 ? resume - 4 : resume;
+                        const auto callSite = facadeDlopenFrom
+                            ? hostRegisters[3] : (resume >= 4 ? resume - 4 : resume);
+                        bool callerFound = !facadeDlopenFrom;
                         for (const auto& segment : image.mapped_image_segments) {
                             if (segment.start >= 0 && segment.end >= segment.start &&
                                 static_cast<std::uint64_t>(segment.start) <= callSite &&
                                 callSite < static_cast<std::uint64_t>(segment.end)) {
                                 callerHeader = segment.guest_header;
+                                callerFound = true;
                                 break;
                             }
                         }
+                        if (!callerFound) {
+                            hostRegisters[0] = 0;
+                            setGuestDlerror("dlopen: caller address is outside loaded images");
+                        }
                         auto path = requestedPath;
                         constexpr std::string_view loaderPathPrefix = "@loader_path/";
-                        if (path.rfind(loaderPathPrefix, 0) == 0) {
+                        if (hostRegisters[0] != 0 &&
+                            path.rfind(loaderPathPrefix, 0) == 0) {
                             const auto caller = std::find_if(
                                 image.loaded_image_graph.begin(), image.loaded_image_graph.end(),
                                 [callerHeader](const auto& item) {

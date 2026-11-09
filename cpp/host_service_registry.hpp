@@ -171,6 +171,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_dyld_version_token_get_platform", 191, true, true},
     {"_dyld_version_token_at_least", 192, true, true},
     {"__dyld_get_image_vmaddr_slide", 195, true, true},
+    {"__guest_dlopen_from_facade", 219, true, true},
     {"__dyld_lookup_section_info", 124, true, true},
     {"__dyld_objc_register_callbacks", 125, true, true},
     {"__dyld_get_shared_cache_range", 126, true, true},
