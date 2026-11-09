@@ -10269,6 +10269,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " token=0x" << hexadecimal(auditTokenAddress) << '\n';
                 }
                 constexpr std::uint32_t csOpsIdentity = 11;
+                constexpr std::uint32_t csOpsDerEntitlementsBlob = 16;
                 constexpr std::uint32_t identityHeaderSize = 8;
                 bool failed = false;
                 registers[32] |= 8U;
@@ -10278,7 +10279,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 };
                 if (auditTokenAddress == 0) {
                     fail(EINVAL);
-                } else if (operation != csOpsIdentity) {
+                } else if (operation != csOpsIdentity &&
+                           operation != csOpsDerEntitlementsBlob) {
                     throw std::runtime_error("Unsupported guest csops_audittoken operation");
                 } else if (pid != 0 && pid != ::getpid()) {
                     fail(ESRCH);
@@ -10312,11 +10314,51 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                guestAuditToken[7] !=
                                    static_cast<std::uint32_t>(hostAuditToken[7])) {
                         fail(ESRCH);
-                    } else if (outputCapacity < identityHeaderSize) {
+                    } else if (operation == csOpsIdentity &&
+                               outputCapacity < identityHeaderSize) {
                         fail(ERANGE);
                     } else if (image.main_code_policy.validation !=
                                    arm64metal::GuestCodeValidation::valid) {
                         fail(EINVAL);
+                    } else if (operation == csOpsDerEntitlementsBlob) {
+                        const auto& policy = image.main_code_policy;
+                        if (!policy.entitlements_blob_metadata_valid) {
+                            throw std::runtime_error(
+                                "Unsupported malformed guest entitlement signature metadata");
+                        }
+                        if (policy.der_entitlements.empty() && policy.has_xml_entitlements) {
+                            throw std::runtime_error(
+                                "Unsupported guest XML-only entitlements without DER transmutation");
+                        }
+                        if (!policy.der_entitlements.empty()) {
+                            if (outputCapacity < identityHeaderSize) {
+                                fail(ERANGE);
+                            } else if (outputAddress <
+                                           ExecutableImage::minimum_image_address) {
+                                fail(EFAULT);
+                            } else {
+                                try {
+                                    if (outputCapacity < policy.der_entitlements.size()) {
+                                        std::array<std::uint8_t, identityHeaderSize> header{};
+                                        const auto length = htonl(static_cast<std::uint32_t>(
+                                            policy.der_entitlements.size()));
+                                        std::memcpy(header.data() + sizeof(std::uint32_t),
+                                                    &length, sizeof(length));
+                                        auto* output = guestMemory.buffer(outputAddress,
+                                            header.size(), true);
+                                        std::memcpy(output, header.data(), header.size());
+                                        fail(ERANGE);
+                                    } else {
+                                        auto* output = guestMemory.buffer(outputAddress,
+                                            policy.der_entitlements.size(), true);
+                                        std::memcpy(output, policy.der_entitlements.data(),
+                                                    policy.der_entitlements.size());
+                                    }
+                                } catch (const std::out_of_range&) {
+                                    fail(EFAULT);
+                                }
+                            }
+                        }
                     } else if (image.main_code_policy.identity.empty()) {
                         fail(ENOENT);
                     } else {

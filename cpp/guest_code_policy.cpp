@@ -13,7 +13,9 @@
 #include <limits>
 #include <limits.h>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <unistd.h>
 
 namespace arm64metal {
@@ -106,6 +108,105 @@ bool dictionary_uint32(CFDictionaryRef dictionary, CFStringRef key,
   SInt32 number = 0;
   if (!CFNumberGetValue(value, kCFNumberSInt32Type, &number)) return false;
   result = static_cast<std::uint32_t>(number);
+  return true;
+}
+
+std::uint32_t read_little_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+  return static_cast<std::uint32_t>(bytes[offset]) |
+      (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
+      (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
+      (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+std::uint32_t read_big_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+  return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
+      (static_cast<std::uint32_t>(bytes[offset + 1]) << 16) |
+      (static_cast<std::uint32_t>(bytes[offset + 2]) << 8) |
+      static_cast<std::uint32_t>(bytes[offset + 3]);
+}
+
+bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
+                               GuestCodePolicy& policy) {
+  constexpr std::uint32_t macho64Magic = 0xfeedfacf;
+  constexpr std::uint32_t lcCodeSignature = 0x1d;
+  constexpr std::uint32_t embeddedSignatureMagic = 0xfade0cc0;
+  constexpr std::uint32_t xmlEntitlementsMagic = 0xfade7171;
+  constexpr std::uint32_t derEntitlementsMagic = 0xfade7172;
+  constexpr std::uint32_t xmlEntitlementsSlot = 5;
+  constexpr std::uint32_t derEntitlementsSlot = 7;
+  if (image.size() < 32 || read_little_u32(image, 0) != macho64Magic) return false;
+  const auto commandCount = read_little_u32(image, 16);
+  const auto commandBytes = read_little_u32(image, 20);
+  if (commandBytes > image.size() - 32) return false;
+  const auto commandEnd = std::size_t{32} + commandBytes;
+  std::size_t commandOffset = 32;
+  std::optional<std::pair<std::size_t, std::size_t>> codeSignature;
+  for (std::uint32_t index = 0; index < commandCount; ++index) {
+    if (commandOffset > commandEnd || commandEnd - commandOffset < 8) return false;
+    const auto command = read_little_u32(image, commandOffset);
+    const auto commandSize = read_little_u32(image, commandOffset + 4);
+    if (commandSize < 8 || commandSize > commandEnd - commandOffset) return false;
+    if (command == lcCodeSignature) {
+      if (commandSize < 16 || codeSignature) return false;
+      const auto dataOffset = read_little_u32(image, commandOffset + 8);
+      const auto dataSize = read_little_u32(image, commandOffset + 12);
+      if (dataOffset > image.size() || dataSize > image.size() - dataOffset) return false;
+      codeSignature = std::pair{static_cast<std::size_t>(dataOffset),
+                                static_cast<std::size_t>(dataSize)};
+    }
+    commandOffset += commandSize;
+  }
+  if (commandOffset != commandEnd) return false;
+  if (!codeSignature) {
+    policy.entitlements_blob_metadata_valid = true;
+    return true;
+  }
+  const auto signatureOffset = codeSignature->first;
+  const auto signatureSize = codeSignature->second;
+  if (signatureSize < 12 || read_big_u32(image, signatureOffset) !=
+          embeddedSignatureMagic) return false;
+  const auto superblobLength = read_big_u32(image, signatureOffset + 4);
+  const auto blobCount = read_big_u32(image, signatureOffset + 8);
+  if (superblobLength > signatureSize || superblobLength < 12 ||
+      blobCount > (superblobLength - 12) / 8) return false;
+  std::optional<std::size_t> xmlBlobOffset;
+  std::optional<std::size_t> derBlobOffset;
+  for (std::uint32_t index = 0; index < blobCount; ++index) {
+    const auto indexOffset = signatureOffset + 12 + static_cast<std::size_t>(index) * 8;
+    const auto slot = read_big_u32(image, indexOffset);
+    const auto blobOffset = read_big_u32(image, indexOffset + 4);
+    if (blobOffset < 12 + blobCount * 8 || blobOffset > superblobLength ||
+        superblobLength - blobOffset < 8) return false;
+    if (slot == xmlEntitlementsSlot) {
+      if (xmlBlobOffset) return false;
+      xmlBlobOffset = signatureOffset + blobOffset;
+    } else if (slot == derEntitlementsSlot) {
+      if (derBlobOffset) return false;
+      derBlobOffset = signatureOffset + blobOffset;
+    }
+  }
+  const auto validateBlob = [&](std::size_t offset, std::uint32_t expectedMagic,
+                                std::size_t& length) {
+    const auto magic = read_big_u32(image, offset);
+    const auto blobLength = read_big_u32(image, offset + 4);
+    const auto relativeOffset = offset - signatureOffset;
+    if (magic != expectedMagic || blobLength < 8 || relativeOffset > superblobLength ||
+        blobLength > superblobLength - relativeOffset) return false;
+    length = blobLength;
+    return true;
+  };
+  if (xmlBlobOffset) {
+    std::size_t ignoredLength = 0;
+    if (!validateBlob(*xmlBlobOffset, xmlEntitlementsMagic, ignoredLength)) return false;
+    policy.has_xml_entitlements = true;
+  }
+  if (derBlobOffset) {
+    std::size_t length = 0;
+    if (!validateBlob(*derBlobOffset, derEntitlementsMagic, length)) return false;
+    policy.der_entitlements.assign(image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset),
+        image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset + length));
+  }
+  policy.entitlements_blob_metadata_valid = true;
   return true;
 }
 
@@ -222,6 +323,9 @@ GuestCodePolicy guest_code_policy(const std::filesystem::path& executable,
 
   result.validation = GuestCodeValidation::valid;
   result.identity = dictionary_string(information.get(), kSecCodeInfoIdentifier);
+  if (!capture_entitlement_blobs(selected_image, result)) {
+    result.entitlements_blob_metadata_valid = false;
+  }
   (void)dictionary_uint32(information.get(), kSecCodeInfoFlags, result.signing_flags);
   result.hardened_runtime = (result.signing_flags & 0x00010000U) != 0;
   result.ad_hoc = (result.signing_flags & 0x00000002U) != 0;
