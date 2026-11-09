@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <dirent.h>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -221,7 +222,15 @@ struct HostServiceState {
         bool captureSink = false;
         std::deque<GuestUnixDatagram> receiveQueue;
     };
+    struct GuestDirectory {
+        DIR* native = nullptr;
+        std::int32_t descriptor = -1;
+        std::int64_t handleAllocation = 0;
+        std::int64_t direntAllocation = 0;
+    };
     std::set<std::int32_t> openDescriptors;
+    std::map<std::uint64_t, GuestDirectory> guestDirectories;
+    std::map<std::int32_t, std::uint64_t> guestDirectoryDescriptors;
     std::set<std::int32_t> socketDescriptors;
     std::map<std::int32_t, GuestUnixSocket> guestUnixSockets;
     std::map<std::string, std::int32_t> guestUnixSocketPaths;

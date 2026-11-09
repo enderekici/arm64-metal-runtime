@@ -670,6 +670,9 @@ HostServiceState::~HostServiceState() {
             ::munmap(mapping.second.hostAddress, static_cast<std::size_t>(mapping.second.size));
         }
     }
+    for (const auto& directory : guestDirectories) {
+        if (directory.second.native != nullptr) ::closedir(directory.second.native);
+    }
     for (const auto descriptor : openDescriptors) ::close(descriptor);
 }
 
@@ -734,7 +737,8 @@ HostServiceResult dispatch_guest_host_service(
         return false;
     };
     const auto owns_descriptor = [&](std::int32_t descriptor) {
-        return state.openDescriptors.count(descriptor) != 0;
+        return state.openDescriptors.count(descriptor) != 0 ||
+               state.guestDirectoryDescriptors.count(descriptor) != 0;
     };
     const auto owns_directory_for = [&](std::int32_t descriptor,
                                         const std::string& path) {
@@ -797,6 +801,9 @@ HostServiceResult dispatch_guest_host_service(
                      static_cast<std::int64_t>(memory.size())});
         state.heapEnd = memory.size();
         return heap.allocate(size, alignment);
+    };
+    const auto release_guest = [&](std::int64_t address) {
+        if (address != 0 && state.heap) state.heap->release(address);
     };
     const auto is_standard_stream = [&](std::uint64_t address) {
         address = normalize_stream(address);
@@ -1964,11 +1971,299 @@ HostServiceResult dispatch_guest_host_service(
             break;
         }
         case 13: {  // stat
-            const auto path = string_at(registers[0]);
+            if (registers[0] == 0 || registers[1] == 0) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            std::string path;
+            try {
+                path = string_at(registers[0]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
             struct stat info{};
             const auto result = ::stat(path.c_str(), &info);
             if (result == 0) {
-                std::memcpy(memory.buffer(registers[1], sizeof(info), true), &info, sizeof(info));
+                try {
+                    std::memcpy(memory.buffer(registers[1], sizeof(info), true),
+                                &info, sizeof(info));
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = static_cast<std::uint64_t>(-1);
+                    break;
+                }
+            } else {
+                set_errno(errno);
+            }
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 221: {  // opendir with a guest-owned opaque DIR handle
+            std::string path;
+            if (registers[0] == 0) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            try {
+                path = string_at(registers[0]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            const auto handleStorage = allocate_guest(sizeof(std::uint64_t));
+            if (!handleStorage) {
+                set_errno(ENOMEM);
+                registers[0] = 0;
+                break;
+            }
+            const auto direntStorage = allocate_guest(sizeof(struct dirent),
+                                                       alignof(struct dirent));
+            if (!direntStorage) {
+                release_guest(*handleStorage);
+                set_errno(ENOMEM);
+                registers[0] = 0;
+                break;
+            }
+            DIR* directory = ::opendir(path.c_str());
+            if (directory == nullptr) {
+                const auto error = errno;
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                set_errno(error);
+                registers[0] = 0;
+                break;
+            }
+            const auto handleAddress = static_cast<std::uint64_t>(*handleStorage);
+            const auto descriptor = ::dirfd(directory);
+            try {
+                state.guestDirectories.emplace(handleAddress,
+                    HostServiceState::GuestDirectory{directory, descriptor,
+                                                     *handleStorage, *direntStorage});
+                state.guestDirectoryDescriptors.emplace(descriptor, handleAddress);
+                std::memset(memory.buffer(handleAddress, sizeof(std::uint64_t), true), 0,
+                            sizeof(std::uint64_t));
+            } catch (const std::out_of_range&) {
+                state.guestDirectoryDescriptors.erase(descriptor);
+                state.guestDirectories.erase(handleAddress);
+                ::closedir(directory);
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            } catch (...) {
+                state.guestDirectoryDescriptors.erase(descriptor);
+                state.guestDirectories.erase(handleAddress);
+                ::closedir(directory);
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                throw;
+            }
+            registers[0] = handleAddress;
+            break;
+        }
+        case 222: {  // fdopendir transfers a guest-owned descriptor into DIR
+            const auto descriptor = static_cast<std::int32_t>(registers[0]);
+            if (state.openDescriptors.count(descriptor) == 0) {
+                set_errno(EBADF);
+                registers[0] = 0;
+                break;
+            }
+            const auto handleStorage = allocate_guest(sizeof(std::uint64_t));
+            if (!handleStorage) {
+                set_errno(ENOMEM);
+                registers[0] = 0;
+                break;
+            }
+            const auto direntStorage = allocate_guest(sizeof(struct dirent),
+                                                       alignof(struct dirent));
+            if (!direntStorage) {
+                release_guest(*handleStorage);
+                set_errno(ENOMEM);
+                registers[0] = 0;
+                break;
+            }
+            DIR* directory = ::fdopendir(descriptor);
+            if (directory == nullptr) {
+                const auto error = errno;
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                set_errno(error);
+                registers[0] = 0;
+                break;
+            }
+            const auto handleAddress = static_cast<std::uint64_t>(*handleStorage);
+            try {
+                state.guestDirectories.emplace(handleAddress,
+                    HostServiceState::GuestDirectory{directory, descriptor,
+                                                     *handleStorage, *direntStorage});
+                state.guestDirectoryDescriptors.emplace(descriptor, handleAddress);
+                std::memset(memory.buffer(handleAddress, sizeof(std::uint64_t), true), 0,
+                            sizeof(std::uint64_t));
+            } catch (const std::out_of_range&) {
+                state.guestDirectoryDescriptors.erase(descriptor);
+                state.guestDirectories.erase(handleAddress);
+                ::closedir(directory);
+                state.openDescriptors.erase(descriptor);
+                state.writableDescriptors.erase(descriptor);
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            } catch (...) {
+                state.guestDirectoryDescriptors.erase(descriptor);
+                state.guestDirectories.erase(handleAddress);
+                ::closedir(directory);
+                state.openDescriptors.erase(descriptor);
+                state.writableDescriptors.erase(descriptor);
+                release_guest(*direntStorage);
+                release_guest(*handleStorage);
+                throw;
+            }
+            state.openDescriptors.erase(descriptor);
+            state.writableDescriptors.erase(descriptor);
+            registers[0] = handleAddress;
+            break;
+        }
+        case 223: {  // readdir returns a stable guest dirent until the next call
+            const auto found = state.guestDirectories.find(registers[0]);
+            if (found == state.guestDirectories.end() || found->second.native == nullptr) {
+                set_errno(EBADF);
+                registers[0] = 0;
+                break;
+            }
+            errno = 0;
+            const struct dirent* entry = ::readdir(found->second.native);
+            if (entry == nullptr) {
+                if (errno != 0) set_errno(errno);
+                registers[0] = 0;
+                break;
+            }
+            const auto minimumLength = offsetof(struct dirent, d_name) +
+                                      static_cast<std::size_t>(entry->d_namlen) + 1;
+            const auto recordLength = static_cast<std::size_t>(entry->d_reclen);
+            if (recordLength < minimumLength || recordLength > sizeof(struct dirent)) {
+                set_errno(EIO);
+                registers[0] = 0;
+                break;
+            }
+            if (found->second.direntAllocation <= 0) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            auto* output = static_cast<std::uint8_t*>(nullptr);
+            try {
+                output = memory.buffer(static_cast<std::uint64_t>(
+                    found->second.direntAllocation), sizeof(struct dirent), true);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            std::memset(output, 0, sizeof(struct dirent));
+            std::memcpy(output, entry, recordLength);
+            registers[0] = static_cast<std::uint64_t>(found->second.direntAllocation);
+            break;
+        }
+        case 224: {  // closedir closes its DIR and releases its transferred descriptor
+            const auto found = state.guestDirectories.find(registers[0]);
+            if (found == state.guestDirectories.end() || found->second.native == nullptr) {
+                set_errno(EBADF);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            const auto descriptor = found->second.descriptor;
+            const auto handleAllocation = found->second.handleAllocation;
+            const auto direntAllocation = found->second.direntAllocation;
+            DIR* directory = found->second.native;
+            found->second.native = nullptr;
+            state.guestDirectoryDescriptors.erase(descriptor);
+            const auto result = ::closedir(directory);
+            const auto error = result != 0 ? errno : 0;
+            state.guestDirectories.erase(found);
+            release_guest(direntAllocation);
+            release_guest(handleAllocation);
+            if (result != 0) set_errno(error);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 225: {  // lstat preserves symlink metadata
+            std::string path;
+            if (registers[0] == 0 || registers[1] == 0) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            try {
+                path = string_at(registers[0]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            struct stat info{};
+            const auto result = ::lstat(path.c_str(), &info);
+            if (result == 0) {
+                try {
+                    std::memcpy(memory.buffer(registers[1], sizeof(info), true),
+                                &info, sizeof(info));
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = static_cast<std::uint64_t>(-1);
+                    break;
+                }
+            } else {
+                set_errno(errno);
+            }
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 226: {  // fstatat resolves relative paths from an owned descriptor
+            const auto descriptor = static_cast<std::int32_t>(registers[0]);
+            std::string path;
+            if (registers[1] == 0 || registers[2] == 0) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            try {
+                path = string_at(registers[1]);
+            } catch (const std::out_of_range&) {
+                set_errno(EFAULT);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            constexpr int allowedFlags = AT_SYMLINK_NOFOLLOW | AT_EACCESS;
+            const auto flags = static_cast<int>(registers[3]);
+            if ((flags & ~allowedFlags) != 0) {
+                set_errno(EINVAL);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            const bool absolutePath = !path.empty() && path.front() == '/';
+            if (!absolutePath && descriptor != AT_FDCWD && !owns_descriptor(descriptor)) {
+                set_errno(EBADF);
+                registers[0] = static_cast<std::uint64_t>(-1);
+                break;
+            }
+            struct stat info{};
+            const auto result = ::fstatat(descriptor, path.c_str(), &info, flags);
+            if (result == 0) {
+                try {
+                    std::memcpy(memory.buffer(registers[2], sizeof(info), true),
+                                &info, sizeof(info));
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = static_cast<std::uint64_t>(-1);
+                    break;
+                }
             } else {
                 set_errno(errno);
             }
@@ -2896,6 +3191,11 @@ HostServiceResult dispatch_guest_host_service(
         }
         case 22: {  // close
             const auto descriptor = static_cast<std::int32_t>(registers[0]);
+            if (state.guestDirectoryDescriptors.count(descriptor) != 0) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
             std::uint64_t stream = 0;
             if (descriptor == STDIN_FILENO) stream = bootstrap.stdinSlot;
             else if (descriptor == STDOUT_FILENO) stream = bootstrap.stdoutSlot;
