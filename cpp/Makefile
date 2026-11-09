@@ -402,7 +402,7 @@ verify-interpreter-stack-guard-retry: $(APP) $(INTERPRETER_STACK_GUARD_NATIVE) $
 		test "$$interpreter_rc" -eq "$$native_rc"; \
 		cmp "$$run_dir/native.out" "$$run_dir/translated.out"; \
 		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out"; \
-		cmp "$$run_dir/native.err" "$$translated.err"; \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err"; \
 		sed '/^arm64-metal trace /d' "$$run_dir/interpreter.err" >"$$run_dir/interpreter.no-trace.err"; \
 		cmp "$$run_dir/native.err" "$$run_dir/interpreter.no-trace.err"; \
 		grep -q 'pthread-stack-guard-retry-ok' "$$run_dir/interpreter.out"; \
