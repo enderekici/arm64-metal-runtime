@@ -133,6 +133,67 @@ static VectorPair native_cmeq_alias_2d(VectorPair source) {
   return source;
 }
 
+#define DEFINE_REVERSE_NATIVE(name, operation, arrangement)                  \
+  static VectorPair name(VectorPair source) {                                 \
+    VectorPair result{};                                                      \
+    asm volatile("ldr q1, [%1]\n\t" #operation " v0." #arrangement       \
+                 ", v1." #arrangement "\n\tstr q0, [%0]"                 \
+                 :                                                            \
+                 : "r"(&result), "r"(&source)                               \
+                 : "v0", "v1", "memory");                                  \
+    return result;                                                            \
+  }
+
+DEFINE_REVERSE_NATIVE(native_rev16_8b, rev16, 8b)
+DEFINE_REVERSE_NATIVE(native_rev16_16b, rev16, 16b)
+DEFINE_REVERSE_NATIVE(native_rev32_8b, rev32, 8b)
+DEFINE_REVERSE_NATIVE(native_rev32_16b, rev32, 16b)
+DEFINE_REVERSE_NATIVE(native_rev32_4h, rev32, 4h)
+DEFINE_REVERSE_NATIVE(native_rev32_8h, rev32, 8h)
+DEFINE_REVERSE_NATIVE(native_rev64_8b, rev64, 8b)
+DEFINE_REVERSE_NATIVE(native_rev64_16b, rev64, 16b)
+DEFINE_REVERSE_NATIVE(native_rev64_4h, rev64, 4h)
+DEFINE_REVERSE_NATIVE(native_rev64_8h, rev64, 8h)
+DEFINE_REVERSE_NATIVE(native_rev64_2s, rev64, 2s)
+DEFINE_REVERSE_NATIVE(native_rev64_4s, rev64, 4s)
+
+static VectorPair native_rev64_alias_16b(VectorPair source) {
+  asm volatile("ldr q0, [%0]\n\trev64 v0.16b, v0.16b\n\tstr q0, [%0]"
+               :
+               : "r"(&source)
+               : "v0", "memory");
+  return source;
+}
+
+static VectorPair native_rev32_alias_8b(VectorPair source) {
+  asm volatile("ldr q0, [%0]\n\trev32 v0.8b, v0.8b\n\tstr q0, [%0]"
+               :
+               : "r"(&source)
+               : "v0", "memory");
+  return source;
+}
+
+static VectorPair expected_vector_reverse(const VectorPair& source,
+                                          unsigned elementWidth,
+                                          unsigned vectorWidth,
+                                          unsigned groupWidth) {
+  VectorPair result{};
+  const auto lanesPerGroup = groupWidth / elementWidth;
+  const auto laneCount = vectorWidth / elementWidth;
+  const auto mask = (std::uint64_t{1} << elementWidth) - 1U;
+  for (unsigned lane = 0; lane < laneCount; ++lane) {
+    const auto sourceLane = (lane / lanesPerGroup) * lanesPerGroup +
+        lanesPerGroup - 1U - (lane % lanesPerGroup);
+    const auto sourceBit = sourceLane * elementWidth;
+    const auto sourceWord = sourceBit < 64U ? source.lane0 : source.lane1;
+    const auto value = (sourceWord >> (sourceBit & 63U)) & mask;
+    const auto destinationBit = lane * elementWidth;
+    if (destinationBit < 64U) result.lane0 |= value << destinationBit;
+    else result.lane1 |= value << (destinationBit - 64U);
+  }
+  return result;
+}
+
 // The operand spelling splits the scalar destination from the vector shape.
 #define DEFINE_REDUCE_NATIVE_SHAPED(name, operation, scalar, shape)          \
   static VectorPair name(VectorPair source) {                                \
@@ -2112,6 +2173,58 @@ int main() {
                       expected_vector_extreme(reductionInput, 32, 128, false,
                                               false));
   assert(!decode_operation(0x2ea0a820U));  // 2S reduction is not encoded.
+
+  const std::array<std::uint32_t, 12> reverseEncodings{
+      0x0e201820U, 0x4e201820U, 0x2e200820U, 0x6e200820U,
+      0x2e600820U, 0x6e600820U, 0x0e200820U, 0x4e200820U,
+      0x0e600820U, 0x4e600820U, 0x0ea00820U, 0x4ea00820U};
+  const std::array<unsigned, 12> reverseElementWidths{
+      8, 8, 8, 8, 16, 16, 8, 8, 16, 16, 32, 32};
+  const std::array<unsigned, 12> reverseGroupWidths{
+      16, 16, 32, 32, 32, 32, 64, 64, 64, 64, 64, 64};
+  const std::array<unsigned, 12> reverseVectorWidths{
+      64, 128, 64, 128, 64, 128, 64, 128, 64, 128, 64, 128};
+  const std::array<VectorPair (*)(VectorPair), 12> nativeReverses{
+      native_rev16_8b, native_rev16_16b, native_rev32_8b, native_rev32_16b,
+      native_rev32_4h, native_rev32_8h, native_rev64_8b, native_rev64_16b,
+      native_rev64_4h, native_rev64_8h, native_rev64_2s, native_rev64_4s};
+  for (std::size_t index = 0; index < reverseEncodings.size(); ++index) {
+    const auto decoded = decode_operation(reverseEncodings[index]);
+    assert(decoded && decoded->opcode == Opcode::VectorReverse &&
+           decoded->destination == 0U && decoded->source == 1U &&
+           decoded->immediate == reverseElementWidths[index] &&
+           decoded->shift == reverseGroupWidths[index] &&
+           decoded->width == reverseVectorWidths[index]);
+    assert((serialize_operation(*decoded) ==
+            arm64metal::translate_core::OperationPacket{
+                41U, 0U, 1U, reverseElementWidths[index],
+                reverseGroupWidths[index], reverseVectorWidths[index]}));
+    const auto lowered = make_operation_instruction(
+        *decoded, {0x1004}, LoweringMode::Process, std::uint64_t{1} << 48U,
+        0x1000);
+    assert(lowered.code.size() == 1U &&
+           lowered.code[0].find("vector_reverse_apply") != std::string::npos);
+    const auto process = arm64metal::decode_process(
+        reverseEncodings[index], 0x1000, {}, {}, false);
+    assert(process.operation && process.operation->opcode == Opcode::VectorReverse &&
+           process.code.size() == 1U &&
+           process.code[0].find("vector_reverse_apply") != std::string::npos);
+    assert_vector_equal(nativeReverses[index](reductionInput),
+                        expected_vector_reverse(
+                            reductionInput, reverseElementWidths[index],
+                            reverseVectorWidths[index], reverseGroupWidths[index]));
+  }
+  const auto reverseAlias = decode_operation(0x6e200800U);
+  assert(reverseAlias && reverseAlias->destination == reverseAlias->source);
+  assert_vector_equal(native_rev32_alias_8b(reductionInput),
+                      expected_vector_reverse(reductionInput, 8, 64, 32));
+  assert_vector_equal(native_rev64_alias_16b(reductionInput),
+                      expected_vector_reverse(reductionInput, 8, 128, 64));
+  assert(std::string_view(arm64metal::typed_integer_msl_source).find(
+             "vector_reverse_apply") != std::string_view::npos);
+  for (unsigned bit = 16; bit <= 20; ++bit) {
+    assert(!decode_operation(0x2e200820U | (1U << bit)));
+  }
 
   using VectorMemoryMode =
       arm64metal::translate_core::VectorMemoryMode;

@@ -426,6 +426,19 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 5, 5), elementWidth,
                      (signedLanes << 1U) | minimum, vectorWidth};
   }
+  const auto vectorReverseEncoding = bits & 0xbf3ffc00U;
+  const auto reverseGroupWidth = vectorReverseEncoding == 0x0e201800U ? 16U
+      : vectorReverseEncoding == 0x2e200800U ? 32U
+      : vectorReverseEncoding == 0x0e200800U ? 64U : 0U;
+  if (reverseGroupWidth != 0U) {
+    const auto elementWidth = 8U << field(bits, 22, 2);
+    const auto vectorWidth = field(bits, 30, 1) != 0U ? 128U : 64U;
+    if (elementWidth >= reverseGroupWidth ||
+        reverseGroupWidth % elementWidth != 0U) return std::nullopt;
+    return Operation{Opcode::VectorReverse, field(bits, 0, 5),
+                     field(bits, 5, 5), elementWidth, reverseGroupWidth,
+                     vectorWidth};
+  }
   if ((bits & 0x7f3efc00U) == 0x1e220000U) {
     const auto floatWidth = field(bits, 22, 1) != 0 ? 64U : 32U;
     const auto sourceWidth = field(bits, 31, 1) != 0 ? 64U : 32U;
@@ -668,6 +681,27 @@ Instruction make_operation_instruction(Operation operation,
                    std::to_string(operation.width) + "u, " +
                    std::to_string(minimum) + "u, " +
                    std::to_string(signedLanes) + "u); x[" +
+                   std::to_string(destination) + "] = value[0]; x[" +
+                   std::to_string(destination + 1U) + "] = value[1]; }");
+  } else if (operation.opcode == Opcode::VectorReverse) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        (operation.immediate != 8U && operation.immediate != 16U &&
+         operation.immediate != 32U) ||
+        (operation.shift != 16U && operation.shift != 32U &&
+         operation.shift != 64U) || operation.immediate >= operation.shift ||
+        operation.shift % operation.immediate != 0U ||
+        (operation.width != 64U && operation.width != 128U) ||
+        next.size() != 1U) {
+      throw std::invalid_argument("Typed vector reverse operands are invalid");
+    }
+    const auto destination = 806U + 2U * operation.destination;
+    const auto source = 806U + 2U * operation.source;
+    code.push_back("{ ulong2 value = vector_reverse_apply(ulong2(x[" +
+                   std::to_string(source) + "], x[" +
+                   std::to_string(source + 1U) + "]), " +
+                   std::to_string(operation.immediate) + "u, " +
+                   std::to_string(operation.width) + "u, " +
+                   std::to_string(operation.shift) + "u); x[" +
                    std::to_string(destination) + "] = value[0]; x[" +
                    std::to_string(destination + 1U) + "] = value[1]; }");
   } else if (operation.opcode == Opcode::LoadLiteral) {

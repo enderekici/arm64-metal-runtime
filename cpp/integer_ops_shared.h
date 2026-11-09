@@ -101,6 +101,24 @@ inline ulong2 vector_reduce_extreme_apply(
     }
     return ulong2(best, 0ul);
 }
+inline ulong2 vector_reverse_apply(
+    ulong2 source, uint elementWidth, uint vectorWidth, uint groupWidth) {
+    ulong2 result = ulong2(0ul);
+    const ulong laneMask = ~0ul >> (64u - elementWidth);
+    const uint laneCount = vectorWidth / elementWidth;
+    const uint lanesPerGroup = groupWidth / elementWidth;
+    for (uint lane = 0u; lane < laneCount; ++lane) {
+        const uint groupStart = (lane / lanesPerGroup) * lanesPerGroup;
+        const uint sourceLane = groupStart + lanesPerGroup - 1u -
+            (lane % lanesPerGroup);
+        const uint sourceBit = sourceLane * elementWidth;
+        const uint destinationBit = lane * elementWidth;
+        const ulong value = (source[sourceBit >> 6u] >> (sourceBit & 63u)) &
+            laneMask;
+        result[destinationBit >> 6u] |= value << (destinationBit & 63u);
+    }
+    return result;
+}
 struct AddSubImmediateResult {
     ulong value;
     uint flags;
@@ -879,6 +897,19 @@ inline constexpr char typed_integer_msl_source[] =
     "if ((minimum != 0u && (value ^ signBit) < (best ^ signBit)) || "
     "(minimum == 0u && (value ^ signBit) > (best ^ signBit))) best = value; } "
     "return ulong2(best, 0ul); }\n"
+    "inline ulong2 vector_reverse_apply(ulong2 source, uint elementWidth, "
+    "uint vectorWidth, uint groupWidth) { ulong2 result = ulong2(0ul); "
+    "ulong laneMask = ~0ul >> (64u - elementWidth); "
+    "uint laneCount = vectorWidth / elementWidth; "
+    "uint lanesPerGroup = groupWidth / elementWidth; "
+    "for (uint lane = 0u; lane < laneCount; ++lane) { "
+    "uint groupStart = (lane / lanesPerGroup) * lanesPerGroup; "
+    "uint sourceLane = groupStart + lanesPerGroup - 1u - "
+    "(lane % lanesPerGroup); uint sourceBit = sourceLane * elementWidth; "
+    "uint destinationBit = lane * elementWidth; "
+    "ulong value = (source[sourceBit >> 6u] >> (sourceBit & 63u)) & laneMask; "
+    "result[destinationBit >> 6u] |= value << (destinationBit & 63u); } "
+    "return result; }\n"
     "struct AddSubImmediateResult { ulong value; uint flags; };\n"
     "inline AddSubImmediateResult add_sub_immediate_apply(uint subtract, ulong lhs, "
     "uint immediate, uint shift, uint width, uint setFlags, uint previousFlags) { "
