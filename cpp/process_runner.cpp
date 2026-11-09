@@ -11518,8 +11518,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernInvalidAddress = 1;
                 constexpr std::uint64_t kernNoSpace = 3;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint64_t kernInvalidArgument = 4;
                 constexpr std::uint32_t guardedPortFlag = MPO_CONTEXT_AS_GUARD;
                 constexpr std::uint32_t replyPortFlag = 0x00001000;
+                constexpr std::uint32_t guardedSendPortFlags =
+                    MPO_CONTEXT_AS_GUARD | MPO_INSERT_SEND_RIGHT | MPO_STRICT;
                 auto result = kernSuccess;
                 if (static_cast<std::uint32_t>(registers[0]) != guestMachTaskPort) {
                     result = machSendInvalidDest;
@@ -11549,15 +11552,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   << (portOptions.work_interval_port != 0)
                                   << " output-present=" << (registers[3] != 0) << '\n';
                     }
-                    if ((flags & ~(guardedPortFlag | replyPortFlag)) != 0) {
+                    const bool existingFlags =
+                        (flags & ~(guardedPortFlag | replyPortFlag)) == 0;
+                    if ((flags & MPO_UNUSED_BITS) != 0) {
+                        result = kernInvalidArgument;
+                    } else if (!existingFlags && flags != guardedSendPortFlags) {
                         throw std::runtime_error("Unsupported guest Mach port construction flags");
-                    }
-                    if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+                    } else if (nextGuestReceiveName >=
+                               std::numeric_limits<std::uint32_t>::max() - 4) {
                         result = kernNoSpace;
                     } else {
                         const auto name = nextGuestReceiveName;
                         nextGuestReceiveName += 4;
                         guestReceiveRights.emplace(name, GuestReceiveRight{flags, registers[2]});
+                        if (flags == guardedSendPortFlags) {
+                            guestSendRightUrefs.emplace(name, 1U);
+                        }
                         std::memcpy(output, &name, sizeof(name));
                     }
                 }
@@ -11782,10 +11792,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-25))) {
                 constexpr std::uint64_t kernSuccess = 0;
                 constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidValue = 18;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 constexpr std::uint64_t machSendInvalidRight = 0x10000004;
+                constexpr std::uint32_t guardedSendPortFlags =
+                    MPO_CONTEXT_AS_GUARD | MPO_INSERT_SEND_RIGHT | MPO_STRICT;
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 const auto name = static_cast<std::uint32_t>(registers[1]);
+                const auto sendRightDelta = static_cast<std::int32_t>(registers[2]);
                 std::uint64_t result = kernSuccess;
                 const auto taskRight = guestSendRightUrefs.find(target);
                 if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
@@ -11797,11 +11811,47 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto right = guestReceiveRights.find(name);
                     if (right == guestReceiveRights.end()) {
                         result = kernInvalidName;
-                    } else if (registers[2] != 0 ||
-                               ((right->second.flags & MPO_CONTEXT_AS_GUARD) != 0 &&
+                    } else if (((right->second.flags & MPO_CONTEXT_AS_GUARD) != 0 &&
                                 right->second.context != registers[3])) {
+                        if ((right->second.flags & MPO_STRICT) != 0) {
+                            std::vector<std::uint64_t> live(
+                                registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                            const GuestSynchronousFault fault{
+                                SIGKILL, GUARD_TYPE_MACH_PORT, name, registers[33]};
+                            const auto delivery = signalRuntime.deliver_synchronous(
+                                hostServiceState.signals, hostServiceState.threadSignalMask,
+                                live, guestMemory, fault, live[37],
+                                static_cast<std::uint64_t>(activeEntry),
+                                guestScheduler.current_id());
+                            if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                                return delivery.exitStatus;
+                            }
+                            if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                                std::memcpy(stateBuffer.data(), live.data(),
+                                            live.size() * sizeof(std::uint64_t));
+                                selectKernel(static_cast<std::int64_t>(delivery.handler));
+                                continue;
+                            }
+                            throw std::runtime_error(
+                                "Strict Mach port guard mismatch was not terminated");
+                        }
                         result = machSendInvalidRight;
+                    } else if (right->second.flags != guardedSendPortFlags &&
+                               registers[2] != 0) {
+                        result = machSendInvalidRight;
+                    } else if (sendRightDelta > 0 || sendRightDelta < -1) {
+                        result = kernInvalidValue;
+                    } else if (sendRightDelta == -1 &&
+                               (guestSendRightUrefs.find(name) == guestSendRightUrefs.end() ||
+                                guestSendRightUrefs.at(name) == 0)) {
+                        result = kernInvalidValue;
                     } else {
+                        if (sendRightDelta == -1) {
+                            auto sendRight = guestSendRightUrefs.find(name);
+                            if (--sendRight->second == 0) {
+                                guestSendRightUrefs.erase(sendRight);
+                            }
+                        }
                         const auto waiting = guestMachReceiveWaiters.find(name);
                         if (waiting != guestMachReceiveWaiters.end()) {
                             for (const auto threadId : waiting->second) {

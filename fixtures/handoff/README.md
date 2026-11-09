@@ -626,6 +626,36 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 /tmp/mach-port-type
 ```
 
+## Guarded strict port construction (`0x31`)
+
+`mach-port-construct-31.c` uses the raw construct, type, and destruct traps,
+plus MIG `mach_port_get_refs` (3207). It checks the initial receive and send
+rights, one send uref, `srdelta=-1` destruction with the matching guard, and
+`KERN_INVALID_ARGUMENT` with an untouched output name for an unused flag bit.
+It does not depend on `mach_port_get_attributes`. The companion
+`mach-port-construct-31-guard-mismatch-native.c` isolates a wrong strict guard
+context in a child and requires native SIGKILL termination.
+
+```sh
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-construct-31.c \
+  -o .build/handoff-probes/mach-port-construct-31-native
+.build/handoff-probes/mach-port-construct-31-native
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-construct-31-guard-mismatch-native.c \
+  -o .build/handoff-probes/mach-port-construct-31-guard-mismatch-native
+.build/handoff-probes/mach-port-construct-31-guard-mismatch-native
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-construct-31.c \
+  -o .build/handoff-probes/mach-port-construct-31-guest
+ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  .build/cpp/arm64-metal launch \
+  .build/handoff-probes/mach-port-construct-31-guest
+```
+
+The guest command requires the runtime app build and a GPU execution slot.
+
 Native normalized output:
 
 ```text
