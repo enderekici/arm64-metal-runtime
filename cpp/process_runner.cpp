@@ -10568,6 +10568,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " size=" << outputCapacity
                               << " token=0x" << hexadecimal(auditTokenAddress) << '\n';
                 }
+                constexpr std::uint32_t csOpsStatus = 0;
                 constexpr std::uint32_t csOpsIdentity = 11;
                 constexpr std::uint32_t csOpsDerEntitlementsBlob = 16;
                 constexpr std::uint32_t identityHeaderSize = 8;
@@ -10579,7 +10580,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 };
                 if (auditTokenAddress == 0) {
                     fail(EINVAL);
-                } else if (operation != csOpsIdentity &&
+                } else if (operation != csOpsStatus && operation != csOpsIdentity &&
                            operation != csOpsDerEntitlementsBlob) {
                     throw std::runtime_error("Unsupported guest csops_audittoken operation");
                 } else if (pid != 0 && pid != ::getpid()) {
@@ -10614,6 +10615,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                guestAuditToken[7] !=
                                    static_cast<std::uint32_t>(hostAuditToken[7])) {
                         fail(ESRCH);
+                    } else if (operation == csOpsStatus) {
+                        if (outputAddress != 0) {
+                            if (outputAddress < ExecutableImage::minimum_image_address) {
+                                fail(EFAULT);
+                            } else {
+                                try {
+                                    auto* output = guestMemory.buffer(
+                                        outputAddress, sizeof(signing.status), true);
+                                    std::memcpy(output, &signing.status,
+                                                sizeof(signing.status));
+                                } catch (const std::out_of_range&) {
+                                    fail(EFAULT);
+                                }
+                            }
+                        }
                     } else if (operation == csOpsIdentity &&
                                outputCapacity < identityHeaderSize) {
                         fail(ERANGE);
