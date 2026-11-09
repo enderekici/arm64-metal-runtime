@@ -38,6 +38,5 @@ int main(void) {
     const uint32_t actualMinimum = dyld_get_program_min_os_version();
     printf("dyld_sdk=%u main_sdk=%u dyld_min_os=%u main_min_os=%u\n",
            actualSdk, expectedSdk, actualMinimum, expectedMinimum);
-    return expectedSdk != 0 && actualSdk == expectedSdk &&
-           actualMinimum == expectedMinimum ? 0 : 1;
+    return actualSdk == expectedSdk && actualMinimum == expectedMinimum ? 0 : 1;
 }

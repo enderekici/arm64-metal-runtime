@@ -106,7 +106,7 @@ struct GuestBuildVersion {
   std::uint32_t platform;
   std::uint32_t minimum;
   std::uint32_t sdk;
-  // Raw SDK load-command value; zero triggers dyld's linked-libSystem fallback.
+  // Raw SDK load-command value used by the program SDK scalar API.
   std::uint32_t sdk_load_command = 0;
 
   std::uint64_t token(bool query_sdk) const noexcept;

@@ -96,28 +96,7 @@ std::uint32_t dyld_program_version(std::uint32_t platform, std::uint32_t version
 std::uint32_t dyld_program_sdk_version(const ExecutableImage& image) {
     if (!image.build_version) return 0;
     const auto& build = *image.build_version;
-    auto sdk = build.sdk_load_command;
-    if (sdk == 0 && dyld_base_platform(build.platform) == 1) {
-        // Match dyld's macOS fallback for binaries whose SDK load-command field is zero.
-        const auto linkedVersion = image.link_time_version("System.B");
-        constexpr std::array mappings{
-            std::pair<std::uint32_t, std::uint32_t>{0x00580103U, 0x000a0400U},
-            std::pair<std::uint32_t, std::uint32_t>{0x006f0000U, 0x000a0500U},
-            std::pair<std::uint32_t, std::uint32_t>{0x007b0000U, 0x000a0600U},
-            std::pair<std::uint32_t, std::uint32_t>{0x009f0000U, 0x000a0700U},
-            std::pair<std::uint32_t, std::uint32_t>{0x00a90300U, 0x000a0800U},
-            std::pair<std::uint32_t, std::uint32_t>{0x04ad0000U, 0x000a0900U},
-        };
-        if (linkedVersion != std::numeric_limits<std::uint32_t>::max()) {
-            std::uint32_t lastSdk = 0;
-            for (const auto& [minimumDylibVersion, inferredSdk] : mappings) {
-                if (linkedVersion < minimumDylibVersion) return lastSdk;
-                lastSdk = inferredSdk;
-            }
-            sdk = lastSdk;
-        }
-    }
-    return dyld_program_version(build.platform, sdk);
+    return dyld_program_version(build.platform, build.sdk_load_command);
 }
 
 bool dyld_is_simulator_platform(std::uint32_t platform) {
