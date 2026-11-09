@@ -1009,23 +1009,38 @@ std::uint64_t append_guest_pointer_token(ProcessBootstrapResult& bootstrap,
     return encode_guest_pointer(address, key, index);
 }
 
-std::uint64_t append_guest_pointer_token(std::vector<std::uint64_t>& registers,
-                                        std::uint64_t address,
-                                        std::uint64_t key,
-                                        std::uint64_t modifier) {
+std::optional<std::size_t> find_guest_pointer_token(
+    const std::vector<std::uint64_t>& registers,
+    std::uint64_t address,
+    std::uint64_t key,
+    std::uint64_t modifier) {
+    if (registers.size() < guestTokenStart || registers.size() <= guestTokenCapacity) {
+        throw std::runtime_error("Guest authentication table is full");
+    }
     const auto count = static_cast<std::size_t>(registers[guestTokenCount]);
     const auto capacity = static_cast<std::size_t>(registers[guestTokenCapacity]);
-    if (registers.size() < guestTokenStart || count > capacity ||
-        capacity > (registers.size() - guestTokenStart) / 3) {
-        throw std::runtime_error("Guest authentication table is full");
+    if (count > capacity || capacity > (registers.size() - guestTokenStart) / 3) {
+        throw std::runtime_error("Guest authentication table bounds are invalid");
     }
     for (std::size_t index = 0; index < count; ++index) {
         const auto slot = guestTokenStart + 3 * index;
         if (registers[slot] == address && registers[slot + 1] == modifier &&
             registers[slot + 2] == key) {
-            return encode_guest_pointer(address, key, index);
+            return index;
         }
     }
+    return std::nullopt;
+}
+
+std::uint64_t append_guest_pointer_token(std::vector<std::uint64_t>& registers,
+                                        std::uint64_t address,
+                                        std::uint64_t key,
+                                        std::uint64_t modifier) {
+    if (const auto existing = find_guest_pointer_token(registers, address, key, modifier)) {
+        return encode_guest_pointer(address, key, *existing);
+    }
+    const auto count = static_cast<std::size_t>(registers[guestTokenCount]);
+    const auto capacity = static_cast<std::size_t>(registers[guestTokenCapacity]);
     if (count >= capacity) throw std::runtime_error("Guest authentication table is full");
     const auto slot = guestTokenStart + 3 * count;
     registers[slot] = address;
@@ -7918,15 +7933,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         image.is_code(static_cast<std::int64_t>(*resolved));
                     // arm64e dlsym signs code pointers with IA/0; data pointers stay raw.
                     if (callerAbi && *callerAbi && executable) {
-                        const auto token = static_cast<std::size_t>(
+                        if (!find_guest_pointer_token(hostRegisters, *resolved, 0, 0)) {
+                            ensureTokenCapacity(1, "dlsym");
+                            const auto* live = static_cast<const std::uint64_t*>(stateBuffer.data());
+                            hostRegisters.assign(live, live +
+                                stateBuffer.size() / sizeof(std::uint64_t));
+                        }
+                        const auto count = static_cast<std::size_t>(
                             hostRegisters[guestTokenCount]);
                         hostRegisters[0] = append_guest_pointer_token(
                             hostRegisters, *resolved, 0, 0);
-                        auto* stateRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
-                        stateRegisters[guestTokenCount] = hostRegisters[guestTokenCount];
-                        const auto slot = guestTokenStart + 3 * token;
-                        std::copy_n(hostRegisters.begin() + static_cast<std::ptrdiff_t>(slot), 3,
-                                    stateRegisters + slot);
+                        if (hostRegisters[guestTokenCount] != count) {
+                            auto* stateRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
+                            stateRegisters[guestTokenCount] = hostRegisters[guestTokenCount];
+                            const auto slot = guestTokenStart + 3 * count;
+                            std::copy_n(hostRegisters.begin() + static_cast<std::ptrdiff_t>(slot), 3,
+                                        stateRegisters + slot);
+                        }
                     } else {
                         hostRegisters[0] = *resolved;
                     }
