@@ -3308,6 +3308,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
     };
     std::uint32_t nextGuestReceiveName = 0x80000003U;
+    std::optional<std::uint32_t> guestTaskNamePort;
+    const auto getGuestTaskNamePort = [&]() -> std::optional<std::uint32_t> {
+        if (guestTaskNamePort.has_value()) return guestTaskNamePort;
+        while (nextGuestReceiveName < std::numeric_limits<std::uint32_t>::max() - 4 &&
+               (guestReceiveRights.count(nextGuestReceiveName) != 0 ||
+                guestSendRightUrefs.count(nextGuestReceiveName) != 0)) {
+            nextGuestReceiveName += 4;
+        }
+        if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+            return std::nullopt;
+        }
+        guestTaskNamePort = nextGuestReceiveName;
+        nextGuestReceiveName += 4;
+        return guestTaskNamePort;
+    };
     struct GuestBsdthreadRegistration {
         std::uint64_t threadStart;
         std::uint64_t workqueueStart;
@@ -10856,7 +10871,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
                     constexpr kern_return_t kernInvalidArgument = 4;
                     constexpr kern_return_t kernDenied = 53;
+                    constexpr kern_return_t kernNoSpace = 3;
                     constexpr std::uint32_t taskKernelPort = 1;
+                    constexpr std::uint32_t taskNamePortSelector = 3;
                     constexpr std::uint32_t taskBootstrapPort = 4;
                     constexpr std::uint32_t taskDebugControlPort = 10;
                     constexpr std::uint32_t machMessageComplex = 0x80000000;
@@ -10918,6 +10935,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         result = kernDenied;
                     } else if (whichPort == 0 || whichPort == 7) {
                         result = kernInvalidArgument;
+                    } else if (whichPort ==
+                               static_cast<std::int32_t>(taskNamePortSelector)) {
+                        const auto taskName = getGuestTaskNamePort();
+                        if (taskName.has_value()) {
+                            specialPortName = *taskName;
+                        } else {
+                            result = kernNoSpace;
+                        }
                     } else if (whichPort ==
                                static_cast<std::int32_t>(taskDebugControlPort)) {
                         if (!guestTaskDebugControlPort.has_value()) {

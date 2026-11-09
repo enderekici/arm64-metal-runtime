@@ -626,6 +626,27 @@ xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
 /tmp/mach-port-type
 ```
 
+## Self task name port (`task_get_special_port`, selector 3)
+
+`task-name-port-self.c` uses the same arm64 Mach-O for native and guest runs.
+It asks the current task twice for `TASK_NAME_PORT`, verifies the same distinct
+send-right name with two urefs, releases both references, and checks that the
+local name becomes invalid. It does not request or expose a host task port.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/task-name-port-self.c -o /tmp/task-name-port-self
+/tmp/task-name-port-self
+ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  .build/cpp/arm64-metal launch /tmp/task-name-port-self
+```
+
+Expected native normalized result is `get=0 repeat=0 same=1 nonnull=1
+distinct=1 type=0 send=1 refs2=1 refs1=1 release=0/0 after=15
+output_untouched=1 result=PASS`.
+The guest run validates only its synthetic task-name role right; any separate
+ClientIPC identity token remains independent.
+
 ## Guarded strict port construction (`0x31`)
 
 `mach-port-construct-31.c` uses the raw construct, type, and destruct traps,
