@@ -70,6 +70,8 @@ namespace arm64metal::process_runner {
 namespace {
 
 constexpr std::uint64_t kNoFault = std::numeric_limits<std::uint64_t>::max();
+constexpr std::uint64_t kQsortAdapterMarker = 0x51534f5254414249ULL;
+constexpr std::uint32_t kQsortAdapterStatus = 17;
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
@@ -211,6 +213,7 @@ std::vector<GuestMemoryRange> readonly_ranges(const ExecutableImage& image) {
 void decode_reachable(const ExecutableImage& image,
                       const std::map<std::int64_t, std::string>& imports,
                       const std::map<std::int64_t, std::int64_t>& guestStubs,
+                      const std::set<std::int64_t>& qsortEntries,
                       std::map<std::int64_t, Instruction>& instructions,
                       std::map<std::int64_t, std::string>& decodeErrors,
                       std::int64_t entry) {
@@ -249,6 +252,16 @@ void decode_reachable(const ExecutableImage& image,
             } else if (stub != guestStubs.end()) {
                 instruction = {{"pc = " + std::to_string(stub->second) + "ul; break;"},
                                {stub->second}};
+            } else if (qsortEntries.count(pc) != 0) {
+                instruction = decode_process(image.instruction(pc), pc, imports, guestStubs, true);
+                instruction.operation.reset();
+                instruction.code.insert(instruction.code.begin(),
+                    "if (x[2] > 1ul && "
+                    "(x[3] & 0xffff000000000000ul) != 0xa64e000000000000ul && "
+                    "x[35] != " + std::to_string(kQsortAdapterMarker) +
+                    "ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | "
+                    "(uint(c) << 3); x[33] = " + std::to_string(pc) + "ul; x[34] = " +
+                    std::to_string(kQsortAdapterStatus) + "u; return; } x[35] = 0ul;");
             } else {
                 instruction = decode_process(selectorWord ? *selectorWord : image.instruction(pc),
                                              pc, imports,
@@ -352,13 +365,19 @@ ProcessKernelPlan plan_process_kernel(
     const ExecutableImage& image,
     const std::map<std::int64_t, std::string>& imports,
     const std::map<std::int64_t, std::int64_t>& guestStubs,
+    const std::set<std::int64_t>& qsortEntries,
     std::map<std::int64_t, std::string>& allDecodeErrors,
     std::int64_t entry,
     bool allowInterpreter) {
     ProcessKernelPlan plan;
     std::map<std::int64_t, std::string> decodeErrors;
-    decode_reachable(image, imports, guestStubs, plan.instructions, decodeErrors, entry);
+    decode_reachable(image, imports, guestStubs, qsortEntries,
+                     plan.instructions, decodeErrors, entry);
     allDecodeErrors.insert(decodeErrors.begin(), decodeErrors.end());
+
+    if (std::any_of(qsortEntries.begin(), qsortEntries.end(), [&](std::int64_t qsortEntry) {
+            return plan.instructions.find(qsortEntry) != plan.instructions.end();
+        })) return plan;
 
     if (!allowInterpreter) return plan;
 
@@ -2001,6 +2020,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         }
     }
+    std::set<std::int64_t> qsortEntries;
+    if (image.cache_reader) {
+        constexpr auto libsystemCPath = "/usr/lib/system/libsystem_c.dylib";
+        const auto qsort = image.cache_reader->resolveExport(libsystemCPath, "_qsort");
+        if (qsort && qsort->guest_address > 0 && image.is_code(qsort->guest_address) &&
+            image.is_arm64e_code(qsort->guest_address) == std::optional<bool>{true})
+            qsortEntries.insert(qsort->guest_address);
+    }
     if (image.cache_reader &&
         image.cache_reader->newFormatTlvs() == std::optional<bool>{true}) {
         const auto fastEntry = image.cache_reader->tlvGetAddrFastEntry();
@@ -2405,7 +2432,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::int64_t, std::string> decodeErrors;
     std::map<std::int64_t, CompiledProcessKernel> kernels;
     const auto compileKernel = [&](std::int64_t entry) {
-        const auto plan = plan_process_kernel(image, imports, guestStubs,
+        const auto plan = plan_process_kernel(image, imports, guestStubs, qsortEntries,
                                               decodeErrors, entry,
                                               interpreter != nullptr);
         if (plan.interpreterEligible) {
@@ -7485,6 +7512,57 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return exitStatus;
         }
         if (status == 1 || status == 8) continue;
+        if (status == kQsortAdapterStatus) {
+            const auto entry = registers[33];
+            if (entry > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+                qsortEntries.count(static_cast<std::int64_t>(entry)) == 0) {
+                throw std::runtime_error("Unexpected qsort ABI adapter dispatch");
+            }
+            const auto caller = registers[30] >= 4 ? registers[30] - 4 : 0;
+            const auto callerAbi = caller > 0 && caller <= static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())
+                ? image.is_arm64e_code(static_cast<std::int64_t>(caller))
+                : std::nullopt;
+            const auto comparator = registers[3];
+            auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
+            const auto comparatorIsCode = comparator <= static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()) &&
+                image.is_code(static_cast<std::int64_t>(comparator));
+            const auto comparatorAbi = comparatorIsCode
+                ? image.is_arm64e_code(static_cast<std::int64_t>(comparator))
+                : std::nullopt;
+            if (registers[2] > 1 && callerAbi && !*callerAbi && comparatorIsCode &&
+                comparatorAbi && !*comparatorAbi) {
+                std::optional<std::size_t> token;
+                for (std::size_t index = 0; index < live[guestTokenCount]; ++index) {
+                    const auto slot = guestTokenStart + 3 * index;
+                    if (live[slot] == comparator && live[slot + 1] == 0 &&
+                        live[slot + 2] == 0) {
+                        token = index;
+                        break;
+                    }
+                }
+                if (!token) {
+                    ensureTokenCapacity(1, "qsort ARM64 comparator");
+                    live = static_cast<std::uint64_t*>(stateBuffer.data());
+                    const auto index = static_cast<std::size_t>(live[guestTokenCount]);
+                    const auto capacity = static_cast<std::size_t>(live[guestTokenCapacity]);
+                    if (index >= capacity)
+                        throw std::runtime_error("qsort comparator token capacity was not reserved");
+                    const auto slot = guestTokenStart + 3 * index;
+                    live[slot] = comparator;
+                    live[slot + 1] = 0;
+                    live[slot + 2] = 0;
+                    live[guestTokenCount] = index + 1;
+                    token = index;
+                }
+                live[3] = encode_guest_pointer(comparator, 0, *token);
+            }
+            live[35] = kQsortAdapterMarker;
+            live[33] = entry;
+            selectKernel(static_cast<std::int64_t>(entry));
+            continue;
+        }
         if (status == 4) {
             std::vector<std::uint64_t> hostRegisters(
                 static_cast<const std::uint64_t*>(stateBuffer.data()),
