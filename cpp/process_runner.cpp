@@ -42,6 +42,7 @@
 #include <string_view>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/syscall.h>
@@ -75,6 +76,27 @@ constexpr std::uint32_t kQsortAdapterStatus = 17;
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
+
+class ScopedProcessUmask {
+public:
+    ScopedProcessUmask() = default;
+
+    mode_t set(mode_t mask) {
+        const auto previous = ::umask(mask);
+        if (!originalMask_) originalMask_ = previous;
+        return previous;
+    }
+
+    ~ScopedProcessUmask() {
+        if (originalMask_) ::umask(*originalMask_);
+    }
+
+    ScopedProcessUmask(const ScopedProcessUmask&) = delete;
+    ScopedProcessUmask& operator=(const ScopedProcessUmask&) = delete;
+
+private:
+    std::optional<mode_t> originalMask_;
+};
 
 std::uint32_t dyld_base_platform(std::uint32_t platform) {
     switch (platform) {
@@ -1984,6 +2006,7 @@ std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
 std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
+    ScopedProcessUmask guestUmask;
     ProcessPerformanceSummary performanceSummary;
     ProgressTrace progressTrace;
     SchedulerTrace schedulerTrace;
@@ -9942,6 +9965,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
                 hexadecimal(registers[33]);
             progressTrace.event("raw-syscall", registers[33], syscall);
+            if (syscall == 60) {  // umask
+                registers[0] = static_cast<std::uint64_t>(guestUmask.set(
+                    static_cast<mode_t>(registers[0])));
+                registers[32] &= ~std::uint64_t{8};
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 336) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint32_t procInfoCallPidInfo = 2;
