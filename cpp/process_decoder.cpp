@@ -1093,6 +1093,16 @@ Instruction decode_process(uint32_t bits, int64_t pc,
          str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
          "] = value[1]; }\n            "));
   }
+  if ((bits & 0xbf3ffc00) == 0x0e205800) {
+    auto lanes = field(30, 1) == 0 ? 8 : 16;
+    return emit((std::string("{ ulong2 source = ") + str(vector(rn)) +
+                         ", value = ulong2(0);\n              for (uint lane = 0; lane < " +
+                         str(lanes) +
+                         "; ++lane)\n                  lane_add(value, lane, 8, "
+                         "popcount(uint(lane_read(source, lane, 8))));\n              x[" +
+                         str(806 + 2 * rd) + "] = value[0]; x[" +
+                         str(807 + 2 * rd) + "] = value[1]; }"));
+  }
   if ((bits & 0xbf3ffc00) == 0x0e200800) {
     auto width = 8 << field(22, 2);
     if (!(width < 64)) {
