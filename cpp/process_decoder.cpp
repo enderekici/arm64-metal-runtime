@@ -1392,6 +1392,22 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  "z = (fp_flags & 4u) != 0; c = (fp_flags & 2u) != 0; " +
                  "v = (fp_flags & 1u) != 0; }");
   }
+  if ((bits & 0xff200c00) == 0x1e200400) {
+    const auto format = field(22, 2);
+    const auto condition = conditions[field(12, 4)];
+    if (format > 1 || !condition) {
+      throw GuestError("Unsupported conditional floating-point compare encoding");
+    }
+    const auto left = "x[" + str(806 + 2 * rn) + "]";
+    const auto right = "x[" + str(806 + 2 * field(16, 5)) + "]";
+    const auto flags = "fp_compare(" + left + ", " + right + ", " +
+                       (format == 1 ? "true" : "false") + ", " +
+                       (field(4, 1) != 0 ? "true" : "false") + ", x)";
+    return emit("{ uint fp_flags = (" + str(condition) + ") ? " + flags +
+                 " : " + str(field(0, 4)) + "u; " +
+                 "n = (fp_flags & 8u) != 0; z = (fp_flags & 4u) != 0; " +
+                 "c = (fp_flags & 2u) != 0; v = (fp_flags & 1u) != 0; }");
+  }
   if ((bits & 0xff20fc00) == 0x1e201800) {
     auto format = field(22, 2);
     if (format > 1) {
