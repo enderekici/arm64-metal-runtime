@@ -5,14 +5,25 @@
 
 #include "metal_backend.hpp"
 
+#include <mach-o/dyld.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace arm64metal {
+struct KernelCache;
 namespace {
 
 class AutoreleasePool final {
@@ -49,6 +60,179 @@ NS::UInteger checkedSize(std::uint64_t value, const char* label) {
     return static_cast<NS::UInteger>(value);
 }
 
+std::uint64_t fnv1a(std::uint64_t hash, const void* data, std::size_t length) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (std::size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+// Identity of the running runtime binary (path, size, mtime). Part of every
+// cache file name, so a rebuilt runtime never reads archives of another build.
+std::string runtimeIdentity() {
+    char path[4096];
+    std::uint32_t size = sizeof(path);
+    std::uint64_t hash = 14695981039346656037ull;
+    if (_NSGetExecutablePath(path, &size) == 0) {
+        hash = fnv1a(hash, path, std::strlen(path));
+        struct stat info;
+        if (stat(path, &info) == 0) {
+            const std::int64_t fields[3] = {static_cast<std::int64_t>(info.st_size),
+                                            static_cast<std::int64_t>(info.st_mtimespec.tv_sec),
+                                            static_cast<std::int64_t>(info.st_mtimespec.tv_nsec)};
+            hash = fnv1a(hash, fields, sizeof(fields));
+        }
+    }
+    char text[32];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
+    return text;
+}
+
+constexpr unsigned flushEveryNewEntries = 32;
+
+std::mutex activeCachesMutex;
+std::vector<KernelCache*> activeCaches;
+
+void flushActiveCaches();
+
+} // namespace
+
+// Persistent compiled-kernel cache (ARM64_METAL_KERNEL_CACHE=<dir>). Existing
+// archives of this runtime build are read-only lookup sources; new pipelines go
+// to a per-process archive written atomically to <key>.<pid>.bin, so concurrent
+// processes never write the same file. Metal keys archive entries by the
+// compiled function and pipeline descriptor, and the file name carries the
+// runtime binary identity.
+struct KernelCache {
+    MTL::Device* device = nullptr;
+    std::string directory;
+    std::string key;
+    std::vector<MTL::BinaryArchive*> readers;
+    MTL::BinaryArchive* writer = nullptr;
+    std::mutex mutex;
+    unsigned dirty = 0;
+    std::uint64_t hits = 0;
+    std::uint64_t misses = 0;
+
+    static NS::String* nsString(const std::string& text) {
+        return NS::String::string(text.c_str(), NS::UTF8StringEncoding);
+    }
+
+    static std::unique_ptr<KernelCache> open(MTL::Device* device) {
+        const char* dir = std::getenv("ARM64_METAL_KERNEL_CACHE");
+        if (dir == nullptr || dir[0] == '\0') return nullptr;
+        std::unique_ptr<KernelCache> cache(new KernelCache());
+        cache->device = device;
+        cache->directory = dir;
+        mkdir(dir, 0755);
+        struct stat info;
+        if (stat(dir, &info) != 0 || !S_ISDIR(info.st_mode)) return nullptr;
+        cache->key = runtimeIdentity();
+        const std::string prefix = cache->key + ".";
+        if (DIR* handle = opendir(dir)) {
+            while (dirent* entry = readdir(handle)) {
+                const std::string name = entry->d_name;
+                if (name.size() <= prefix.size() + 4 || name.compare(0, prefix.size(), prefix) != 0 ||
+                    name.compare(name.size() - 4, 4, ".bin") != 0) {
+                    continue;
+                }
+                MTL::BinaryArchiveDescriptor* descriptor = MTL::BinaryArchiveDescriptor::alloc()->init();
+                descriptor->setUrl(NS::URL::fileURLWithPath(nsString(cache->directory + "/" + name)));
+                NS::Error* error = nullptr;
+                MTL::BinaryArchive* archive = device->newBinaryArchive(descriptor, &error);
+                descriptor->release();
+                if (archive != nullptr) cache->readers.push_back(archive);
+            }
+            closedir(handle);
+        }
+        MTL::BinaryArchiveDescriptor* fresh = MTL::BinaryArchiveDescriptor::alloc()->init();
+        NS::Error* error = nullptr;
+        cache->writer = device->newBinaryArchive(fresh, &error);
+        fresh->release();
+        if (cache->writer == nullptr) return nullptr;
+        {
+            std::lock_guard<std::mutex> lock(activeCachesMutex);
+            if (activeCaches.empty()) std::atexit(flushActiveCaches);
+            activeCaches.push_back(cache.get());
+        }
+        return cache;
+    }
+
+    ~KernelCache() {
+        {
+            std::lock_guard<std::mutex> lock(activeCachesMutex);
+            for (auto it = activeCaches.begin(); it != activeCaches.end(); ++it) {
+                if (*it == this) {
+                    activeCaches.erase(it);
+                    break;
+                }
+            }
+        }
+        flush();
+        for (auto* reader : readers) reader->release();
+        if (writer != nullptr) writer->release();
+    }
+
+    // Caller holds `mutex`.
+    void flushLocked() {
+        if (dirty == 0 || writer == nullptr) return;
+        const std::string final = directory + "/" + key + "." + std::to_string(getpid()) + ".bin";
+        const std::string temp = final + ".tmp";
+        NS::Error* error = nullptr;
+        if (writer->serializeToURL(NS::URL::fileURLWithPath(nsString(temp)), &error)) {
+            if (std::rename(temp.c_str(), final.c_str()) == 0) {
+                dirty = 0;
+                return;
+            }
+        }
+        std::remove(temp.c_str());
+    }
+
+    void flush() {
+        std::lock_guard<std::mutex> lock(mutex);
+        flushLocked();
+    }
+
+    NS::Array* archiveArray() {
+        std::vector<NS::Object*> all(readers.begin(), readers.end());
+        all.push_back(writer);
+        return NS::Array::array(all.data(), all.size());
+    }
+
+    // Returns a pipeline from the cache or nullptr on a miss.
+    MTL::ComputePipelineState* lookup(MTL::ComputePipelineDescriptor* descriptor) {
+        std::lock_guard<std::mutex> lock(mutex);
+        descriptor->setBinaryArchives(archiveArray());
+        NS::Error* error = nullptr;
+        MTL::ComputePipelineState* pipeline = device->newComputePipelineState(
+            descriptor, MTL::PipelineOptionFailOnBinaryArchiveMiss, nullptr, &error);
+        if (pipeline != nullptr) ++hits;
+        return pipeline;
+    }
+
+    // Compiles into the per-process archive and returns the pipeline built from it.
+    MTL::ComputePipelineState* insert(MTL::ComputePipelineDescriptor* descriptor, NS::Error** error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++misses;
+        if (writer->addComputePipelineFunctions(descriptor, error)) {
+            if (++dirty >= flushEveryNewEntries) flushLocked();
+        }
+        descriptor->setBinaryArchives(archiveArray());
+        return device->newComputePipelineState(descriptor, MTL::PipelineOptionNone, nullptr, error);
+    }
+};
+
+namespace {
+void flushActiveCaches() {
+    std::vector<KernelCache*> caches;
+    {
+        std::lock_guard<std::mutex> lock(activeCachesMutex);
+        caches = activeCaches;
+    }
+    for (auto* cache : caches) cache->flush();
+}
 } // namespace
 
 struct Backend::Impl {
@@ -58,8 +242,24 @@ struct Backend::Impl {
     std::atomic<std::uint64_t> compiledPipelines{0};
     std::atomic<std::uint64_t> sourceLibraryCompiles{0};
     std::atomic<std::uint64_t> completedDispatches{0};
+    std::unique_ptr<KernelCache> kernelCache;
+    std::atomic<std::uint64_t> libraryMicros{0};
+    std::atomic<std::uint64_t> pipelineMicros{0};
 
     ~Impl() {
+        if (kernelCache != nullptr) {
+            const char* perf = std::getenv("ARM64_METAL_PERF_SUMMARY");
+            if (perf != nullptr && std::strcmp(perf, "1") == 0) {
+                std::fprintf(stderr,
+                             "arm64-metal kernel-cache hits=%llu misses=%llu readers=%zu "
+                             "library_s=%.3f pipeline_s=%.3f\n",
+                             static_cast<unsigned long long>(kernelCache->hits),
+                             static_cast<unsigned long long>(kernelCache->misses),
+                             kernelCache->readers.size(), libraryMicros.load() / 1e6,
+                             pipelineMicros.load() / 1e6);
+            }
+            kernelCache.reset();
+        }
         if (queue != nullptr) queue->release();
         if (device != nullptr) device->release();
     }
@@ -133,6 +333,7 @@ Backend Backend::createDefault() {
     }
     NS::String* name = impl->device->name();
     impl->name = (name != nullptr && name->utf8String() != nullptr) ? name->utf8String() : "Metal device";
+    impl->kernelCache = KernelCache::open(impl->device);
     return Backend(std::move(impl));
 }
 
@@ -150,7 +351,11 @@ ComputeKernel Backend::compileCompute(std::string_view source,
     NS::Error* error = nullptr;
     NS::String* msl = NS::String::string(sourceString.c_str(), NS::UTF8StringEncoding);
     impl_->sourceLibraryCompiles.fetch_add(1, std::memory_order_relaxed);
+    const auto libraryStarted = std::chrono::steady_clock::now();
     MTL::Library* library = impl_->device->newLibrary(msl, nullptr, &error);
+    impl_->libraryMicros.fetch_add(static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - libraryStarted).count()), std::memory_order_relaxed);
     if (library == nullptr) {
         throw std::runtime_error(errorMessage("Metal shader compilation failed", error));
     }
@@ -160,7 +365,20 @@ ComputeKernel Backend::compileCompute(std::string_view source,
         library->release();
         throw std::runtime_error("Metal library does not contain compute function: " + functionString);
     }
-    MTL::ComputePipelineState* pipeline = impl_->device->newComputePipelineState(function, &error);
+    const auto pipelineStarted = std::chrono::steady_clock::now();
+    MTL::ComputePipelineState* pipeline = nullptr;
+    if (impl_->kernelCache != nullptr) {
+        MTL::ComputePipelineDescriptor* descriptor = MTL::ComputePipelineDescriptor::alloc()->init();
+        descriptor->setComputeFunction(function);
+        pipeline = impl_->kernelCache->lookup(descriptor);
+        if (pipeline == nullptr) pipeline = impl_->kernelCache->insert(descriptor, &error);
+        descriptor->release();
+    } else {
+        pipeline = impl_->device->newComputePipelineState(function, &error);
+    }
+    impl_->pipelineMicros.fetch_add(static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - pipelineStarted).count()), std::memory_order_relaxed);
     function->release();
     library->release();
     if (pipeline == nullptr) {
