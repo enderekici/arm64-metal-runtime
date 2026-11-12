@@ -1798,8 +1798,32 @@ Instruction decode_process(uint32_t bits, int64_t pc,
            str(vectorBits) + ")) & " + str(mask)));
     }
   }
+  if ((bits & 0xbf800c00) == 0x2f000400) {
+    auto mode = field(12, 4);
+    if (contains({0, 2, 4, 6, 8, 10, 12, 13}, mode)) {
+      auto width = mode < 8 || mode >= 12 ? 32 : 16;
+      auto immediate = uint64_t((field(16, 3) << 5) | field(5, 5));
+      uint64_t value;
+      if (mode >= 12) {
+        auto shift = mode == 12 ? 8 : 16;
+        value = (immediate << shift) | ((uint64_t(1) << shift) - 1);
+      } else {
+        value = immediate << (int64_t((mode & 7) >> 1) * 8);
+      }
+      auto elementMask = width == 32 ? uint64_t(0xffffffff) : uint64_t(0xffff);
+      return assignVector((std::string("vector_dup(") + str(~value & elementMask) +
+                           "ul, " + str(width) + ", " + str(vectorBits) + ")"));
+    }
+  }
   if ((bits & 0xbf800c00) == 0x0f000400) {
     auto mode = field(12, 4);
+    if (contains({12, 13}, mode)) {
+      auto shift = mode == 12 ? 8 : 16;
+      auto immediate = uint64_t((field(16, 3) << 5) | field(5, 5));
+      auto value = (immediate << shift) | ((uint64_t(1) << shift) - 1);
+      return assignVector((std::string("vector_dup(") + str(value) + "ul, 32, " +
+                           str(vectorBits) + ")"));
+    }
     if (contains({0, 2, 4, 6, 8, 10, 14}, mode)) {
       auto width = mode < 8 ? 32 : (mode == 14 ? 8 : 16);
       auto shift = mode == 14 ? 0 : int64_t((mode & 7) >> 1) * 8;

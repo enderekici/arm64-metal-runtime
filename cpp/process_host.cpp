@@ -3059,7 +3059,8 @@ HostServiceResult dispatch_guest_host_service(
             const auto path = string_at(registers[0]);
             const auto flags = static_cast<std::int32_t>(registers[1]);
             constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
-                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY;
+                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY |
+                O_EXEC | O_NOFOLLOW_ANY | O_SYMLINK;
             if ((flags & ~allowed) != 0) {
                 set_errno(EINVAL);
                 registers[0] = failure;
@@ -3225,7 +3226,8 @@ HostServiceResult dispatch_guest_host_service(
             }
             const auto flags = static_cast<std::int32_t>(registers[2]);
             constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
-                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY;
+                O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY |
+                O_EXEC | O_NOFOLLOW_ANY | O_SYMLINK;
             if ((flags & ~allowed) != 0) {
                 set_errno(EINVAL);
                 registers[0] = failure;
@@ -3403,6 +3405,8 @@ HostServiceResult dispatch_guest_host_service(
                     result = found == state.standardStatusFlags.end() ? native
                         : ((native & ~O_NONBLOCK) | (found->second & O_NONBLOCK));
                 } else result = native;
+            } else if (operation == F_GETPROTECTIONCLASS) {
+                result = ::fcntl(descriptor, operation);
             } else if (operation == F_GETPATH) {
                 std::array<char, MAXPATHLEN> hostPath{};
                 try {
@@ -3431,6 +3435,11 @@ HostServiceResult dispatch_guest_host_service(
                     result = -1;
                     errno = EFAULT;
                 }
+            } else if (operation == F_SETPROTECTIONCLASS || operation == F_NOCACHE ||
+                       operation == F_SINGLE_WRITER) {
+                std::int32_t value = 0;
+                std::memcpy(&value, memory.buffer(registers[31], sizeof(value)), sizeof(value));
+                result = ::fcntl(descriptor, operation, value);
             } else if (operation == F_SETFD || operation == F_SETFL) {
                 std::int32_t value = 0;
                 std::memcpy(&value, memory.buffer(registers[31], sizeof(value)), sizeof(value));

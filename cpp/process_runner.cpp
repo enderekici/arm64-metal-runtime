@@ -40,6 +40,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <fcntl.h>
+#include <sys/mount.h>
+#include <sys/xattr.h>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -10054,21 +10057,438 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             recordTransition(lastHostTransition + " x0=0x" + hexadecimal(registers[0]) +
                 " x1=0x" + hexadecimal(registers[1]) + " x2=0x" + hexadecimal(registers[2]));
             progressTrace.event("raw-syscall", registers[33], syscall);
-            if (syscall == 12) {  // chdir
-                try {
-                    const auto path = guest_cstring(guestMemory, registers[0]);
-                    if (::chdir(path.c_str()) == 0) {
-                        registers[0] = 0;
-                        registers[32] &= ~std::uint64_t{8};
-                    } else {
-                        registers[0] = static_cast<std::uint64_t>(errno);
-                        registers[32] |= 8U;
-                    }
-                } catch (const std::exception&) {
-                    registers[0] = EFAULT;
-                    registers[32] |= 8U;
-                }
+            // Raw BSD stubs return the error in x0 with carry set. The guest's
+            // cerror path does not populate errno from it here, so also store it
+            // in the current thread's errno slot as the host-service paths do.
+            const auto rawFail = [&](int error) {
+                const auto value = static_cast<std::uint32_t>(error);
+                std::memcpy(guestMemory.buffer(bootstrap.errnoSlot, sizeof(value), true),
+                            &value, sizeof(value));
+                registers[0] = static_cast<std::uint64_t>(error);
+                registers[32] |= 8U;
                 registers[34] = 0;
+            };
+            const auto rawOk = [&](std::uint64_t result) {
+                registers[0] = result;
+                registers[32] &= ~std::uint64_t{8};
+                registers[34] = 0;
+            };
+            const auto rawPath = [&](std::uint64_t address) -> std::optional<std::string> {
+                try {
+                    return guest_cstring(guestMemory, address);
+                } catch (const std::exception&) {
+                    return std::nullopt;
+                }
+            };
+            if (syscall == 12) {  // chdir
+                const auto path = rawPath(registers[0]);
+                if (!path) rawFail(EFAULT);
+                else if (::chdir(path->c_str()) == 0) rawOk(0);
+                else rawFail(errno);
+                continue;
+            }
+            const auto rawOwnsDescriptor = [&](std::uint64_t value) {
+                const auto descriptor = static_cast<std::int32_t>(value);
+                return hostServiceState.openDescriptors.count(descriptor) != 0 ||
+                       hostServiceState.guestDirectoryDescriptors.count(descriptor) != 0;
+            };
+            if (syscall == 13) {  // fchdir
+                if (!rawOwnsDescriptor(registers[0])) rawFail(EBADF);
+                else if (::fchdir(static_cast<int>(registers[0])) == 0) rawOk(0);
+                else rawFail(errno);
+                continue;
+            }
+            if (syscall == 34) {  // chflags
+                const auto path = rawPath(registers[0]);
+                if (!path) rawFail(EFAULT);
+                else if (::chflags(path->c_str(),
+                                   static_cast<std::uint32_t>(registers[1])) == 0) rawOk(0);
+                else rawFail(errno);
+                continue;
+            }
+            if (syscall == 35) {  // fchflags
+                if (!rawOwnsDescriptor(registers[0])) rawFail(EBADF);
+                else if (::fchflags(static_cast<int>(registers[0]),
+                                    static_cast<std::uint32_t>(registers[1])) == 0) rawOk(0);
+                else rawFail(errno);
+                continue;
+            }
+            if (syscall == 463 || syscall == 464) {  // openat, openat_nocancel
+                constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
+                    O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY |
+                    O_EXEC | O_NOFOLLOW_ANY | O_SYMLINK;
+                const auto directory = static_cast<std::int32_t>(registers[0]);
+                const auto flags = static_cast<std::int32_t>(registers[2]);
+                const auto path = rawPath(registers[1]);
+                if (!path || registers[1] == 0) {
+                    rawFail(EFAULT);
+                } else if (!(path->front() == '/' || directory == AT_FDCWD ||
+                             rawOwnsDescriptor(registers[0]))) {
+                    rawFail(EBADF);
+                } else if ((flags & ~allowed) != 0) {
+                    rawFail(EINVAL);
+                } else {
+                    const auto descriptor = (flags & O_CREAT) != 0
+                        ? ::openat(directory, path->c_str(), flags | O_CLOEXEC,
+                                   static_cast<mode_t>(registers[3]))
+                        : ::openat(directory, path->c_str(), flags | O_CLOEXEC);
+                    if (descriptor < 0) {
+                        rawFail(errno);
+                    } else {
+                        hostServiceState.openDescriptors.insert(descriptor);
+                        if ((flags & O_ACCMODE) != O_RDONLY) {
+                            hostServiceState.writableDescriptors.insert(descriptor);
+                        }
+                        rawOk(static_cast<std::uint64_t>(descriptor));
+                    }
+                }
+                continue;
+            }
+            if (syscall == 345 || syscall == 346) {  // statfs64, fstatfs64
+                struct statfs result{};
+                int status;
+                if (syscall == 345) {
+                    const auto path = rawPath(registers[0]);
+                    status = path ? ::statfs(path->c_str(), &result) : -2;
+                    if (!path) {
+                        rawFail(EFAULT);
+                        continue;
+                    }
+                } else if (!rawOwnsDescriptor(registers[0]) &&
+                           static_cast<std::int32_t>(registers[0]) > STDERR_FILENO) {
+                    rawFail(EBADF);
+                    continue;
+                } else {
+                    status = ::fstatfs(static_cast<int>(registers[0]), &result);
+                }
+                if (status != 0) {
+                    rawFail(errno);
+                } else {
+                    try {
+                        std::memcpy(guestMemory.buffer(registers[1], sizeof(result), true),
+                                    &result, sizeof(result));
+                        rawOk(0);
+                    } catch (const std::exception&) {
+                        rawFail(EFAULT);
+                    }
+                }
+                continue;
+            }
+            if (syscall == 341 || syscall == 342 || syscall == 343) {
+                // stat64_extended, lstat64_extended, fstat64_extended: the kernel
+                // fills the stat64 buffer and, when asked, an ACL blob and its size.
+                const bool byDescriptor = syscall == 343;
+                std::optional<std::string> path;
+                if (byDescriptor) {
+                    if (!rawOwnsDescriptor(registers[0]) &&
+                        static_cast<std::int32_t>(registers[0]) > STDERR_FILENO) {
+                        rawFail(EBADF);
+                        continue;
+                    }
+                } else {
+                    path = rawPath(registers[0]);
+                    if (!path) {
+                        rawFail(EFAULT);
+                        continue;
+                    }
+                }
+                try {
+                    struct stat result{};
+                    std::size_t guestSecuritySize = 0;
+                    if (registers[2] != 0 && registers[3] != 0) {
+                        std::memcpy(&guestSecuritySize,
+                                    guestMemory.buffer(registers[3], sizeof(guestSecuritySize)),
+                                    sizeof(guestSecuritySize));
+                    }
+                    std::vector<std::uint8_t> security(
+                        registers[2] != 0 ? guestSecuritySize : 0);
+                    std::size_t hostSecuritySize = guestSecuritySize;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                    const auto status = ::syscall(
+                        static_cast<int>(syscall),
+                        byDescriptor ? reinterpret_cast<void*>(registers[0])
+                                     : const_cast<char*>(path->c_str()),
+                        &result, registers[2] != 0 ? security.data() : nullptr,
+                        registers[3] != 0 ? &hostSecuritySize : nullptr);
+#pragma clang diagnostic pop
+                    if (status != 0) {
+                        rawFail(errno);
+                        continue;
+                    }
+                    std::memcpy(guestMemory.buffer(registers[1], sizeof(result), true),
+                                &result, sizeof(result));
+                    if (registers[3] != 0) {
+                        std::memcpy(guestMemory.buffer(registers[3], sizeof(hostSecuritySize), true),
+                                    &hostSecuritySize, sizeof(hostSecuritySize));
+                    }
+                    if (registers[2] != 0 && hostSecuritySize != 0 &&
+                        hostSecuritySize <= security.size()) {
+                        std::memcpy(guestMemory.buffer(registers[2], hostSecuritySize, true),
+                                    security.data(), hostSecuritySize);
+                    }
+                    rawOk(0);
+                } catch (const std::exception&) {
+                    rawFail(EFAULT);
+                }
+                continue;
+            }
+            if (syscall == 282 || syscall == 283) {  // chmod_extended, fchmod_extended
+                // The ACL argument is a kauth_filesec: 36-byte header, entry count,
+                // flags, then 24-byte entries. NULL leaves the ACL alone and -1 removes it.
+                constexpr std::size_t headerBytes = 44;
+                constexpr std::size_t entryBytes = 24;
+                constexpr std::uint32_t maximumEntries = 128;
+                const bool byDescriptor = syscall == 283;
+                std::optional<std::string> path;
+                if (byDescriptor) {
+                    if (!rawOwnsDescriptor(registers[0])) {
+                        rawFail(EBADF);
+                        continue;
+                    }
+                } else {
+                    path = rawPath(registers[0]);
+                    if (!path) {
+                        rawFail(EFAULT);
+                        continue;
+                    }
+                }
+                try {
+                    std::vector<std::uint8_t> security;
+                    void* securityArgument = reinterpret_cast<void*>(registers[4]);
+                    if (registers[4] != 0 && registers[4] != ~std::uint64_t{0}) {
+                        security.resize(headerBytes);
+                        std::memcpy(security.data(),
+                                    guestMemory.buffer(registers[4], headerBytes), headerBytes);
+                        std::uint32_t entries = 0;
+                        std::memcpy(&entries, security.data() + 36, sizeof(entries));
+                        if (entries > maximumEntries && entries != ~std::uint32_t{0}) {
+                            rawFail(EINVAL);
+                            continue;
+                        }
+                        if (entries != ~std::uint32_t{0} && entries != 0) {
+                            security.resize(headerBytes + entries * entryBytes);
+                            std::memcpy(security.data() + headerBytes,
+                                        guestMemory.buffer(registers[4] + headerBytes,
+                                                           entries * entryBytes),
+                                        entries * entryBytes);
+                        }
+                        securityArgument = security.data();
+                    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                    const auto status = ::syscall(
+                        static_cast<int>(syscall),
+                        byDescriptor ? reinterpret_cast<void*>(registers[0])
+                                     : const_cast<char*>(path->c_str()),
+                        static_cast<std::uint32_t>(registers[1]),
+                        static_cast<std::uint32_t>(registers[2]),
+                        static_cast<std::int32_t>(registers[3]), securityArgument);
+#pragma clang diagnostic pop
+                    if (status != 0) rawFail(errno);
+                    else rawOk(0);
+                } catch (const std::exception&) {
+                    rawFail(EFAULT);
+                }
+                continue;
+            }
+            if (syscall >= 234 && syscall <= 241) {
+                // getxattr, fgetxattr, setxattr, fsetxattr, removexattr, fremovexattr,
+                // listxattr, flistxattr.
+                const auto index = static_cast<int>(syscall - 234);
+                const bool byDescriptor = (index & 1) != 0;
+                const int operation = index / 2;  // 0 get, 1 set, 2 remove, 3 list
+                std::optional<std::string> path;
+                if (byDescriptor) {
+                    if (!rawOwnsDescriptor(registers[0])) {
+                        rawFail(EBADF);
+                        continue;
+                    }
+                } else {
+                    path = rawPath(registers[0]);
+                    if (!path) {
+                        rawFail(EFAULT);
+                        continue;
+                    }
+                }
+                const auto descriptor = static_cast<int>(registers[0]);
+                try {
+                    std::optional<std::string> name;
+                    if (operation != 3) {
+                        name = rawPath(registers[1]);
+                        if (!name) {
+                            rawFail(EFAULT);
+                            continue;
+                        }
+                    }
+                    ssize_t result = -1;
+                    if (operation == 0) {
+                        const auto size = static_cast<std::size_t>(registers[3]);
+                        const auto position = static_cast<std::uint32_t>(registers[4]);
+                        const auto options = static_cast<int>(registers[5]);
+                        std::vector<std::uint8_t> value(registers[2] != 0 ? size : 0);
+                        result = byDescriptor
+                            ? ::fgetxattr(descriptor, name->c_str(),
+                                          registers[2] != 0 ? value.data() : nullptr,
+                                          value.size(), position, options)
+                            : ::getxattr(path->c_str(), name->c_str(),
+                                         registers[2] != 0 ? value.data() : nullptr,
+                                         value.size(), position, options);
+                        if (result >= 0 && registers[2] != 0 && result > 0) {
+                            std::memcpy(guestMemory.buffer(registers[2],
+                                            static_cast<std::size_t>(result), true),
+                                        value.data(), static_cast<std::size_t>(result));
+                        }
+                    } else if (operation == 1) {
+                        const auto size = static_cast<std::size_t>(registers[3]);
+                        const auto position = static_cast<std::uint32_t>(registers[4]);
+                        const auto options = static_cast<int>(registers[5]);
+                        std::vector<std::uint8_t> value(size);
+                        if (size != 0) {
+                            std::memcpy(value.data(), guestMemory.buffer(registers[2], size), size);
+                        }
+                        result = byDescriptor
+                            ? ::fsetxattr(descriptor, name->c_str(), value.data(), size,
+                                          position, options)
+                            : ::setxattr(path->c_str(), name->c_str(), value.data(), size,
+                                         position, options);
+                    } else if (operation == 2) {
+                        const auto options = static_cast<int>(registers[2]);
+                        result = byDescriptor
+                            ? ::fremovexattr(descriptor, name->c_str(), options)
+                            : ::removexattr(path->c_str(), name->c_str(), options);
+                    } else {
+                        const auto size = static_cast<std::size_t>(registers[2]);
+                        const auto options = static_cast<int>(registers[3]);
+                        std::vector<char> names(registers[1] != 0 ? size : 0);
+                        result = byDescriptor
+                            ? ::flistxattr(descriptor, registers[1] != 0 ? names.data() : nullptr,
+                                           names.size(), options)
+                            : ::listxattr(path->c_str(), registers[1] != 0 ? names.data() : nullptr,
+                                          names.size(), options);
+                        if (result > 0 && registers[1] != 0) {
+                            std::memcpy(guestMemory.buffer(registers[1],
+                                            static_cast<std::size_t>(result), true),
+                                        names.data(), static_cast<std::size_t>(result));
+                        }
+                    }
+                    if (result < 0) rawFail(errno);
+                    else rawOk(static_cast<std::uint64_t>(result));
+                } catch (const std::exception&) {
+                    rawFail(EFAULT);
+                }
+                continue;
+            }
+            if (syscall == 216) {  // open_dprotected_np
+                constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
+                    O_EXCL | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY | O_DIRECTORY |
+                    O_EXEC | O_NOFOLLOW_ANY | O_SYMLINK;
+                const auto flags = static_cast<std::int32_t>(registers[1]);
+                const auto path = rawPath(registers[0]);
+                if (!path || registers[0] == 0) {
+                    rawFail(EFAULT);
+                } else if ((flags & ~allowed) != 0) {
+                    rawFail(EINVAL);
+                } else {
+                    const auto descriptor = ::open_dprotected_np(
+                        path->c_str(), flags | O_CLOEXEC, static_cast<int>(registers[2]),
+                        static_cast<int>(registers[3]), static_cast<int>(registers[4]));
+                    if (descriptor < 0) {
+                        rawFail(errno);
+                    } else {
+                        hostServiceState.openDescriptors.insert(descriptor);
+                        if ((flags & O_ACCMODE) != O_RDONLY) {
+                            hostServiceState.writableDescriptors.insert(descriptor);
+                        }
+                        rawOk(static_cast<std::uint64_t>(descriptor));
+                    }
+                }
+                continue;
+            }
+            if (syscall == 153 || syscall == 154) {  // pread, pwrite
+                const auto descriptor = static_cast<std::int32_t>(registers[0]);
+                const auto count = static_cast<std::size_t>(registers[2]);
+                if (!rawOwnsDescriptor(registers[0])) {
+                    rawFail(EBADF);
+                } else if (syscall == 154 &&
+                           hostServiceState.writableDescriptors.count(descriptor) == 0) {
+                    rawFail(EBADF);
+                } else if (count > 0x7fffffffU) {
+                    rawFail(EINVAL);
+                } else {
+                    try {
+                        std::vector<std::uint8_t> bytes(count);
+                        ssize_t transferred;
+                        if (syscall == 153) {
+                            transferred = ::pread(descriptor, bytes.data(), count,
+                                                  static_cast<off_t>(registers[3]));
+                            if (transferred > 0) {
+                                std::memcpy(guestMemory.buffer(registers[1],
+                                                static_cast<std::size_t>(transferred), true),
+                                            bytes.data(), static_cast<std::size_t>(transferred));
+                            }
+                        } else {
+                            if (count != 0) {
+                                std::memcpy(bytes.data(), guestMemory.buffer(registers[1], count),
+                                            count);
+                            }
+                            transferred = ::pwrite(descriptor, bytes.data(), count,
+                                                   static_cast<off_t>(registers[3]));
+                        }
+                        if (transferred < 0) rawFail(errno);
+                        else rawOk(static_cast<std::uint64_t>(transferred));
+                    } catch (const std::exception&) {
+                        rawFail(EFAULT);
+                    }
+                }
+                continue;
+            }
+            if (syscall == 15 || syscall == 16 || syscall == 364 || syscall == 123 ||
+                syscall == 124) {  // chmod, chown, lchown, fchown, fchmod
+                const bool byDescriptor = syscall == 123 || syscall == 124;
+                std::optional<std::string> path;
+                if (byDescriptor) {
+                    if (!rawOwnsDescriptor(registers[0])) {
+                        rawFail(EBADF);
+                        continue;
+                    }
+                } else {
+                    path = rawPath(registers[0]);
+                    if (!path) {
+                        rawFail(EFAULT);
+                        continue;
+                    }
+                }
+                const auto descriptor = static_cast<int>(registers[0]);
+                int status;
+                if (syscall == 15) status = ::chmod(path->c_str(), static_cast<mode_t>(registers[1]));
+                else if (syscall == 124) status = ::fchmod(descriptor, static_cast<mode_t>(registers[1]));
+                else if (syscall == 16) {
+                    status = ::chown(path->c_str(), static_cast<uid_t>(registers[1]),
+                                     static_cast<gid_t>(registers[2]));
+                } else if (syscall == 364) {
+                    status = ::lchown(path->c_str(), static_cast<uid_t>(registers[1]),
+                                      static_cast<gid_t>(registers[2]));
+                } else {
+                    status = ::fchown(descriptor, static_cast<uid_t>(registers[1]),
+                                      static_cast<gid_t>(registers[2]));
+                }
+                if (status != 0) rawFail(errno);
+                else rawOk(0);
+                continue;
+            }
+            if (syscall == 10 || syscall == 137 || syscall == 128) {  // unlink, rmdir, rename
+                const auto first = rawPath(registers[0]);
+                const auto second = syscall == 128 ? rawPath(registers[1])
+                                                   : std::optional<std::string>("");
+                if (!first || !second) rawFail(EFAULT);
+                else {
+                    const auto status = syscall == 10 ? ::unlink(first->c_str())
+                        : syscall == 137 ? ::rmdir(first->c_str())
+                        : ::rename(first->c_str(), second->c_str());
+                    if (status != 0) rawFail(errno);
+                    else rawOk(0);
+                }
                 continue;
             }
             if (syscall == 515 || syscall == 516 || syscall == 544) {  // ulock_wait/wake/wait2
