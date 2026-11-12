@@ -1436,6 +1436,14 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                            ((immediate & 15) << (fraction - 4));
     return assignVector("ulong2(" + str(value) + "ul, 0ul)");
   }
+  if ((bits & 0xff3e7c00) == 0x1e224000) {
+    const auto format = field(22, 2);
+    const auto target = field(15, 2);
+    if (!((format == 0 && target == 1) || (format == 1 && target == 0)))
+      throw GuestError("Unsupported scalar FCVT precision");
+    return assignVector("ulong2(fp_convert_precision(x[" + str(806 + 2 * rn) +
+                        "], " + (format == 0 ? "true" : "false") + ", x), 0ul)");
+  }
   if ((bits & 0xff3ffc00) == 0x1e214000) {
     const auto format = field(22, 2);
     if (format > 1)

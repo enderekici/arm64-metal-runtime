@@ -47,6 +47,84 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         uint sign = fraction == 52u ? 63u : 31u;
         return (ulong(negative) << sign) | ((ulong(exponent + bias - 1u) << fraction) + significand);
     }
+    // FCVT between binary32 and binary64 with integer arithmetic.
+    ulong fp_convert_precision(ulong source, bool to_double, device ulong *state) {
+        ulong fpcr = state[@GUEST_FPCR@];
+        if (to_double) {
+            ulong sign = (source >> 31) & 1ul;
+            ulong exponent = (source >> 23) & 0xfful;
+            ulong fraction = source & 0x7ffffful;
+            if (exponent == 0xfful) {
+                if (fraction == 0) return (sign << 63) | (0x7fful << 52);
+                if ((fraction & 0x400000ul) == 0) state[@GUEST_FPSR@] |= 1ul;
+                if ((fpcr & (1ul << 25)) != 0) return 0x7ff8000000000000ul;
+                return (sign << 63) | (0x7fful << 52) | ((fraction | 0x400000ul) << 29);
+            }
+            if (exponent == 0) {
+                if (fraction == 0) return sign << 63;
+                if ((fpcr & (1ul << 24)) != 0) {
+                    state[@GUEST_FPSR@] |= 128ul;
+                    return sign << 63;
+                }
+                uint top = 31u - clz(uint(fraction));
+                ulong result_fraction = (fraction << (52u - top)) & ((1ul << 52) - 1ul);
+                return (sign << 63) | (ulong(top + 874u) << 52) | result_fraction;
+            }
+            return (sign << 63) | ((exponent + 896ul) << 52) | (fraction << 29);
+        }
+        ulong sign = source >> 63;
+        ulong exponent = (source >> 52) & 0x7fful;
+        ulong fraction = source & ((1ul << 52) - 1ul);
+        ulong sign_bit = sign << 31;
+        if (exponent == 0x7fful) {
+            if (fraction == 0) return sign_bit | 0x7f800000ul;
+            if ((fraction & (1ul << 51)) == 0) state[@GUEST_FPSR@] |= 1ul;
+            if ((fpcr & (1ul << 25)) != 0) return 0x7fc00000ul;
+            return sign_bit | 0x7f800000ul | ((fraction | (1ul << 51)) >> 29);
+        }
+        if (exponent == 0 && fraction == 0) return sign_bit;
+        if (exponent == 0 && (fpcr & (1ul << 24)) != 0) {
+            state[@GUEST_FPSR@] |= 128ul;
+            return sign_bit;
+        }
+        long unbiased = exponent == 0 ? -1022l : long(exponent) - 1023l;
+        ulong significand = exponent == 0 ? fraction : (fraction | (1ul << 52));
+        uint mode = uint(fpcr >> 22) & 3u;
+        bool tiny = unbiased < -126l;
+        if (tiny && (fpcr & (1ul << 24)) != 0) {
+            state[@GUEST_FPSR@] |= 8ul;
+            return sign_bit;
+        }
+        bool overflow = unbiased >= 128l;
+        ulong kept = 0;
+        if (!overflow) {
+            ulong drop = tiny ? 29ul + ulong(-126l - unbiased) : 29ul;
+            ulong remainder_nonzero = 0;
+            bool up = false;
+            if (drop > 60ul) {
+                remainder_nonzero = 1ul;
+                up = (mode == 1u && sign == 0) || (mode == 2u && sign != 0);
+            } else {
+                kept = significand >> drop;
+                ulong remainder = significand & ((1ul << drop) - 1ul);
+                ulong halfway = 1ul << (drop - 1ul);
+                remainder_nonzero = remainder != 0 ? 1ul : 0ul;
+                up = (mode == 0u && (remainder > halfway || (remainder == halfway && (kept & 1ul) != 0)))
+                  || (mode == 1u && sign == 0 && remainder != 0)
+                  || (mode == 2u && sign != 0 && remainder != 0);
+            }
+            if (remainder_nonzero != 0) {
+                state[@GUEST_FPSR@] |= 16ul;
+                if (tiny) state[@GUEST_FPSR@] |= 8ul;
+            }
+            kept += up ? 1ul : 0ul;
+            ulong bits = tiny ? kept : ((ulong(unbiased + 127l) << 23) + (kept - (1ul << 23)));
+            if (bits < 0x7f800000ul) return sign_bit | bits;
+        }
+        state[@GUEST_FPSR@] |= 20ul;
+        bool max_finite = mode == 3u || (mode == 1u && sign != 0) || (mode == 2u && sign == 0);
+        return sign_bit | (max_finite ? 0x7f7ffffful : 0x7f800000ul);
+    }
     // IEEE-754 scalar divide using integer significands. Metal lacks binary64;
     // this also gives binary32 the guest FPCR rounding mode and FPSR flags.
     ulong fp_divide(ulong left, ulong right, bool wide, device ulong *state) {
