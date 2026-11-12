@@ -6186,6 +6186,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         guestAddress = begin;
         return kernSuccess;
     };
+    hostServiceState.currentThreadStackFloor = [&]() -> std::optional<std::uint64_t> {
+        const auto found = threadStackGuards.find(guestScheduler.current_id());
+        if (found == threadStackGuards.end()) return std::nullopt;
+        return found->second.end;
+    };
     hostServiceState.machVmDeallocate = [&](std::uint64_t address, std::uint64_t size) {
         const auto pageSize = bootstrap.pageSize;
         if (size == 0 || pageSize == 0 || (pageSize & (pageSize - 1)) != 0 ||

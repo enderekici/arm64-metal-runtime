@@ -268,6 +268,7 @@ struct HostServiceState {
                                 std::uint32_t inheritance, std::uint32_t tag)> machVmOverwrite;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size)>
         machVmDeallocate;
+    std::function<std::optional<std::uint64_t>()> currentThreadStackFloor;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
                                 bool setMaximum, std::uint32_t protection,
                                 bool mprotect)> machVmProtect;

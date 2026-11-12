@@ -3795,8 +3795,13 @@ HostServiceResult dispatch_guest_host_service(
             registers[0] = bootstrap.programName;
             break;
         case 32: {  // ___chkstk_darwin: validate the probed stack extent
-            if (registers[31] < bootstrap.stack.begin || registers[31] > bootstrap.stack.end ||
-                registers[9] > registers[31] - bootstrap.stack.begin) {
+            const auto threadFloor = state.currentThreadStackFloor
+                ? state.currentThreadStackFloor() : std::nullopt;
+            const bool onMainStack = registers[31] >= bootstrap.stack.begin &&
+                                     registers[31] <= bootstrap.stack.end;
+            const auto floor = onMainStack ? bootstrap.stack.begin
+                                           : threadFloor.value_or(registers[31] + 1U);
+            if (registers[31] < floor || registers[9] > registers[31] - floor) {
                 throw std::runtime_error("Guest stack probe failed");
             }
             break;
