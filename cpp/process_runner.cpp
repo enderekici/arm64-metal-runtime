@@ -7958,6 +7958,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
+            if (service == 244) {
+                // Prebuilt on-disk loader sets are not modeled, so no conformance is
+                // found there; the Swift runtime then scans registered image sections.
+                hostRegisters[0] = 2;
+                hostRegisters[1] = 0;
+                std::copy_n(hostRegisters.begin(), 36,
+                            static_cast<std::uint64_t*>(stateBuffer.data()));
+                continue;
+            }
             if (service == 149) {
                 const auto protocol = hostRegisters[0];
                 const auto metadata = hostRegisters[1];

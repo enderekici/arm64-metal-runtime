@@ -21,6 +21,7 @@ THREADS := $(BUILD)/guest-threads
 MEMORY := $(BUILD)/guest-memory
 CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
+CACHE_CONFORMANCE := $(BUILD)/cache-dyld-conformance
 
 .PHONY: all verify verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
@@ -119,7 +120,7 @@ verify-java:
 	@test -n "$(JDK_HOME)" || { echo "Set JDK_HOME to the Azul JDK being qualified" >&2; exit 2; }
 	./verify-java.sh "$(JDK_HOME)" "$(JAVA_VERIFY_RUNTIME)" "$(JAVA_VERIFY_RESULTS)"
 
-verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
+verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB) $(CACHE_CONFORMANCE)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
 		$(RUNTIME) inspect-cache-rebases "/usr/lib/$$library" >"$(BUILD)/$$library.rebases"; \
 		$(CACHE_CHECK) "/usr/lib/$$library" <"$(BUILD)/$$library.rebases"; \
@@ -133,6 +134,11 @@ verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB)
 	@cmp "$(BUILD)/cache-zlib.native" "$(BUILD)/cache-zlib.demand"
 	@cmp "$(BUILD)/cache-zlib.native.err" "$(BUILD)/cache-zlib.demand.err"
 	@echo "Demand-mapped libz decompression and relocation match native"
+	@$(CACHE_CONFORMANCE) >"$(BUILD)/cache-conformance.native" 2>"$(BUILD)/cache-conformance.native.err"
+	@ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 $(RUNTIME) launch $(CACHE_CONFORMANCE) >"$(BUILD)/cache-conformance.gpu" 2>"$(BUILD)/cache-conformance.gpu.err"
+	@cmp "$(BUILD)/cache-conformance.native" "$(BUILD)/cache-conformance.gpu"
+	@cmp "$(BUILD)/cache-conformance.native.err" "$(BUILD)/cache-conformance.gpu.err"
+	@echo "On-disk protocol conformance lookup matches native"
 	@awk 'BEGIN {for (i=0; i<1000; ++i) printf "compile record %04d module-%02d output\n", i, i%31}' >"$(BUILD)/gzip-input"
 	@/usr/bin/gzip -nc "$(BUILD)/gzip-input" >"$(BUILD)/gzip-input.gz"
 	@ARM64_METAL_SHARED_CACHE=1 $(RUNTIME) launch /usr/bin/gzip -nc "$(BUILD)/gzip-input" >"$(BUILD)/gzip-encode.gpu" 2>"$(BUILD)/gzip-encode.gpu.err"
@@ -181,6 +187,9 @@ verify-synchronous-fault-oracle: $(SYNCHRONOUS_FAULT_ORACLE)
 
 $(CACHE_ZLIB): cache-zlib.c | $(BUILD)
 	xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$<" -lz -o "$@"
+
+$(CACHE_CONFORMANCE): cache-dyld-conformance.c | $(BUILD)
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 "$<" -o "$@"
 
 $(CACHE_CHECK): cache-rebase-check.c | $(BUILD)
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
