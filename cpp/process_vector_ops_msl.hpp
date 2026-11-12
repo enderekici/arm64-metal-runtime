@@ -118,6 +118,12 @@ ulong vop_fp_scale_down(ulong bits, bool wide, uint fbits) {
     if (bits == 0ul) return 0ul;
     return bits - (ulong(fbits) << (wide ? 52u : 23u));
 }
+ulong2 vop_lane_set(ulong2 vector, uint index, uint width, ulong value) {
+    uint bit = index * width;
+    vector[bit >> 6] = (vector[bit >> 6] & ~(lane_mask(width) << (bit & 63))) |
+                       ((value & lane_mask(width)) << (bit & 63));
+    return vector;
+}
 )VECTOR_OPS_MSL";
 
 }  // namespace arm64metal

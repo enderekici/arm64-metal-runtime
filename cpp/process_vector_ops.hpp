@@ -44,6 +44,145 @@ inline translate_core::Instruction make(std::vector<std::string> code, std::int6
   return translate_core::Instruction{std::move(code), {pc + 4}};
 }
 
+// LD2-LD4 and ST2-ST4 (multiple structures), LDn/STn (single structure) and LDnR.
+inline std::optional<translate_core::Instruction> structure_memory(std::uint32_t bits,
+                                                                    std::int64_t pc,
+                                                                    bool cached) {
+  const bool multiple = (bits & 0xbf200000U) == 0x0c000000U;
+  const bool single = (bits & 0xbf000000U) == 0x0d000000U;
+  if (!multiple && !single) return std::nullopt;
+  const bool post = field(bits, 23, 1) != 0;
+  const auto rm = field(bits, 16, 5);
+  const auto rn = field(bits, 5, 5);
+  const auto rt = field(bits, 0, 5);
+  const bool q = field(bits, 30, 1) != 0;
+  const bool load = field(bits, 22, 1) != 0;
+  if (!post && rm != 0) return std::nullopt;
+  std::int64_t selem = 0;
+  std::int64_t element = 0;  // bytes per element
+  std::int64_t index = 0;
+  bool replicate = false;
+  if (multiple) {
+    const auto opcode = field(bits, 12, 4);
+    selem = opcode == 8 ? 2 : opcode == 4 ? 3 : opcode == 0 ? 4 : 0;
+    if (selem == 0) return std::nullopt;
+    const auto size = field(bits, 10, 2);
+    if (size == 3 && !q) return std::nullopt;
+    element = std::int64_t(1) << size;
+  } else {
+    const auto opcode = field(bits, 13, 3);
+    const auto s = field(bits, 12, 1);
+    const auto size = field(bits, 10, 2);
+    selem = ((opcode & 1) << 1 | field(bits, 21, 1)) + 1;
+    switch (opcode >> 1) {
+      case 0:
+        element = 1;
+        index = (q << 3) | (s << 2) | size;
+        break;
+      case 1:
+        if (size & 1) return std::nullopt;
+        element = 2;
+        index = (q << 2) | (s << 1) | (size >> 1);
+        break;
+      case 2:
+        if (size == 0) {
+          element = 4;
+          index = (q << 1) | s;
+        } else if (size == 1 && s == 0) {
+          element = 8;
+          index = q;
+        } else {
+          return std::nullopt;
+        }
+        break;
+      default:
+        if (!load || s != 0) return std::nullopt;
+        replicate = true;
+        element = std::int64_t(1) << size;
+        break;
+    }
+  }
+  const std::int64_t lanes_per_register = (q ? 16 : 8) / element;
+  const std::int64_t bytes = multiple ? selem * lanes_per_register * element : selem * element;
+  const auto ebits = num(element * 8);
+  std::vector<std::string> code{"{ ulong address = x[" + num(rn) + "];"};
+  for (auto& line : access(cached, pc, bytes, !load)) code.push_back(line);
+  if (multiple) {
+    for (std::int64_t r = 0; r < selem; ++r) {
+      const auto reg = (rt + r) & 31U;
+      if (load) {
+        code.push_back("{ ulong2 value = ulong2(0);");
+        code.push_back("for (uint lane = 0; lane < " + num(lanes_per_register) + "; ++lane) lane_add(value, lane, " +
+                       ebits + ", load_guest_word(memory + p + (lane * " + num(selem) + " + " +
+                       num(r) + ") * " + num(element) + ", " + num(element) + "));");
+        code.push_back(slot(reg, 0) + " = value[0]; " + slot(reg, 1) + " = value[1]; }");
+      } else {
+        code.push_back("for (uint lane = 0; lane < " + num(lanes_per_register) +
+                       "; ++lane) store_guest_word(memory + p + (lane * " + num(selem) + " + " + num(r) +
+                       ") * " + num(element) + ", lane_read(" + vreg(reg) + ", lane, " + ebits + "), " +
+                       num(element) + ");");
+      }
+    }
+  } else {
+    for (std::int64_t r = 0; r < selem; ++r) {
+      const auto reg = (rt + r) & 31U;
+      const auto address = "memory + p + " + num(r * element);
+      if (replicate) {
+        code.push_back(assign(reg, "vector_dup(load_guest_word(" + address + ", " + num(element) +
+                                       "), " + ebits + ", " + (q ? "128" : "64") + ")"));
+      } else if (load) {
+        code.push_back(assign(reg, "vop_lane_set(" + vreg(reg) + ", " + num(index) + ", " + ebits +
+                                       ", load_guest_word(" + address + ", " + num(element) + "))"));
+      } else {
+        code.push_back("store_guest_word(" + address + ", lane_read(" + vreg(reg) + ", " + num(index) +
+                       ", " + ebits + "), " + num(element) + ");");
+      }
+    }
+  }
+  if (post) {
+    code.push_back("x[" + num(rn) + "] += " + (rm == 31 ? num(bytes) + "ul" : "x[" + num(rm) + "]") + ";");
+  }
+  code.push_back("}");
+  return make(std::move(code), pc);
+}
+
+// LDR/STR of B and H registers (unsigned offset, unscaled, pre- and post-index).
+inline std::optional<translate_core::Instruction> narrow_scalar_memory(std::uint32_t bits,
+                                                                        std::int64_t pc,
+                                                                        bool cached) {
+  const auto top = bits & 0xffc00000U;
+  const auto low = bits & 0xffe00000U;
+  const bool scaled = top == 0x3d400000U || top == 0x3d000000U || top == 0x7d400000U ||
+                      top == 0x7d000000U;
+  const bool unscaled = (low == 0x3c400000U || low == 0x3c000000U || low == 0x7c400000U ||
+                         low == 0x7c000000U) && field(bits, 10, 2) != 2;
+  if (!scaled && !unscaled) return std::nullopt;
+  const std::int64_t element = field(bits, 30, 1) ? 2 : 1;
+  const bool load = field(bits, 22, 1) != 0;
+  const auto rn = field(bits, 5, 5);
+  const auto rt = field(bits, 0, 5);
+  std::string address;
+  std::string writeback;
+  if (scaled) {
+    address = "x[" + num(rn) + "] + " + num(std::int64_t(field(bits, 10, 12)) * element) + "ul";
+  } else {
+    const std::int64_t immediate = std::int64_t(field(bits, 12, 9)) - (field(bits, 20, 1) ? 512 : 0);
+    const auto mode = field(bits, 10, 2);
+    address = mode == 1 ? "x[" + num(rn) + "]" : "x[" + num(rn) + "] + ulong(" + num(immediate) + ")";
+    if (mode != 0) writeback = "x[" + num(rn) + "] += ulong(" + num(immediate) + ");";
+  }
+  std::vector<std::string> code{"{ ulong address = " + address + ";"};
+  for (auto& line : access(cached, pc, element, !load)) code.push_back(line);
+  if (load) {
+    code.push_back(slot(rt, 0) + " = load_guest_word(memory + p, " + num(element) + "); " + slot(rt, 1) + " = 0ul;");
+  } else {
+    code.push_back("store_guest_word(memory + p, " + slot(rt, 0) + ", " + num(element) + ");");
+  }
+  if (!writeback.empty()) code.push_back(writeback);
+  code.push_back("}");
+  return make(std::move(code), pc);
+}
+
 inline std::optional<translate_core::Instruction> floating_point(std::uint32_t bits,
                                                                   std::int64_t pc) {
   const auto rd = field(bits, 0, 5);
@@ -233,9 +372,10 @@ inline std::optional<translate_core::Instruction> fixed_point(std::uint32_t bits
 
 inline std::optional<translate_core::Instruction> lower(std::uint32_t bits, std::int64_t pc,
                                                          bool cached) {
-  (void)cached;
-  if (auto result = floating_point(bits, pc)) return result;
+  if (auto result = structure_memory(bits, pc, cached)) return result;
+  if (auto result = narrow_scalar_memory(bits, pc, cached)) return result;
   if (auto result = fixed_point(bits, pc)) return result;
+  if (auto result = floating_point(bits, pc)) return result;
   return std::nullopt;
 }
 
