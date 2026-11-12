@@ -1177,7 +1177,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                          str(wideElement ? 64 : 32) + ", " + str(vectorBits) +
                          ")"));
   }
-  if ((bits & 0x9f80fc00) == 0x0f00a400) {
+  if ((bits & 0x9f80fc00) == 0x0f00a400 && field(19, 4) != 0) {
     auto immediate = int64_t(field(16, 7));
     if (!((immediate >= 8 && immediate < 64))) {
       throw GuestError((std::string("Invalid widening shift immediate")));
@@ -1200,6 +1200,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
          ");\n              }\n              x[" + str(806 + 2 * rd) +
          "] = result[0]; x[" + str(807 + 2 * rd) +
          "] = result[1]; }\n            "));
+  }
+  if (auto lowered = vector_ops::lower_widening(bits, pc)) {
+    return *lowered;
   }
   if ((bits & 0xbf20fc00) == 0x2e20c000) {
     auto width = 8 << field(22, 2);

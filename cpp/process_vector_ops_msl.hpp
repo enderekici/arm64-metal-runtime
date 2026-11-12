@@ -16,6 +16,93 @@ ulong vop_ext(ulong value, uint width, bool is_signed) {
 bool vop_less(ulong left, ulong right, bool is_signed) {
     return is_signed ? long(left) < long(right) : left < right;
 }
+// 0 MAX, 1 MIN, 2 CMTST
+ulong2 vop_int_binary(uint op, ulong2 left, ulong2 right, uint width, uint bits, bool is_signed) {
+    ulong2 target = ulong2(0);
+    for (uint lane = 0; lane < bits / width; ++lane) {
+        ulong a = lane_read(left, lane, width), b = lane_read(right, lane, width);
+        ulong value;
+        if (op == 2u) {
+            value = (a & b) != 0 ? lane_mask(width) : 0ul;
+        } else {
+            bool a_less = vop_less(vop_ext(a, width, is_signed), vop_ext(b, width, is_signed), is_signed);
+            value = (op == 0u) == a_less ? b : a;
+        }
+        lane_add(target, lane, width, value);
+    }
+    return target;
+}
+// 0 ADDP, 1 MAX, 2 MIN
+ulong2 vop_int_pairwise(uint op, ulong2 left, ulong2 right, uint width, uint bits, bool is_signed) {
+    ulong2 target = ulong2(0);
+    uint half_count = bits / width / 2;
+    for (uint lane = 0; lane < half_count * 2; ++lane) {
+        ulong2 source = lane < half_count ? left : right;
+        uint pair = (lane % half_count) * 2;
+        ulong a = lane_read(source, pair, width), b = lane_read(source, pair + 1, width);
+        ulong value;
+        if (op == 0u) {
+            value = a + b;
+        } else {
+            bool a_less = vop_less(vop_ext(a, width, is_signed), vop_ext(b, width, is_signed), is_signed);
+            value = (op == 1u) == a_less ? b : a;
+        }
+        lane_add(target, lane, width, value);
+    }
+    return target;
+}
+// 0 CMGT #0, 1 CMGE #0, 2 CMLE #0, 3 CMLT #0, 4 ABS, 5 NEG
+ulong2 vop_int_unary(uint op, ulong2 source, uint width, uint bits) {
+    ulong2 target = ulong2(0);
+    for (uint lane = 0; lane < bits / width; ++lane) {
+        long value = long(vop_sext(lane_read(source, lane, width), width));
+        ulong result;
+        if (op == 0u) result = value > 0 ? ~0ul : 0ul;
+        else if (op == 1u) result = value >= 0 ? ~0ul : 0ul;
+        else if (op == 2u) result = value <= 0 ? ~0ul : 0ul;
+        else if (op == 3u) result = value < 0 ? ~0ul : 0ul;
+        else if (op == 4u) result = ulong(value < 0 ? -value : value);
+        else result = 0ul - ulong(value);
+        lane_add(target, lane, width, result);
+    }
+    return target;
+}
+// SADDLP/UADDLP/SADALP/UADALP.
+ulong2 vop_addlp(ulong2 accumulator, ulong2 source, uint width, uint bits, bool is_signed, bool accumulate) {
+    ulong2 target = ulong2(0);
+    for (uint lane = 0; lane < bits / width / 2; ++lane) {
+        ulong sum = vop_ext(lane_read(source, 2 * lane, width), width, is_signed) +
+                    vop_ext(lane_read(source, 2 * lane + 1, width), width, is_signed);
+        if (accumulate) sum += lane_read(accumulator, lane, 2 * width);
+        lane_add(target, lane, 2 * width, sum);
+    }
+    return target;
+}
+// Three-different ops. 0 add, 1 sub, 2 abs diff, 3 mul, 4 multiply-add,
+// 5 multiply-subtract, 6 absolute-difference-accumulate.
+ulong2 vop_long(uint op, ulong2 accumulator, ulong2 left, ulong2 right, uint width,
+                bool is_signed, bool upper, bool wide_first) {
+    ulong2 target = ulong2(0);
+    uint count = 64 / width;
+    uint offset = upper ? count : 0;
+    for (uint lane = 0; lane < count; ++lane) {
+        ulong a = wide_first ? lane_read(left, lane, 2 * width)
+                             : vop_ext(lane_read(left, lane + offset, width), width, is_signed);
+        ulong b = vop_ext(lane_read(right, lane + offset, width), width, is_signed);
+        ulong prior = lane_read(accumulator, lane, 2 * width);
+        ulong difference = vop_less(a, b, is_signed) ? b - a : a - b;
+        ulong value;
+        if (op == 0u) value = a + b;
+        else if (op == 1u) value = a - b;
+        else if (op == 2u) value = difference;
+        else if (op == 3u) value = a * b;
+        else if (op == 4u) value = prior + a * b;
+        else if (op == 5u) value = prior - a * b;
+        else value = prior + difference;
+        lane_add(target, lane, 2 * width, value);
+    }
+    return target;
+}
 // 0 FMUL, 2 FADD, 3 FSUB, 4..7 FMAX/FMIN/FMAXNM/FMINNM, 9 FDIV, 10 FABD
 ulong2 vop_fp_binary(uint op, ulong2 left, ulong2 right, bool wide, uint bits, device ulong *state) {
     uint width = wide ? 64u : 32u;

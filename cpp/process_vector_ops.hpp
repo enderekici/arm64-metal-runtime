@@ -183,6 +183,56 @@ inline std::optional<translate_core::Instruction> narrow_scalar_memory(std::uint
   return make(std::move(code), pc);
 }
 
+// SIMD modified immediate (MOVI, MVNI, ORR, BIC) for every cmode except FMOV.
+inline std::optional<translate_core::Instruction> modified_immediate(std::uint32_t bits,
+                                                                      std::int64_t pc) {
+  if ((bits & 0x9ff80400U) != 0x0f000400U) return std::nullopt;
+  const auto cmode = field(bits, 12, 4);
+  const bool op = field(bits, 29, 1) != 0;
+  const bool q = field(bits, 30, 1) != 0;
+  const auto rd = field(bits, 0, 5);
+  const std::uint64_t imm8 = (field(bits, 16, 3) << 5) | field(bits, 5, 5);
+  std::uint64_t value = 0;
+  bool logical = false;
+  int width = 32;
+  if (cmode < 8) {
+    value = imm8 << (8 * (cmode >> 1));
+    logical = (cmode & 1) != 0;
+  } else if (cmode < 12) {
+    value = imm8 << (8 * ((cmode >> 1) & 1));
+    logical = (cmode & 1) != 0;
+    width = 16;
+  } else if (cmode < 14) {
+    value = (imm8 << (8 * (1 + (cmode & 1)))) | ((std::uint64_t(1) << (8 * (1 + (cmode & 1)))) - 1);
+  } else if (cmode == 14) {
+    width = 8;
+    if (!op) {
+      value = imm8;
+    } else {
+      width = 64;
+      for (int byte = 0; byte < 8; ++byte)
+        if (imm8 & (1U << byte)) value |= std::uint64_t(0xff) << (8 * byte);
+    }
+  } else {
+    return std::nullopt;
+  }
+  if (cmode != 14 && !logical) value = op ? ~value : value;
+  // Replicate across the lane then across the vector.
+  const auto lane_mask = width == 64 ? ~std::uint64_t(0) : (std::uint64_t(1) << width) - 1;
+  value &= lane_mask;
+  std::uint64_t pattern = value;
+  for (int filled = width; filled < 64; filled *= 2) pattern |= pattern << filled;
+  const std::string constant = "ulong2(" + std::to_string(pattern) + "ul, " + (q ? std::to_string(pattern) : "0") + "ul)";
+  std::string expression;
+  if (logical) {
+    expression = op ? "(" + vreg(rd) + " & ~" + constant + ")" : "(" + vreg(rd) + " | " + constant + ")";
+    if (!q) expression = "(" + expression + " & ulong2(~0ul, 0ul))";
+  } else {
+    expression = constant;
+  }
+  return make({assign(rd, expression)}, pc);
+}
+
 inline std::optional<translate_core::Instruction> floating_point(std::uint32_t bits,
                                                                   std::int64_t pc) {
   const auto rd = field(bits, 0, 5);
@@ -335,6 +385,118 @@ inline std::optional<translate_core::Instruction> floating_point(std::uint32_t b
   return std::nullopt;
 }
 
+// Three-register different-width integer ops (SADDL, UADDW, SMULL, UMLAL and friends).
+inline std::optional<translate_core::Instruction> widening(std::uint32_t bits, std::int64_t pc) {
+  if (field(bits, 24, 5) != 0x0e) return std::nullopt;
+  const auto rd = field(bits, 0, 5);
+  const auto rn = field(bits, 5, 5);
+  const auto rm = field(bits, 16, 5);
+  const bool u = field(bits, 29, 1) != 0;
+  const bool q = field(bits, 30, 1) != 0;
+  const auto size = field(bits, 22, 2);
+  const auto width_text = num(8 << size);
+  const auto is_signed = boolean(!u);
+  const auto n = vreg(rn);
+  const auto m = vreg(rm);
+  if ((bits & 0x00200c00U) == 0x00200000U) {
+    const auto opcode = field(bits, 12, 4);
+    if (size == 3) return std::nullopt;
+    int op = -1;
+    bool wide_first = false;
+    switch (opcode) {
+      case 0: op = 0; break;
+      case 1: op = 0; wide_first = true; break;
+      case 2: op = 1; break;
+      case 3: op = 1; wide_first = true; break;
+      case 5: op = 6; break;
+      case 7: op = 2; break;
+      case 8: op = 4; break;
+      case 10: op = 5; break;
+      case 12: op = 3; break;
+      default: return std::nullopt;
+    }
+    return make({assign(rd, "vop_long(" + num(op) + "u, " + vreg(rd) + ", " + n + ", " + m + ", " + width_text + ", " + is_signed + ", " + boolean(q) + ", " + boolean(wide_first) + ")")}, pc);
+  }
+  return std::nullopt;
+}
+
+inline std::optional<translate_core::Instruction> integer(std::uint32_t bits, std::int64_t pc) {
+  if (field(bits, 24, 5) != 0x0e) return std::nullopt;
+  const auto rd = field(bits, 0, 5);
+  const auto rn = field(bits, 5, 5);
+  const auto rm = field(bits, 16, 5);
+  const bool u = field(bits, 29, 1) != 0;
+  const bool q = field(bits, 30, 1) != 0;
+  const auto size = field(bits, 22, 2);
+  const int width = 8 << size;
+  const auto total = num(q ? 128 : 64);
+  const auto n = vreg(rn);
+  const auto m = vreg(rm);
+  const auto width_text = num(width);
+  const auto is_signed = boolean(!u);
+  if ((bits & 0x00200400U) == 0x00200400U) {
+    const auto opcode = field(bits, 11, 5);
+    if (size == 3 && !q) return std::nullopt;
+    std::string expression;
+    switch (opcode) {
+      case 0x0c: case 0x0d:
+        if (size == 3) return std::nullopt;
+        expression = "vop_int_binary(" + num(opcode == 0x0c ? 0 : 1) + "u, " + n + ", " + m + ", " + width_text + ", " + total + ", " + is_signed + ")";
+        break;
+      case 0x11:
+        if (u) return std::nullopt;
+        expression = "vop_int_binary(2u, " + n + ", " + m + ", " + width_text + ", " + total + ", false)";
+        break;
+      case 0x14: case 0x15:
+        if (size == 3) return std::nullopt;
+        expression = "vop_int_pairwise(" + num(opcode == 0x14 ? 1 : 2) + "u, " + n + ", " + m + ", " + width_text + ", " + total + ", " + is_signed + ")";
+        break;
+      case 0x17:
+        if (u) return std::nullopt;
+        expression = "vop_int_pairwise(0u, " + n + ", " + m + ", " + width_text + ", " + total + ", false)";
+        break;
+      default:
+        return std::nullopt;
+    }
+    return make({assign(rd, expression)}, pc);
+  }
+  if ((bits & 0x00300c00U) == 0x00200800U && (bits & 0x000e0000U) == 0) {
+    const auto opcode = field(bits, 12, 5);
+    if (size == 3 && !q && opcode != 0x02 && opcode != 0x06) return std::nullopt;
+    std::string expression;
+    int unary = -1;
+    if (!u && opcode == 0x08) unary = 0;
+    else if (u && opcode == 0x08) unary = 1;
+    else if (u && opcode == 0x09) unary = 2;
+    else if (!u && opcode == 0x0a) unary = 3;
+    else if (!u && opcode == 0x0b) unary = 4;
+    else if (u && opcode == 0x0b) unary = 5;
+    if (unary >= 0) {
+      expression = "vop_int_unary(" + num(unary) + "u, " + n + ", " + width_text + ", " + total + ")";
+    } else if (opcode == 0x02 || opcode == 0x06) {
+      if (size == 3) return std::nullopt;
+      expression = "vop_addlp(" + vreg(rd) + ", " + n + ", " + width_text + ", " + total + ", " + is_signed + ", " + boolean(opcode == 6) + ")";
+    } else {
+      return std::nullopt;
+    }
+    return make({assign(rd, expression)}, pc);
+  }
+  return widening(bits, pc);
+}
+
+inline std::optional<translate_core::Instruction> system_hints(std::uint32_t bits, std::int64_t pc,
+                                                                bool) {
+  if (bits == 0xd503203fU) return make({}, pc);
+  if (bits == 0xd50330ffU) return make({"threadgroup_barrier(mem_flags::mem_device);"}, pc);
+  // DCZID_EL0: report DC ZVA as prohibited so guests use ordinary stores.
+  if ((bits & 0xffffffe0U) == 0xd53b00e0U) {
+    const auto rt = field(bits, 0, 5);
+    if (rt == 31) return make({}, pc);
+    return make({"x[" + num(rt) + "] = 16ul;"}, pc);
+  }
+  return std::nullopt;
+}
+
 // Scalar fixed-point FCVTZS/FCVTZU and SCVTF/UCVTF.
 inline std::optional<translate_core::Instruction> fixed_point(std::uint32_t bits, std::int64_t pc) {
   if ((bits & 0x7f200000U) != 0x1e000000U) return std::nullopt;
@@ -372,10 +534,13 @@ inline std::optional<translate_core::Instruction> fixed_point(std::uint32_t bits
 
 inline std::optional<translate_core::Instruction> lower(std::uint32_t bits, std::int64_t pc,
                                                          bool cached) {
+  if (auto result = system_hints(bits, pc, cached)) return result;
   if (auto result = structure_memory(bits, pc, cached)) return result;
   if (auto result = narrow_scalar_memory(bits, pc, cached)) return result;
+  if (auto result = modified_immediate(bits, pc)) return result;
   if (auto result = fixed_point(bits, pc)) return result;
   if (auto result = floating_point(bits, pc)) return result;
+  if (auto result = integer(bits, pc)) return result;
   return std::nullopt;
 }
 
@@ -386,5 +551,9 @@ inline std::optional<translate_core::Instruction> lower(std::uint32_t bits, std:
   return detail::lower(bits, pc, cached);
 }
 
+inline std::optional<translate_core::Instruction> lower_widening(std::uint32_t bits,
+                                                                  std::int64_t pc) {
+  return detail::widening(bits, pc);
+}
 
 }  // namespace arm64metal::vector_ops
