@@ -9910,6 +9910,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (range != threadStackRanges.end())
                         std::cerr << " stack=[0x" << hexadecimal(range->second.begin) << ",0x"
                                   << hexadecimal(range->second.end) << ")";
+                    if (std::getenv("ARM64_METAL_TRACE_THREADS"))
+                        std::cerr << " mem " << guestMemory.describe_near(address, 0x40000);
                     if (std::getenv("ARM64_METAL_TRACE_THREADS")) {
                         for (int r = 0; r < 32; ++r)
                             std::cerr << " x" << r << "=0x" << hexadecimal(registers[r]);

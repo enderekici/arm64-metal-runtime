@@ -153,6 +153,7 @@ public:
     void add_guest_range(GuestMemoryRange range);
     [[nodiscard]] bool is_readonly(std::uint64_t address, std::uint64_t length) const;
     [[nodiscard]] bool is_protection_fault(std::uint64_t address) const;
+    [[nodiscard]] std::string describe_near(std::uint64_t address, std::uint64_t radius) const;
     void rebind(std::uint8_t* bytes, std::size_t size);
     void rebind_with_mapping(std::uint8_t* bytes, std::size_t size,
                              GuestMemoryMapping mapping);

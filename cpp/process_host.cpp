@@ -1,3 +1,4 @@
+#include <sstream>
 #include "process_host.hpp"
 #include "darwin_bridge.hpp"
 #include "guest_format.hpp"
@@ -564,6 +565,18 @@ bool GuestMemory::is_readonly(std::uint64_t address, std::uint64_t length) const
         [&](const GuestMemoryRange& range) {
             return requested.begin >= range.begin && requested.end <= range.end;
         });
+}
+
+std::string GuestMemory::describe_near(std::uint64_t address, std::uint64_t radius) const {
+    std::string text = "size=0x" + [&] { std::ostringstream o; o << std::hex << size_; return o.str(); }();
+    for (const auto& mapping : mappings_) {
+        if (mapping.logicalEnd + radius < address || mapping.logicalBegin > address + radius) continue;
+        std::ostringstream o;
+        o << std::hex << " [map 0x" << mapping.logicalBegin << "-0x" << mapping.logicalEnd
+          << " r=" << mapping.readable << " w=" << mapping.writable << "]";
+        text += o.str();
+    }
+    return text;
 }
 
 bool GuestMemory::is_protection_fault(std::uint64_t address) const {
