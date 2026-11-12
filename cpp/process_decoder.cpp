@@ -328,6 +328,45 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     // Darwin puts the CPU and cluster indices here. The guest has one of each.
     return rd == 31 ? emit() : emit((std::string(str(reg(rd))) + " = 0ul;"));
   }
+  // The per-thread JIT write-enable register: only bit 21 is writable, the
+  // rest reads as the constant observed on native Darwin.
+  if ((bits & 0xffffffe0) == 0xd53ef1a0) {
+    return rd == 31 ? emit()
+                    : emit((std::string(str(reg(rd))) + " = 0x2010002030100000ul | x[" +
+                            str(guestJitWriteState) + "];"));
+  }
+  if ((bits & 0xffffffe0) == 0xd51ef1a0) {
+    const auto wanted = std::string("(") + str(reg(rd)) + " & 0x200000ul)";
+    return make_instruction(
+        Strings{"if (" + wanted + " != x[" + str(guestJitWriteState) + "]) {",
+                "x[" + str(guestJitWriteState) + "] = " + wanted + ";",
+                "x[33] = " + str(next) + "ul;",
+                "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
+                "x[35] = " + str(kJitWriteStateService) + "ul; x[34] = 4; return;",
+                "}"},
+        PCs{next});
+  }
+  // Darwin on this hardware has no MTE and no TINDEX register: every access
+  // raises SIGILL, so the guest sees the same fault.
+  const auto mteRegister = [&](uint32_t base) {
+    return (bits & 0xffffffe0) == base;
+  };
+  const auto tagCacheOperation =
+      (bits & 0xfffff000) == 0xd50b7000 &&
+      contains({0x43u, 0x44u, 0xa3u, 0xa5u, 0xc3u, 0xc5u, 0xd3u, 0xd5u, 0xe3u, 0xe5u},
+               ((bits >> 4) & 0xf0u) | ((bits >> 5) & 7u));
+  if (tagCacheOperation || mteRegister(0xd53b4060) || mteRegister(0xd51b4060) ||
+      mteRegister(0xd53b42e0) || mteRegister(0xd51b42e0) ||
+      (bits & 0xfffffeff) == 0xd503409f ||
+      (bits & 0xff200000) == 0xd9200000 ||
+      contains({0x68800000u, 0x69000000u, 0x69800000u}, bits & 0xffc00000) ||
+      (bits & 0xffc00000) == 0x91800000 || (bits & 0xffc00000) == 0xd1800000 ||
+      (bits & 0xffe0fc00) == 0x9ac01000 || (bits & 0xffe0fc00) == 0x9ac01400 ||
+      (bits & 0xffe0fc00) == 0x9ac00000 || (bits & 0xffe0fc00) == 0xbac00000) {
+    return make_instruction(
+        Strings{std::string("x[33] = ") + str(pc) + "ul; x[34] = 14; return;"},
+        PCs{});
+  }
   auto conditions = Map<std::string>{{0, (std::string("z"))},
                                      {1, (std::string("!z"))},
                                      {2, (std::string("c"))},

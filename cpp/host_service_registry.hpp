@@ -9,6 +9,7 @@ namespace arm64metal {
 
 inline constexpr int kMemcpyChkFailureService = 184;
 inline constexpr int kMemsetChkFailureService = 198;
+inline constexpr int kJitWriteStateService = 244;
 
 struct HostServiceRegistration {
   std::string_view symbol;

@@ -7305,6 +7305,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bootstrap.errnoSlot = static_cast<std::uint64_t>(currentThread.errnoAddress);
         syncWritableTable(bootstrap.errnoSlot);
         registers[36] = options.dispatchBlocks;
+        registers[guestJitWriteState] = guestScheduler.current().jitWriteProtect ? 0ULL : 0x200000ULL;
         registers[guestFaultAddress] = kNoFault;
         registers[guestCacheFaultAddress] = kNoFault;
         registers[guestCacheFaultWidth] = 0;
@@ -7690,6 +7691,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto exitStatus = static_cast<std::int32_t>(hostRegisters[0]);
                 if (beginExitDrain(0, exitStatus)) continue;
                 return exitStatus;
+            }
+            if (service == kJitWriteStateService) {
+                if (!applyJitWriteProtection(hostRegisters[guestJitWriteState] == 0)) {
+                    throw std::runtime_error("Guest MAP_JIT write-protection state is unavailable");
+                }
+                continue;
             }
             if (service == 141) {
                 registers[0] = signing.restricted ? 1U : 0U;
