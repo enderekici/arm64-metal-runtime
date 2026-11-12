@@ -2120,6 +2120,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     liveThreadStacks.emplace(guestMainThreadID,
         GuestMemoryRange{bootstrap.stack.begin, bootstrap.stack.end});
     std::map<std::uint64_t, GuestMemoryRange> threadStackGuards;
+    std::map<std::uint64_t, GuestMemoryRange> threadStackRanges;
     std::map<std::uint64_t, std::uint32_t> protectedGuestPages;
     initialize_bindings(image, bootstrap);
     initialize_authenticated_pointers(image, bootstrap);
@@ -8509,6 +8510,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (service >= 203 && service <= 212) {
                 const auto address = hostRegisters[0];
                 constexpr std::uint64_t minimumStackSize = 16U * 1024U;
+                if (std::getenv("ARM64_METAL_TRACE_THREADS"))
+                    std::cerr << "arm64-metal pthread-attr service=" << service << " attr=0x"
+                              << hexadecimal(address) << " arg=" << hostRegisters[1] << '\n';
                 std::int32_t result = 0;
                 if (service == 203) {
                     auto* bytes = guestMemory.buffer(address, sizeof(pthread_attr_t), true);
@@ -8688,6 +8692,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto storeThreadWord = [&](std::uint64_t offset, std::uint64_t value) {
                         std::memcpy(threadStorage + offset, &value, sizeof(value));
                     };
+                    threadStackRanges.insert_or_assign(threadId, GuestMemoryRange{guestStackStart, guestStackEnd});
+                    if (std::getenv("ARM64_METAL_TRACE_THREADS"))
+                        std::cerr << "arm64-metal pthread-create thread=" << threadId << " stack=["
+                                  << hexadecimal(guestStackStart) << "," << hexadecimal(guestStackEnd)
+                                  << ") entry=0x" << hexadecimal(entry) << " arg=0x"
+                                  << hexadecimal(hostRegisters[3]) << " raw-x2=0x"
+                                  << hexadecimal(hostRegisters[2]) << " lr=0x" << hexadecimal(hostRegisters[30])
+                                  << " attr=0x" << hexadecimal(hostRegisters[1])
+                                  << " size=" << guestStackSize << " guard=" << guardSize
+                                  << " custom=" << (attributes.stackAddress ? 1 : 0) << '\n';
                     const auto tsdOffset = 16U + guestThreadLocalPrefixBytes;
                     storeThreadWord(tsdOffset, threadId);
                     storeThreadWord(tsdOffset + 8U, allocationAddress);
@@ -9890,7 +9904,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << hexadecimal(registers[33]) << " width "
                               << registers[guestCacheFaultWidth] << " x10=0x"
                               << hexadecimal(registers[10]) << " tp=0x"
-                              << hexadecimal(registers[guestThreadPointer]) << '\n';
+                              << hexadecimal(registers[guestThreadPointer]) << " sp=0x"
+                              << hexadecimal(registers[31]) << " thread=" << guestScheduler.current_id();
+                    const auto range = threadStackRanges.find(guestScheduler.current_id());
+                    if (range != threadStackRanges.end())
+                        std::cerr << " stack=[0x" << hexadecimal(range->second.begin) << ",0x"
+                                  << hexadecimal(range->second.end) << ")";
+                    if (std::getenv("ARM64_METAL_TRACE_THREADS")) {
+                        for (int r = 0; r < 32; ++r)
+                            std::cerr << " x" << r << "=0x" << hexadecimal(registers[r]);
+                    }
+                    std::cerr << '\n';
                 }
                 return delivery.exitStatus;
             }
@@ -9970,6 +9994,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
                 hexadecimal(registers[33]);
             progressTrace.event("raw-syscall", registers[33], syscall);
+            if (syscall == 12) {  // chdir
+                try {
+                    const auto path = guest_cstring(guestMemory, registers[0]);
+                    if (::chdir(path.c_str()) == 0) {
+                        registers[0] = 0;
+                        registers[32] &= ~std::uint64_t{8};
+                    } else {
+                        registers[0] = static_cast<std::uint64_t>(errno);
+                        registers[32] |= 8U;
+                    }
+                } catch (const std::exception&) {
+                    registers[0] = EFAULT;
+                    registers[32] |= 8U;
+                }
+                registers[34] = 0;
+                continue;
+            }
             if (syscall == 60) {  // umask
                 registers[0] = static_cast<std::uint64_t>(guestUmask.set(
                     static_cast<mode_t>(registers[0])));
