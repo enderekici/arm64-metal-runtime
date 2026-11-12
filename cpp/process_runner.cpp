@@ -2548,6 +2548,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t packetCount = 0;
     } previousDispatch;
     std::string lastHostTransition = "none";
+    std::array<std::string, 32> transitionHistory;
+    std::size_t transitionHistoryCount = 0;
+    const auto recordTransition = [&](const std::string& entry) {
+        transitionHistory[transitionHistoryCount++ % transitionHistory.size()] = entry;
+    };
     HostServiceState hostServiceState;
     if (performanceSummary.enabled()) {
         hostServiceState.recordPerformanceHostService = [&](double seconds) {
@@ -3403,6 +3408,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t flags;
         std::uint64_t context;
         std::uint32_t qlimit = 5;
+        bool portSet = false;
     };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::set<std::uint32_t> guestDeadPortNames;
@@ -7606,6 +7612,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto service = registers[35];
             lastHostTransition = "service=" + std::to_string(service) + "@pc=0x" +
                 hexadecimal(hostRegisters[33]);
+            recordTransition(lastHostTransition + " x0=0x" + hexadecimal(hostRegisters[0]) +
+                " x1=0x" + hexadecimal(hostRegisters[1]));
             progressTrace.event("host-service", hostRegisters[33], service);
             if (service == kMemcpyChkFailureService ||
                 service == kMemsetChkFailureService) {
@@ -9974,6 +9982,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << (status == 14 ? "SIGILL" : "SIGTRAP") << " at PC 0x"
                               << hexadecimal(registers[33]) << " LR 0x"
                               << hexadecimal(registers[30]) << '\n';
+                    if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr) {
+                        std::uint64_t best = 0;
+                        std::string bestName;
+                        for (std::size_t i = 0; i < imageRegistry.size(); ++i) {
+                            const auto header = *imageRegistry.header_at(i);
+                            if (header <= registers[33] && header >= best) {
+                                best = header;
+                                bestName = std::string(*imageRegistry.name_at(i));
+                            }
+                        }
+                        std::cerr << "arm64-metal fatal-signal image=0x" << hexadecimal(best)
+                                  << " " << bestName << '\n';
+                        for (std::size_t r = 0; r < 31; ++r)
+                            std::cerr << " x" << r << "=0x" << hexadecimal(registers[r]);
+                        std::cerr << '\n';
+                        const auto count = std::min(transitionHistoryCount,
+                                                    transitionHistory.size());
+                        for (std::size_t i = transitionHistoryCount - count;
+                             i < transitionHistoryCount; ++i)
+                            std::cerr << "  history " << transitionHistory[i % transitionHistory.size()]
+                                      << '\n';
+                    }
                 }
                 return delivery.exitStatus;
             }
@@ -10021,6 +10051,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto syscall = registers[16];
             lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
                 hexadecimal(registers[33]);
+            recordTransition(lastHostTransition + " x0=0x" + hexadecimal(registers[0]) +
+                " x1=0x" + hexadecimal(registers[1]) + " x2=0x" + hexadecimal(registers[2]));
             progressTrace.event("raw-syscall", registers[33], syscall);
             if (syscall == 12) {  // chdir
                 try {
@@ -12716,13 +12748,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernInvalidAddress = 1;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 constexpr std::uint32_t receiveRight = 1;
+                constexpr std::uint32_t portSetRight = 3;
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 std::uint64_t result = kernSuccess;
                 const auto taskRight = guestSendRightUrefs.find(target);
                 if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
                     taskRight->second == 0) {
                     result = machSendInvalidDest;
-                } else if (registers[1] != receiveRight) {
+                } else if (registers[1] != receiveRight && registers[1] != portSetRight) {
                     result = kernInvalidValue;
                 } else if (nextGuestReceiveName >=
                            std::numeric_limits<std::uint32_t>::max() - 4) {
@@ -12732,10 +12765,40 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         auto* output = guestMemory.buffer(registers[2], sizeof(std::uint32_t), true);
                         const auto name = nextGuestReceiveName;
                         nextGuestReceiveName += 4;
-                        guestReceiveRights.emplace(name, GuestReceiveRight{0, 0});
+                        GuestReceiveRight right{0, 0};
+                        right.portSet = registers[1] == portSetRight;
+                        guestReceiveRights.emplace(name, right);
                         std::memcpy(output, &name, sizeof(name));
                     } catch (const std::exception&) {
                         result = kernInvalidAddress;
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-22))) {
+                // _kernelrpc_mach_port_insert_member_trap(task, name, pset)
+                constexpr std::uint64_t kernSuccess = 0;
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                const auto pset = static_cast<std::uint32_t>(registers[2]);
+                std::uint64_t result = kernSuccess;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = machSendInvalidDest;
+                } else {
+                    const auto member = guestReceiveRights.find(name);
+                    const auto set = guestReceiveRights.find(pset);
+                    if (member == guestReceiveRights.end() ||
+                        set == guestReceiveRights.end()) {
+                        result = kernInvalidName;
+                    } else if (member->second.portSet || !set->second.portSet) {
+                        result = kernInvalidRight;
                     }
                 }
                 registers[0] = result;
