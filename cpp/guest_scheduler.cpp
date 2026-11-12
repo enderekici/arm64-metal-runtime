@@ -490,6 +490,29 @@ bool GuestScheduler::sleep_current(std::uint64_t deadline,
     return true;
 }
 
+bool GuestScheduler::wait_ulock(std::uint64_t address,
+                                std::optional<std::uint64_t> deadline, bool noErrno) {
+    auto& thread = current();
+    if (thread.wait.has_value()) return false;
+    thread.wait = GuestUlockWait{address, deadline, noErrno};
+    ulockWaiters_[address].push_back(currentId_);
+    return true;
+}
+
+std::size_t GuestScheduler::wake_ulock(std::uint64_t address, bool all) {
+    const auto found = ulockWaiters_.find(address);
+    if (found == ulockWaiters_.end()) return 0;
+    std::size_t woken = 0;
+    while (!found->second.empty() && (all || woken == 0)) {
+        const auto id = found->second.front();
+        found->second.pop_front();
+        wake(id, 0);
+        ++woken;
+    }
+    if (found->second.empty()) ulockWaiters_.erase(found);
+    return woken;
+}
+
 bool GuestScheduler::wait_mach_receive(std::uint32_t port,
                                        std::optional<std::uint64_t> deadline) {
     auto& thread = current();
@@ -514,6 +537,26 @@ std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
         if (machReceive != nullptr && machReceive->deadline.has_value() &&
             *machReceive->deadline <= nowNanoseconds) {
             wake(thread.id, machReceiveTimedOut);
+            ++expired;
+            continue;
+        }
+        if (const auto* ulock = std::get_if<GuestUlockWait>(&*thread.wait)) {
+            if (!ulock->deadline.has_value() || *ulock->deadline > nowNanoseconds) continue;
+            const auto queue = ulockWaiters_.find(ulock->address);
+            if (queue != ulockWaiters_.end()) {
+                auto& waiters = queue->second;
+                waiters.erase(std::remove(waiters.begin(), waiters.end(), thread.id),
+                              waiters.end());
+                if (waiters.empty()) ulockWaiters_.erase(queue);
+            }
+            const bool noErrno = ulock->noErrno;
+            wake(thread.id, noErrno ? -ETIMEDOUT : ETIMEDOUT);
+            if (noErrno) {
+                thread.registers[0] = static_cast<std::uint64_t>(
+                    static_cast<std::int64_t>(-ETIMEDOUT));
+            } else {
+                thread.registers[32] |= 8U;
+            }
             ++expired;
             continue;
         }
@@ -557,6 +600,8 @@ std::optional<std::uint64_t> GuestScheduler::earliest_deadline() const noexcept 
             deadline = condition->deadline;
         } else if (const auto* semaphore = std::get_if<GuestSemaphoreWait>(&*entry.second.wait)) {
             deadline = semaphore->deadline;
+        } else if (const auto* ulock = std::get_if<GuestUlockWait>(&*entry.second.wait)) {
+            deadline = ulock->deadline;
         } else if (const auto* machReceive =
                        std::get_if<GuestMachReceiveWait>(&*entry.second.wait)) {
             deadline = machReceive->deadline;

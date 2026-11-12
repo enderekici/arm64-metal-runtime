@@ -10030,6 +10030,76 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+            if (syscall == 515 || syscall == 516 || syscall == 544) {  // ulock_wait/wake/wait2
+                constexpr std::uint32_t ulfWakeAll = 0x100;
+                constexpr std::uint32_t ulfNoErrno = 0x01000000;
+                const auto operation = static_cast<std::uint32_t>(registers[0]);
+                const auto address = registers[1];
+                const bool noErrno = (operation & ulfNoErrno) != 0;
+                const auto finish = [&](std::int64_t result) {
+                    if (result >= 0) {
+                        registers[0] = static_cast<std::uint64_t>(result);
+                        registers[32] &= ~std::uint64_t{8};
+                    } else if (noErrno) {
+                        registers[0] = static_cast<std::uint64_t>(result);
+                        registers[32] &= ~std::uint64_t{8};
+                    } else {
+                        registers[0] = static_cast<std::uint64_t>(-result);
+                        registers[32] |= 8U;
+                    }
+                    registers[34] = 0;
+                };
+                const auto kind = operation & 0xffU;
+                if (kind < 1 || kind > 6 || address == 0) {
+                    finish(-EINVAL);
+                    continue;
+                }
+                if (syscall == 516) {
+                    finish(guestScheduler.wake_ulock(
+                        address, (operation & ulfWakeAll) != 0) == 0 ? -ENOENT : 0);
+                    continue;
+                }
+                const bool wide = kind >= 4;
+                std::uint64_t current = 0;
+                try {
+                    const auto* word = guestMemory.buffer(address, wide ? 8 : 4, false);
+                    std::memcpy(&current, word, wide ? 8 : 4);
+                } catch (const std::exception&) {
+                    finish(-EFAULT);
+                    continue;
+                }
+                const auto expected = wide ? registers[2]
+                                           : static_cast<std::uint64_t>(
+                                                 static_cast<std::uint32_t>(registers[2]));
+                if (current != expected) {
+                    finish(0);
+                    continue;
+                }
+                std::optional<std::uint64_t> deadline;
+                const auto timeout = syscall == 544 ? registers[3]
+                    : static_cast<std::uint64_t>(static_cast<std::uint32_t>(registers[3]));
+                if (timeout != 0) {
+                    const auto nanoseconds = syscall == 544 ? timeout
+                        : (timeout > std::numeric_limits<std::uint64_t>::max() / 1000
+                               ? std::numeric_limits<std::uint64_t>::max() : timeout * 1000);
+                    const auto now = monotonicNanoseconds();
+                    deadline = now + std::min(
+                        nanoseconds, std::numeric_limits<std::uint64_t>::max() - now);
+                }
+                if (!guestScheduler.wait_ulock(address, deadline, noErrno)) {
+                    finish(-EDEADLK);
+                    continue;
+                }
+                registers[0] = 0;
+                registers[32] &= ~std::uint64_t{8};
+                const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
+                auto live = std::vector<std::uint64_t>(state,
+                    state + stateBuffer.size() / sizeof(std::uint64_t));
+                if (!syncThreadSwitch(false, live)) {
+                    throw std::runtime_error("Guest ulock wait has no runnable thread");
+                }
+                continue;
+            }
             if (syscall == 60) {  // umask
                 registers[0] = static_cast<std::uint64_t>(guestUmask.set(
                     static_cast<mode_t>(registers[0])));

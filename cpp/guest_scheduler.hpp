@@ -136,6 +136,9 @@ public:
     [[nodiscard]] std::int32_t signal_semaphore(std::uint64_t name);
     [[nodiscard]] bool sleep_current(std::uint64_t deadline,
                                     std::optional<std::uint64_t> remainder = std::nullopt);
+    [[nodiscard]] bool wait_ulock(std::uint64_t address,
+                                  std::optional<std::uint64_t> deadline, bool noErrno);
+    [[nodiscard]] std::size_t wake_ulock(std::uint64_t address, bool all);
     [[nodiscard]] bool wait_mach_receive(std::uint32_t port,
                                          std::optional<std::uint64_t> deadline);
     [[nodiscard]] std::size_t expire_waiters(std::uint64_t nowNanoseconds);
@@ -157,6 +160,7 @@ private:
     std::optional<std::uint64_t> retireCurrent_;
     std::map<std::uint64_t, GuestMutex> mutexes_;
     std::map<std::uint64_t, std::deque<std::uint64_t>> conditionWaiters_;
+    std::map<std::uint64_t, std::deque<std::uint64_t>> ulockWaiters_;
     struct SemaphoreState {
         std::int32_t policy = 0;
         std::uint64_t value = 0;
