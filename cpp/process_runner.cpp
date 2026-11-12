@@ -9969,6 +9969,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (status == 3 &&
                     hostServiceState.signals.action(fault.signal).handler == 0) {
                     std::cerr << "arm64-metal: Guest process reached an invalid code address\n";
+                } else if (status != 3) {
+                    std::cerr << "arm64-metal: Guest process terminated by "
+                              << (status == 14 ? "SIGILL" : "SIGTRAP") << " at PC 0x"
+                              << hexadecimal(registers[33]) << " LR 0x"
+                              << hexadecimal(registers[30]) << '\n';
                 }
                 return delivery.exitStatus;
             }
