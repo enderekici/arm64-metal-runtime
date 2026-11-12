@@ -2502,12 +2502,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::int64_t activeEntry = initialEntry;
     std::size_t startupIndex = 0;
     std::string lastKernelSelectionPath = "initial-startup-entry";
+    std::uint64_t stopPcForDiagnostic = 0;
     std::array<std::string, 32> transitionHistory;
     std::size_t transitionHistoryCount = 0;
     const auto recordTransition = [&](const std::string& entry) {
         transitionHistory[transitionHistoryCount++ % transitionHistory.size()] = entry;
     };
+    std::function<void(std::uint64_t)> describeStopPc;
     const auto dumpTransitions = [&]() {
+        if (describeStopPc && stopPcForDiagnostic != 0) describeStopPc(stopPcForDiagnostic);
         if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") == nullptr) return;
         const auto count = std::min(transitionHistoryCount, transitionHistory.size());
         for (std::size_t i = transitionHistoryCount - count; i < transitionHistoryCount; ++i)
@@ -2520,6 +2523,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
               image.cache_reader->selectorStubInstruction(entry).has_value()));
         if (!image.is_code(entry) && imports.find(entry) == imports.end() &&
             guestStubs.find(entry) == guestStubs.end() && !selectorStub) {
+            stopPcForDiagnostic = static_cast<std::uint64_t>(entry);
             dumpTransitions();
             throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
                                      hexadecimal(static_cast<std::uint64_t>(entry)));
@@ -3393,6 +3397,51 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, VmReservation> vmReservations;
     std::set<std::uint64_t> dynamicCodeRegionStarts;
     std::uint64_t jitTraceGeneration = 0;
+    describeStopPc = [&](std::uint64_t pc) {
+        std::cerr << "  stop-pc 0x" << hexadecimal(pc) << " mem "
+                  << guestMemory.describe_near(pc, 0x2000000) << '\n';
+        for (std::uint64_t index = 0; index < imageRegistry.size(); ++index) {
+            const auto header = imageRegistry.header_at(index);
+            const auto name = imageRegistry.name_at(index);
+            if (!header || !name || imageRegistry.cache_backed_at(index)) continue;
+            std::cerr << "  image 0x" << hexadecimal(*header) << " " << *name << '\n';
+        }
+        for (const auto& range : image.text_regions) {
+            if (range.second + 0x2000000 >= static_cast<std::int64_t>(pc) &&
+                range.first <= static_cast<std::int64_t>(pc) + 0x2000000) {
+                std::cerr << "  text 0x" << hexadecimal(static_cast<std::uint64_t>(range.first))
+                          << "-0x" << hexadecimal(static_cast<std::uint64_t>(range.second)) << '\n';
+            }
+        }
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            for (const auto& region : allocation.regions) {
+                if (region.end + 0x1000000 < pc || region.begin > pc + 0x1000000) continue;
+                std::cerr << "  vm 0x" << hexadecimal(region.begin) << "-0x"
+                          << hexadecimal(region.end) << " r=" << region.readable
+                          << " w=" << region.writable << " x=" << region.executable
+                          << " max=" << region.maximumProtection << " jit=" << region.jit
+                          << " tag=" << region.tag << '\n';
+            }
+        }
+        for (const auto& [unused, reservation] : vmReservations) {
+            (void)unused;
+            if (reservation.end + 0x1000000 < pc || reservation.begin > pc + 0x1000000) continue;
+            std::cerr << "  reservation 0x" << hexadecimal(reservation.begin) << "-0x"
+                      << hexadecimal(reservation.end) << " cur=" << reservation.currentProtection
+                      << " max=" << reservation.maximumProtection << " jit=" << reservation.jit
+                      << '\n';
+        }
+        if (guestMemory.is_guest_readable(pc, 16)) {
+            const auto* bytes = guestMemory.buffer(pc, 16);
+            std::uint32_t words[4];
+            std::memcpy(words, bytes, 16);
+            std::cerr << "  words " << std::hex << words[0] << ' ' << words[1] << ' ' << words[2]
+                      << ' ' << words[3] << std::dec << '\n';
+        } else {
+            std::cerr << "  words unreadable\n";
+        }
+    };
     const auto executableJitOwnerFor = [&](std::uint64_t pc)
         -> std::optional<std::tuple<std::uint64_t, std::uint64_t,
                                     std::size_t, bool>> {

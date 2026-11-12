@@ -198,6 +198,9 @@ struct SharedCache::Impl {
     std::vector<std::uint8_t> uuid;
     std::vector<CacheRegion> publicRegions;
     std::vector<SharedCache::TproMapping> tproMappings;
+    // Slots that dyld binds at launch to the default implementation of a
+    // function variant; the cache file stores zero for them.
+    std::unordered_map<std::uint64_t, std::uint64_t> functionVariantSlots;
 
     explicit Impl() {
         const std::string filename = "dyld_shared_cache_arm64e";
@@ -307,10 +310,50 @@ struct SharedCache::Impl {
                 }
             }
         }
+        if (headerSize >= 536) loadFunctionVariants(readWord(*main, 520, 8), readWord(*main, 528, 8));
         publicRegions.reserve(mappings.size());
         for (const auto& mapping : mappings) {
             publicRegions.push_back(CacheRegion{guestAddress(mapping.start), mapping.size, mapping.flags,
                                                 mapping.protection, mapping.maximumProtection});
+        }
+    }
+
+    void loadFunctionVariants(std::uint64_t address, std::uint64_t size) {
+        if (address == 0 || size < 8) return;
+        const auto readLE = [](const std::vector<std::uint8_t>& data, std::size_t offset,
+                               std::size_t width) {
+            std::uint64_t value = 0;
+            for (std::size_t i = 0; i < width; ++i)
+                value |= static_cast<std::uint64_t>(data.at(offset + i)) << (8 * i);
+            return value;
+        };
+        try {
+            const auto info = bytes(address, size);
+            if (readLE(info, 0, 4) != 1) return;
+            const auto count = readLE(info, 4, 4);
+            if (count > (size - 8) / 32) return;
+            for (std::uint64_t index = 0; index < count; ++index) {
+                const auto entry = static_cast<std::size_t>(8 + index * 32);
+                const auto slot = readLE(info, entry, 8);
+                const auto tableSet = readLE(info, entry + 8, 8);
+                const auto imageBase = readLE(info, entry + 16, 8);
+                const auto tableIndex = readLE(info, entry + 24, 8) & 0xfffU;
+                const auto header = bytes(tableSet, 4);
+                const auto tableCount = readLE(header, 0, 4);
+                if (tableIndex >= tableCount) continue;
+                const auto offsets = bytes(tableSet + 4, tableCount * 4);
+                const auto tableAddress = tableSet + readLE(offsets, tableIndex * 4, 4);
+                const auto entryCount = readLE(bytes(tableAddress + 4, 4), 0, 4);
+                if (entryCount == 0 || entryCount > 64) continue;
+                const auto entries = bytes(tableAddress + 8, entryCount * 8);
+                for (std::uint64_t e = 0; e < entryCount; ++e) {
+                    if (readLE(entries, e * 8 + 4, 4) != 0) continue;
+                    functionVariantSlots.emplace(slot, imageBase + readLE(entries, e * 8, 4));
+                    break;
+                }
+            }
+        } catch (const std::exception&) {
+            functionVariantSlots.clear();
         }
     }
 
@@ -1205,7 +1248,12 @@ std::optional<std::int64_t> SharedCache::stubTarget(std::int64_t guest) const {
     if (slotSigned < 0 || (slotSigned & 7) != 0) return std::nullopt;
     const auto slot = static_cast<std::uint64_t>(slotSigned);
     const auto chain = impl_->rebases(slot, slot + 8, nullptr);
-    if (chain.empty() || chain.front().location != slot || !chain.front().authentication) return std::nullopt;
+    if (chain.empty()) {
+        const auto variant = impl_->functionVariantSlots.find(slot);
+        if (variant == impl_->functionVariantSlots.end()) return std::nullopt;
+        return guestAddress(variant->second);
+    }
+    if (chain.front().location != slot || !chain.front().authentication) return std::nullopt;
     const auto auth = *chain.front().authentication;
     if (!auth.addressDiversity || auth.dataKey || auth.diversity != 0) return std::nullopt;
     return guestAddress(chain.front().target);
