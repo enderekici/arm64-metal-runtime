@@ -444,6 +444,7 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 5, 5), 0U, 20U, 64U};
   }
   if ((bits & 0x7f3efc00U) == 0x1e220000U) {
+    if (field(bits, 22, 2) > 1U) return std::nullopt;
     const auto floatWidth = field(bits, 22, 1) != 0 ? 64U : 32U;
     const auto sourceWidth = field(bits, 31, 1) != 0 ? 64U : 32U;
     const auto signedSource = field(bits, 16, 1) == 0 ? 1U : 0U;

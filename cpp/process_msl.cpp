@@ -129,20 +129,29 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     // Scalar FP arithmetic on integers (Metal has no binary64). Value of an
     // operand is significand/2^63 * 2^exponent with bit 63 set.
     struct FpOperand { ulong sign; int exponent; ulong significand; uint kind; };
-    uint fp_kind(ulong bits, bool wide) {
-        uint fraction_bits = wide ? 52u : 23u;
-        uint exponent_bits = wide ? 11u : 8u;
+    // Format codes: 0 binary32, 1 binary64, 2 binary16.
+    uint fp_fbits(uint f) { return f == 1u ? 52u : (f == 0u ? 23u : 10u); }
+    uint fp_ebits(uint f) { return f == 1u ? 11u : (f == 0u ? 8u : 5u); }
+    int fp_bias(uint f) { return f == 1u ? 1023 : (f == 0u ? 127 : 15); }
+    uint fp_sbit(uint f) { return fp_fbits(f) + fp_ebits(f); }
+    ulong fp_vmask(uint f) { return f == 1u ? ~0ul : (f == 0u ? 0xfffffffful : 0xfffful); }
+    ulong fp_infinity_bits(uint f) { return ((1ul << fp_ebits(f)) - 1ul) << fp_fbits(f); }
+    ulong fp_default_nan_bits(uint f) { return fp_infinity_bits(f) | (1ul << (fp_fbits(f) - 1u)); }
+    bool fp_flush(uint f, ulong fpcr) { return (fpcr & (1ul << (f == 2u ? 19u : 24u))) != 0; }
+    uint fp_kind(ulong bits, uint wide) {
+        uint fraction_bits = fp_fbits(wide);
+        uint exponent_bits = fp_ebits(wide);
         ulong exponent = (bits >> fraction_bits) & ((1ul << exponent_bits) - 1ul);
         ulong fraction = bits & ((1ul << fraction_bits) - 1ul);
         if (exponent != (1ul << exponent_bits) - 1ul) return 1u;
         if (fraction == 0) return 2u;
         return ((fraction >> (fraction_bits - 1u)) & 1ul) != 0 ? 3u : 4u;
     }
-    FpOperand fp_unpack(ulong bits, bool wide, device ulong *state) {
-        uint fraction_bits = wide ? 52u : 23u;
-        uint exponent_bits = wide ? 11u : 8u;
-        int bias = wide ? 1023 : 127;
-        bits &= wide ? ~0ul : 0xfffffffful;
+    FpOperand fp_unpack(ulong bits, uint wide, device ulong *state) {
+        uint fraction_bits = fp_fbits(wide);
+        uint exponent_bits = fp_ebits(wide);
+        int bias = fp_bias(wide);
+        bits &= fp_vmask(wide);
         FpOperand result;
         result.sign = (bits >> (fraction_bits + exponent_bits)) & 1ul;
         ulong exponent = (bits >> fraction_bits) & ((1ul << exponent_bits) - 1ul);
@@ -158,7 +167,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
             result.significand = 0;
             result.kind = 0u;
             if (fraction == 0) return result;
-            if ((state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+            if (fp_flush(wide, state[@GUEST_FPCR@])) {
                 state[@GUEST_FPSR@] |= 128ul;
                 return result;
             }
@@ -173,19 +182,19 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         result.significand = (fraction | (1ul << fraction_bits)) << (63u - fraction_bits);
         return result;
     }
-    ulong fp_sign_bit(ulong sign, bool wide) { return sign << (wide ? 63u : 31u); }
-    ulong fp_default_nan(bool wide) { return wide ? 0x7ff8000000000000ul : 0x7fc00000ul; }
-    ulong fp_infinity(ulong sign, bool wide) {
-        return fp_sign_bit(sign, wide) | (wide ? 0x7ff0000000000000ul : 0x7f800000ul);
+    ulong fp_sign_bit(ulong sign, uint wide) { return sign << (fp_sbit(wide)); }
+    ulong fp_default_nan(uint wide) { return fp_default_nan_bits(wide); }
+    ulong fp_infinity(ulong sign, uint wide) {
+        return fp_sign_bit(sign, wide) | (fp_infinity_bits(wide));
     }
-    ulong fp_quiet(ulong bits, bool wide, device ulong *state) {
+    ulong fp_quiet(ulong bits, uint wide, device ulong *state) {
         if ((state[@GUEST_FPCR@] & (1ul << 25)) != 0) return fp_default_nan(wide);
-        return bits | (1ul << (wide ? 51u : 22u));
+        return bits | (1ul << (fp_fbits(wide) - 1u));
     }
     // ARM FPProcessNaNs: signaling first, then quiet, operand order preserved.
-    bool fp_process_nans(ulong left, ulong right, bool wide, device ulong *state,
+    bool fp_process_nans(ulong left, ulong right, uint wide, device ulong *state,
                          thread ulong &result) {
-        ulong mask = wide ? ~0ul : 0xfffffffful;
+        ulong mask = fp_vmask(wide);
         left &= mask;
         right &= mask;
         uint left_kind = fp_kind(left, wide);
@@ -206,16 +215,16 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return true;
     }
     // Round value = significand/2^63 * 2^exponent (bit 63 set, bit 0 sticky).
-    ulong fp_pack(ulong sign, int exponent, ulong significand, bool wide, device ulong *state) {
-        uint precision = wide ? 53u : 24u;
-        int minimum = wide ? -1022 : -126;
-        uint fraction_bits = wide ? 52u : 23u;
-        int bias = wide ? 1023 : 127;
+    ulong fp_pack(ulong sign, int exponent, ulong significand, uint wide, device ulong *state) {
+        uint precision = fp_fbits(wide) + 1u;
+        int minimum = 1 - fp_bias(wide);
+        uint fraction_bits = fp_fbits(wide);
+        int bias = fp_bias(wide);
         ulong fpcr = state[@GUEST_FPCR@];
         uint mode = uint(fpcr >> 22) & 3u;
         ulong sign_bit = fp_sign_bit(sign, wide);
         bool tiny = exponent < minimum;
-        if (tiny && (fpcr & (1ul << 24)) != 0) {
+        if (tiny && fp_flush(wide, fpcr)) {
             state[@GUEST_FPSR@] |= 8ul;
             return sign_bit;
         }
@@ -246,7 +255,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
             if (tiny) state[@GUEST_FPSR@] |= 8ul;
         }
         kept += up ? 1ul : 0ul;
-        ulong infinity = wide ? 0x7ff0000000000000ul : 0x7f800000ul;
+        ulong infinity = fp_infinity_bits(wide);
         ulong bits;
         if (tiny) {
             bits = kept;
@@ -260,7 +269,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         }
         return sign_bit | bits;
     }
-    ulong fp_add_operands(FpOperand a, FpOperand b, bool wide, device ulong *state) {
+    ulong fp_add_operands(FpOperand a, FpOperand b, uint wide, device ulong *state) {
         uint mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
         if (a.kind == 2u || b.kind == 2u) {
             if (a.kind == 2u && b.kind == 2u && a.sign != b.sign) {
@@ -294,7 +303,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         uint zeros = clz(sum);
         return fp_pack(a.sign, a.exponent + 1 - int(zeros), sum << zeros, wide, state);
     }
-    ulong fp_multiply_operands(FpOperand a, FpOperand b, bool wide, device ulong *state) {
+    ulong fp_multiply_operands(FpOperand a, FpOperand b, uint wide, device ulong *state) {
         ulong sign = a.sign ^ b.sign;
         if ((a.kind == 2u && b.kind == 0u) || (a.kind == 0u && b.kind == 2u)) {
             state[@GUEST_FPSR@] |= 1ul;
@@ -313,7 +322,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_pack(sign, exponent, high | (low != 0 ? 1ul : 0ul), wide, state);
     }
     // 0 FMUL, 2 FADD, 3 FSUB, 8 FNMUL
-    ulong fp_arithmetic(uint operation, ulong left, ulong right, bool wide, device ulong *state) {
+    ulong fp_arithmetic(uint operation, ulong left, ulong right, uint wide, device ulong *state) {
         ulong nan_result;
         if (fp_process_nans(left, right, wide, state, nan_result))
             return operation == 8u ? nan_result ^ fp_sign_bit(1ul, wide) : nan_result;
@@ -327,18 +336,18 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         ulong product = fp_multiply_operands(a, b, wide, state);
         return operation == 8u ? product ^ fp_sign_bit(1ul, wide) : product;
     }
-    ulong fp_flushed(ulong bits, bool wide, device ulong *state) {
+    ulong fp_flushed(ulong bits, uint wide, device ulong *state) {
         FpOperand value = fp_unpack(bits, wide, state);
         if (value.kind == 0u) return fp_sign_bit(value.sign, wide);
-        return bits & (wide ? ~0ul : 0xfffffffful);
+        return bits & (fp_vmask(wide));
     }
-    ulong fp_order_key(ulong bits, bool wide) {
-        ulong sign = wide ? (1ul << 63) : (1ul << 31);
-        return (bits & sign) != 0 ? ~bits & (wide ? ~0ul : 0xfffffffful) : bits | sign;
+    ulong fp_order_key(ulong bits, uint wide) {
+        ulong sign = (1ul << fp_sbit(wide));
+        return (bits & sign) != 0 ? ~bits & (fp_vmask(wide)) : bits | sign;
     }
     // 4 FMAX, 5 FMIN, 6 FMAXNM, 7 FMINNM
-    ulong fp_extreme(uint operation, ulong left, ulong right, bool wide, device ulong *state) {
-        ulong mask = wide ? ~0ul : 0xfffffffful;
+    ulong fp_extreme(uint operation, ulong left, ulong right, uint wide, device ulong *state) {
+        ulong mask = fp_vmask(wide);
         left &= mask;
         right &= mask;
         if (operation >= 6u) {
@@ -356,8 +365,8 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
             : fp_order_key(left, wide) <= fp_order_key(right, wide);
         return pick_left ? left : right;
     }
-    ulong fp_square_root(ulong bits, bool wide, device ulong *state) {
-        ulong mask = wide ? ~0ul : 0xfffffffful;
+    ulong fp_square_root(ulong bits, uint wide, device ulong *state) {
+        ulong mask = fp_vmask(wide);
         bits &= mask;
         uint kind = fp_kind(bits, wide);
         if (kind >= 3u) {
@@ -393,7 +402,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     // Fused multiply-add: result = (negate_addend ? -a : a) + (negate_product ? -(n*m) : n*m)
     // with one rounding, using 128-bit significands.
     ulong fp_fused(ulong a_bits, ulong n_bits, ulong m_bits, bool negate_product,
-                   bool negate_addend, bool wide, device ulong *state) {
+                   bool negate_addend, uint wide, device ulong *state) {
         if (negate_addend) a_bits ^= fp_sign_bit(1ul, wide);
         if (negate_product) n_bits ^= fp_sign_bit(1ul, wide);
         FpOperand a = fp_unpack(a_bits, wide, state);
@@ -408,7 +417,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
             if (a.kind == 4u || n.kind == 4u || m.kind == 4u) state[@GUEST_FPSR@] |= 1ul;
             ulong source = a.kind == 4u ? a_bits : n.kind == 4u ? n_bits : m.kind == 4u ? m_bits :
                            a.kind == 3u ? a_bits : n.kind == 3u ? n_bits : m_bits;
-            return fp_quiet(source & (wide ? ~0ul : 0xfffffffful), wide, state);
+            return fp_quiet(source & (fp_vmask(wide)), wide, state);
         }
         if (invalid_product) {
             state[@GUEST_FPSR@] |= 1ul;
@@ -497,6 +506,35 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_pack(sign_big, big_exponent + 1 - int(zeros),
                        high | (low != 0 ? 1ul : 0ul), wide, state);
     }
+    // FCVT between any two of binary16/32/64 (format codes as fp_fbits).
+    ulong fp_convert(ulong bits, uint source, uint destination, device ulong *state) {
+        bits &= fp_vmask(source);
+        ulong fpcr = state[@GUEST_FPCR@];
+        uint kind = fp_kind(bits, source);
+        ulong sign = (bits >> fp_sbit(source)) & 1ul;
+        if (kind >= 3u) {
+            if (kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+            if ((fpcr & (1ul << 25)) != 0) return fp_default_nan(destination);
+            uint source_fraction = fp_fbits(source);
+            uint destination_fraction = fp_fbits(destination);
+            ulong fraction = bits & ((1ul << (source_fraction - 1u)) - 1ul);
+            fraction = destination_fraction >= source_fraction
+                ? fraction << (destination_fraction - source_fraction)
+                : fraction >> (source_fraction - destination_fraction);
+            return fp_sign_bit(sign, destination) | fp_infinity_bits(destination) |
+                   (1ul << (destination_fraction - 1u)) | fraction;
+        }
+        FpOperand value = fp_unpack(bits, source, state);
+        if (value.kind == 0u) return fp_sign_bit(value.sign, destination);
+        if (value.kind == 2u) return fp_infinity(value.sign, destination);
+        return fp_pack(value.sign, value.exponent, value.significand, destination, state);
+    }
+    // SCVTF/UCVTF: (negative ? -magnitude : magnitude) / 2^fixed_bits.
+    ulong fp_from_integer(ulong magnitude, ulong sign, uint fixed_bits, uint format, device ulong *state) {
+        if (magnitude == 0) return 0ul;
+        uint zeros = clz(magnitude);
+        return fp_pack(sign, 63 - int(zeros) - int(fixed_bits), magnitude << zeros, format, state);
+    }
     // Round a finite nonzero value to an integer magnitude. Rounding modes:
     // 0 ties-even, 1 +inf, 2 -inf, 3 zero, 4 ties-away. 'huge' when >= 2^64.
     ulong fp_round_magnitude(FpOperand value, uint mode, thread bool &inexact, thread bool &huge) {
@@ -530,8 +568,8 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return kept + (up ? 1ul : 0ul);
     }
     // FRINT*: mode 0..4 as above, 5 = current FPCR mode; exact flag only for FRINTX.
-    ulong fp_round_to_integral(ulong bits, uint mode, bool signal_inexact, bool wide, device ulong *state) {
-        bits &= wide ? ~0ul : 0xfffffffful;
+    ulong fp_round_to_integral(ulong bits, uint mode, bool signal_inexact, uint wide, device ulong *state) {
+        bits &= fp_vmask(wide);
         uint kind = fp_kind(bits, wide);
         if (kind >= 3u) {
             if (kind == 4u) state[@GUEST_FPSR@] |= 1ul;
@@ -550,9 +588,9 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_pack(value.sign, 63 - int(zeros), integer << zeros, wide, state);
     }
     // FCVT{N,P,M,Z,A}{S,U} to a W or X destination (value returned zero-extended).
-    ulong fp_to_integer(ulong bits, bool wide_source, bool wide_destination, bool is_unsigned,
-                        uint mode, device ulong *state) {
-        bits &= wide_source ? ~0ul : 0xfffffffful;
+    ulong fp_to_integer_fixed(ulong bits, uint wide_source, uint wide_destination, bool is_unsigned,
+                              uint mode, uint fixed_bits, device ulong *state) {
+        bits &= fp_vmask(wide_source);
         uint kind = fp_kind(bits, wide_source);
         ulong width_mask = wide_destination ? ~0ul : 0xfffffffful;
         ulong signed_limit = wide_destination ? (1ul << 63) : (1ul << 31);
@@ -563,6 +601,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         FpOperand value = fp_unpack(bits, wide_source, state);
         bool negative = value.sign != 0;
         if (value.kind == 0u) return 0ul;
+        if (value.kind == 1u) value.exponent += int(fixed_bits);
         ulong magnitude = 0ul;
         bool inexact = false;
         bool overflow = false;
@@ -587,20 +626,24 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         if (inexact) state[@GUEST_FPSR@] |= 16ul;
         return (negative ? 0ul - magnitude : magnitude) & width_mask;
     }
+    ulong fp_to_integer(ulong bits, uint wide_source, uint wide_destination, bool is_unsigned,
+                        uint mode, device ulong *state) {
+        return fp_to_integer_fixed(bits, wide_source, wide_destination, is_unsigned, mode, 0u, state);
+    }
     // IEEE-754 scalar divide using integer significands. Metal lacks binary64;
     // this also gives binary32 the guest FPCR rounding mode and FPSR flags.
-    ulong fp_divide(ulong left, ulong right, bool wide, device ulong *state) {
-        uint fraction = wide ? 52u : 23u;
-        uint exponent_bits = wide ? 11u : 8u;
-        uint bias = wide ? 1023u : 127u;
-        int minimum_exponent = wide ? -1022 : -126;
-        int maximum_exponent = wide ? 1023 : 127;
+    ulong fp_divide(ulong left, ulong right, uint wide, device ulong *state) {
+        uint fraction = fp_fbits(wide);
+        uint exponent_bits = fp_ebits(wide);
+        uint bias = uint(fp_bias(wide));
+        int minimum_exponent = 1 - fp_bias(wide);
+        int maximum_exponent = fp_bias(wide);
         uint sign_bit = fraction + exponent_bits;
         ulong sign_mask = 1ul << sign_bit;
         ulong fraction_mask = (1ul << fraction) - 1ul;
         ulong exponent_limit = (1ul << exponent_bits) - 1ul;
         ulong exponent_mask = exponent_limit << fraction;
-        ulong value_mask = wide ? ~0ul : 0xfffffffful;
+        ulong value_mask = fp_vmask(wide);
         left &= value_mask;
         right &= value_mask;
         ulong sign = (left ^ right) & sign_mask;
@@ -609,9 +652,9 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         ulong left_fraction = left & fraction_mask;
         ulong right_fraction = right & fraction_mask;
         bool flush_left = left_exponent == 0 && left_fraction != 0 &&
-                          (state[@GUEST_FPCR@] & (1ul << 24)) != 0;
+                          fp_flush(wide, state[@GUEST_FPCR@]);
         bool flush_right = right_exponent == 0 && right_fraction != 0 &&
-                           (state[@GUEST_FPCR@] & (1ul << 24)) != 0;
+                           fp_flush(wide, state[@GUEST_FPCR@]);
         if (flush_left || flush_right) state[@GUEST_FPSR@] |= 128ul;
         if (flush_left) {
             left &= sign_mask;
@@ -694,7 +737,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         bool sticky = remainder != 0;
         uint mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
         if (result_power < minimum_exponent) {
-            if ((state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+            if (fp_flush(wide, state[@GUEST_FPCR@])) {
                 state[@GUEST_FPSR@] |= 8ul;
                 return sign;
             }
@@ -737,14 +780,14 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     }
     // Round toward +infinity to an integral value without using Metal floating
     // types, retaining NaN payloads and the guest's FZ/IOC behavior.
-    ulong fp_round_positive(ulong value, bool wide, device ulong *state) {
-        uint fraction = wide ? 52u : 23u;
-        uint exponent_bits = wide ? 11u : 8u;
+    ulong fp_round_positive(ulong value, uint wide, device ulong *state) {
+        uint fraction = fp_fbits(wide);
+        uint exponent_bits = fp_ebits(wide);
         uint sign_bit = fraction + exponent_bits;
         ulong sign_mask = 1ul << sign_bit;
         ulong fraction_mask = (1ul << fraction) - 1ul;
         ulong exponent_limit = (1ul << exponent_bits) - 1ul;
-        ulong value_mask = wide ? ~0ul : 0xfffffffful;
+        ulong value_mask = fp_vmask(wide);
         value &= value_mask;
         ulong sign = value & sign_mask;
         ulong exponent = (value >> fraction) & exponent_limit;
@@ -758,18 +801,18 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
             return (value | quiet_bit) & value_mask;
         }
         if (exponent == 0 && significand != 0 &&
-            (state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+            fp_flush(wide, state[@GUEST_FPCR@])) {
             state[@GUEST_FPSR@] |= 128ul;
             return sign;
         }
         if (exponent == 0 && significand == 0) return sign;
         int unbiased = exponent == 0
-                           ? (wide ? -1022 : -126)
-                           : int(exponent) - (wide ? 1023 : 127);
+                           ? (1 - fp_bias(wide))
+                           : int(exponent) - (fp_bias(wide));
         if (unbiased >= int(fraction)) return value;
         if (unbiased < 0) {
             if (sign != 0) return sign;
-            return (wide ? 0x3ff0000000000000ul : 0x3f800000ul);
+            return ((ulong(fp_bias(wide)) << fp_fbits(wide)));
         }
         uint fractional_bits = fraction - uint(unbiased);
         ulong discarded_mask = (1ul << fractional_bits) - 1ul;
@@ -782,22 +825,22 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
 
     // Compare scalar IEEE values by their integer encodings, preserving the
     // guest's FZ input behavior and FCMP/FCMPE signaling distinction.
-    uint fp_compare(ulong left, ulong right, bool wide, bool signal_all_nans,
+    uint fp_compare(ulong left, ulong right, uint wide, bool signal_all_nans,
                     device ulong *state) {
-        uint fraction = wide ? 52u : 23u;
-        uint exponent_bits = wide ? 11u : 8u;
+        uint fraction = fp_fbits(wide);
+        uint exponent_bits = fp_ebits(wide);
         uint sign_bit = fraction + exponent_bits;
         ulong sign_mask = 1ul << sign_bit;
         ulong fraction_mask = (1ul << fraction) - 1ul;
         ulong exponent_limit = (1ul << exponent_bits) - 1ul;
-        ulong value_mask = wide ? ~0ul : 0xfffffffful;
+        ulong value_mask = fp_vmask(wide);
         left &= value_mask;
         right &= value_mask;
         bool left_subnormal = ((left >> fraction) & exponent_limit) == 0 &&
                               (left & fraction_mask) != 0;
         bool right_subnormal = ((right >> fraction) & exponent_limit) == 0 &&
                                (right & fraction_mask) != 0;
-        if ((state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+        if (fp_flush(wide, state[@GUEST_FPCR@])) {
             if (left_subnormal) {
                 left &= sign_mask;
                 state[@GUEST_FPSR@] |= 128ul;

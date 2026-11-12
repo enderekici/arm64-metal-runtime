@@ -1407,6 +1407,44 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   default:
     break;
   }
+  // Scalar FP type field: 0 single, 1 double, 3 half. Returns the MSL format code.
+  auto fpFormat = [&](uint32_t type) -> int {
+    return type == 0 ? 0 : type == 1 ? 1 : type == 3 ? 2 : -1;
+  };
+  if ((bits & 0x7f3e0000) == 0x1e020000 && (field(16, 3) == 2 || field(16, 3) == 3) &&
+      field(15, 1) >= (field(31, 1) ? 0u : 1u) && fpFormat(field(22, 2)) >= 0) {
+    const int format = fpFormat(field(22, 2));
+    const bool wide = field(31, 1) == 1;
+    const bool unsignedValue = field(16, 1) == 1;
+    const uint32_t fixedBits = 64 - field(10, 6);
+    const std::string raw = reg(rn);
+    const std::string source = wide ? raw
+        : unsignedValue ? "ulong(uint(" + raw + "))" : "ulong(long(int(" + raw + ")))";
+    const std::string negative = unsignedValue ? "false" : "(long(" + source + ") < 0)";
+    return assignVector("ulong2(fp_from_integer((" + negative + ") ? 0ul - " + source + " : " +
+                        source + ", (" + negative + ") ? 1ul : 0ul, " + str(fixedBits) + "u, " +
+                        str(format) + "u, x), 0ul)");
+  }
+  if ((bits & 0x7f3e0000) == 0x1e180000 && field(15, 1) >= (field(31, 1) ? 0u : 1u) &&
+      fpFormat(field(22, 2)) >= 0) {
+    const int format = fpFormat(field(22, 2));
+    const uint32_t fixedBits = 64 - field(10, 6);
+    const std::string value = "fp_to_integer_fixed(x[" + str(806 + 2 * rn) + "], " + str(format) +
+                              "u, " + (field(31, 1) ? "1u" : "0u") + ", " +
+                              (field(16, 1) ? "true" : "false") + ", 3u, " + str(fixedBits) +
+                              "u, x)";
+    return rd == 31 ? emit() : emit(std::string(str(reg(rd))) + " = " + value + ";");
+  }
+  if ((bits & 0x7f3efc00) == 0x1e220000 && fpFormat(field(22, 2)) == 2) {
+    const bool wide = field(31, 1) == 1;
+    const bool unsignedValue = field(16, 1) == 1;
+    const std::string raw = reg(rn);
+    const std::string source = wide ? raw
+        : unsignedValue ? "ulong(uint(" + raw + "))" : "ulong(long(int(" + raw + ")))";
+    const std::string negative = unsignedValue ? "false" : "(long(" + source + ") < 0)";
+    return assignVector("ulong2(fp_from_integer((" + negative + ") ? 0ul - " + source + " : " +
+                        source + ", (" + negative + ") ? 1ul : 0ul, 0u, 2u, x), 0ul)");
+  }
   if ((bits & 0x7f3efc00) == 0x1e220000) {
     auto wide = field(31, 1) == 1;
     auto unsignedValue = field(16, 1) == 1;
@@ -1423,7 +1461,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                          ", " + str(negative) + ", " +
                          str(doubleValue ? 52 : 23) + "u, x), 0ul)"));
   }
-  if ((bits & 0xff3ffc00) == 0x1e24c000) {
+  if ((bits & 0xff3ffc00) == 0x1e24c000 && field(22, 2) <= 1) {
     const auto format = field(22, 2);
     if (format > 1) {
       throw GuestError("Unsupported scalar FRINTP format");
@@ -1433,30 +1471,30 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                          (format == 1 ? "true" : "false") + ", x), 0ul)");
   }
   if ((bits & 0xff20fc00) == 0x1e202000 && (bits & 7) == 0) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const bool zero = field(3, 1) != 0;
-    if (format > 1 || (zero && field(16, 5) != 0)) {
+    if (format < 0 || (zero && field(16, 5) != 0)) {
       throw GuestError("Unsupported scalar floating-point compare encoding");
     }
     const auto left = "x[" + str(806 + 2 * rn) + "]";
     const auto right = zero ? "0ul" : "x[" + str(806 + 2 * field(16, 5)) + "]";
     const auto flags = "fp_compare(" + left + ", " + right + ", " +
-                       (format == 1 ? "true" : "false") + ", " +
+                       str(format) + "u, " +
                        (field(4, 1) != 0 ? "true" : "false") + ", x)";
     return emit("{ uint fp_flags = " + flags + "; n = (fp_flags & 8u) != 0; " +
                  "z = (fp_flags & 4u) != 0; c = (fp_flags & 2u) != 0; " +
                  "v = (fp_flags & 1u) != 0; }");
   }
   if ((bits & 0xff200c00) == 0x1e200400) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const auto condition = conditions[field(12, 4)];
-    if (format > 1 || !condition) {
+    if (format < 0 || !condition) {
       throw GuestError("Unsupported conditional floating-point compare encoding");
     }
     const auto left = "x[" + str(806 + 2 * rn) + "]";
     const auto right = "x[" + str(806 + 2 * field(16, 5)) + "]";
     const auto flags = "fp_compare(" + left + ", " + right + ", " +
-                       (format == 1 ? "true" : "false") + ", " +
+                       str(format) + "u, " +
                        (field(4, 1) != 0 ? "true" : "false") + ", x)";
     return emit("{ uint fp_flags = (" + str(condition) + ") ? " + flags +
                  " : " + str(field(0, 4)) + "u; " +
@@ -1464,22 +1502,22 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  "c = (fp_flags & 2u) != 0; v = (fp_flags & 1u) != 0; }");
   }
   if ((bits & 0xff20fc00) == 0x1e201800) {
-    auto format = field(22, 2);
-    if (format > 1) {
+    const int format = fpFormat(field(22, 2));
+    if (format < 0) {
       throw GuestError("Unsupported scalar floating-point divide format");
     }
     auto left = "x[" + str(806 + 2 * rn) + "]";
     auto right = "x[" + str(806 + 2 * field(16, 5)) + "]";
     return assignVector("ulong2(fp_divide(" + left + ", " + right + ", " +
-                         (format == 1 ? "true" : "false") + ", x), 0ul)");
+                         str(format) + "u, x), 0ul)");
   }
   if ((bits & 0xff201fe0) == 0x1e201000) {
     const auto format = field(22, 2);
-    if (format > 1)
+    if (format == 2)
       throw GuestError("Unsupported floating-point immediate format");
     const uint64_t immediate = field(13, 8);
-    const unsigned fraction = format == 1 ? 52 : 23;
-    const unsigned exponentBits = format == 1 ? 11 : 8;
+    const unsigned fraction = format == 1 ? 52 : format == 3 ? 10 : 23;
+    const unsigned exponentBits = format == 1 ? 11 : format == 3 ? 5 : 8;
     const uint64_t repeated = (immediate >> 6) & 1;
     // VFPExpandImm: inverted exponent top bit, repeated bit 6, then bits 5:4.
     const uint64_t exponent =
@@ -1492,66 +1530,67 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return assignVector("ulong2(" + str(value) + "ul, 0ul)");
   }
   if ((bits & 0xff200c00) == 0x1e200800 && field(12, 4) != 1) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const auto operation = field(12, 4);
-    if (format > 1 || (operation > 8 && operation != 8))
+    if (format < 0 || (operation > 8 && operation != 8))
       throw GuestError("Unsupported scalar floating-point arithmetic encoding");
     const auto left = "x[" + str(806 + 2 * rn) + "]";
     const auto right = "x[" + str(806 + 2 * field(16, 5)) + "]";
-    const std::string wide = format == 1 ? "true" : "false";
+    const std::string wide = str(format) + "u";
     const std::string call = (operation >= 4 && operation <= 7) ? "fp_extreme(" : "fp_arithmetic(";
     return assignVector("ulong2(" + call + str(operation) + "u, " + left + ", " +
                         right + ", " + wide + ", x), 0ul)");
   }
   if ((bits & 0xff207c00) == 0x1e204000) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const auto opcode = field(15, 6);
     const auto source = "x[" + str(806 + 2 * rn) + "]";
-    const std::string wide = format == 1 ? "true" : "false";
-    if (format <= 1 && opcode == 0) {
-      const std::string mask = format == 1 ? "" : " & 0xfffffffful";
+    const std::string wide = str(format) + "u";
+    if (format >= 0 && opcode == 0) {
+      const std::string mask = format == 1 ? "" : format == 2 ? " & 0xfffful" : " & 0xfffffffful";
       return assignVector("ulong2(" + source + mask + ", 0ul)");
     }
-    if (format <= 1 && opcode == 1) {
-      const std::string clear = format == 1 ? "0x7ffffffffffffffful" : "0x7ffffffful";
+    if (format >= 0 && opcode == 1) {
+      const std::string clear = format == 1 ? "0x7ffffffffffffffful"
+                                : format == 2 ? "0x7ffful" : "0x7ffffffful";
       return assignVector("ulong2(" + source + " & " + clear + ", 0ul)");
     }
-    if (format <= 1 && opcode == 3)
+    if (format >= 0 && opcode == 3)
       return assignVector("ulong2(fp_square_root(" + source + ", " + wide + ", x), 0ul)");
-    if (format <= 1 && opcode >= 8 && opcode <= 15 && opcode != 13) {
+    if (format >= 0 && opcode >= 8 && opcode <= 15 && opcode != 13) {
       const uint32_t mode = opcode == 12 ? 4 : opcode == 14 || opcode == 15 ? 5 : opcode - 8;
       return assignVector("ulong2(fp_round_to_integral(" + source + ", " + str(mode) +
                           "u, " + (opcode == 14 ? "true" : "false") + ", " + wide + ", x), 0ul)");
     }
   }
   if ((bits & 0x7f20fc00) == 0x1e200000 && ((field(16, 3)) <= 1 || field(16, 3) == 4 || field(16, 3) == 5)) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const auto rmode = field(19, 2);
     const auto opcode = field(16, 3);
     const bool ties_away = opcode >= 4;
-    if (format > 1 || (ties_away && rmode != 0))
+    if (format < 0 || (ties_away && rmode != 0))
       throw GuestError("Unsupported floating-point to integer conversion");
     const uint32_t mode = ties_away ? 4 : rmode == 0 ? 0 : rmode == 1 ? 1 : rmode == 2 ? 2 : 3;
     const std::string value = "fp_to_integer(x[" + str(806 + 2 * rn) + "], " +
-                              (format == 1 ? "true" : "false") + ", " +
+                              str(format) + "u, " +
                               (field(31, 1) ? "true" : "false") + ", " +
                               ((opcode & 1) ? "true" : "false") + ", " + str(mode) + "u, x)";
     return rd == 31 ? emit() : emit(std::string(str(reg(rd))) + " = " + value + ";");
   }
   if ((bits & 0xff200c00) == 0x1e200c00) {
-    const auto format = field(22, 2);
+    const int format = fpFormat(field(22, 2));
     const auto condition = conditions[field(12, 4)];
-    if (format > 1 || !condition)
+    if (format < 0 || !condition)
       throw GuestError("Unsupported scalar FCSEL encoding");
     const auto left = "x[" + str(806 + 2 * rn) + "]";
     const auto right = "x[" + str(806 + 2 * field(16, 5)) + "]";
-    const std::string mask = format == 1 ? "" : " & 0xfffffffful";
+    const std::string mask = format == 1 ? "" : format == 2 ? " & 0xfffful" : " & 0xfffffffful";
     return assignVector("ulong2(((" + str(condition) + ") ? " + left + " : " + right + ")" +
                         mask + ", 0ul)");
   }
   if ((bits & 0xff000000) == 0x1f000000) {
-    const auto format = field(22, 2);
-    if (format > 1) throw GuestError("Unsupported scalar fused multiply-add format");
+    const int format = fpFormat(field(22, 2));
+    if (format < 0) throw GuestError("Unsupported scalar fused multiply-add format");
     const auto o1 = field(21, 1);
     const auto o0 = field(15, 1);
     const auto n = "x[" + str(806 + 2 * rn) + "]";
@@ -1559,30 +1598,36 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     const auto addend = "x[" + str(806 + 2 * field(10, 5)) + "]";
     return assignVector("ulong2(fp_fused(" + addend + ", " + n + ", " + m + ", " +
                         ((o0 ^ o1) ? "true" : "false") + ", " + (o1 ? "true" : "false") + ", " +
-                        (format == 1 ? "true" : "false") + ", x), 0ul)");
+                        str(format) + "u, x), 0ul)");
   }
   if ((bits & 0xff3e7c00) == 0x1e224000) {
-    const auto format = field(22, 2);
-    const auto target = field(15, 2);
-    if (!((format == 0 && target == 1) || (format == 1 && target == 0)))
+    const int source = fpFormat(field(22, 2));
+    const int target = fpFormat(field(15, 2));
+    if (source < 0 || target < 0 || source == target)
       throw GuestError("Unsupported scalar FCVT precision");
-    return assignVector("ulong2(fp_convert_precision(x[" + str(806 + 2 * rn) +
-                        "], " + (format == 0 ? "true" : "false") + ", x), 0ul)");
+    if (source <= 1 && target <= 1)
+      return assignVector("ulong2(fp_convert_precision(x[" + str(806 + 2 * rn) +
+                          "], " + (source == 0 ? "true" : "false") + ", x), 0ul)");
+    return assignVector("ulong2(fp_convert(x[" + str(806 + 2 * rn) + "], " + str(source) +
+                        "u, " + str(target) + "u, x), 0ul)");
   }
   if ((bits & 0xff3ffc00) == 0x1e214000) {
-    const auto format = field(22, 2);
-    if (format > 1)
+    const int format = fpFormat(field(22, 2));
+    if (format < 0)
       throw GuestError("Unsupported scalar FNEG format");
     const auto source = "x[" + str(806 + 2 * rn) + "]";
     const auto value = format == 1
                            ? "(" + source + " ^ 0x8000000000000000ul)"
+                           : format == 2 ? "ulong(ushort(" + source + ") ^ 0x8000u)"
                            : "ulong(uint(" + source + ") ^ 0x80000000u)";
     return assignVector("ulong2(" + value + ", 0ul)");
   }
   auto vectorMove = bits & 0xfffffc00;
-  if (contains({0x1e260000, 0x1e270000, 0x9e660000, 0x9e670000}, vectorMove)) {
+  if (contains({0x1e260000, 0x1e270000, 0x9e660000, 0x9e670000, 0x1ee60000, 0x1ee70000,
+                0x9ee60000, 0x9ee70000}, vectorMove)) {
     auto wide = field(31, 1) == 1;
-    auto type = wide ? (std::string("ulong")) : (std::string("uint"));
+    auto type = field(22, 2) == 3 ? (std::string("ushort"))
+                : wide ? (std::string("ulong")) : (std::string("uint"));
     if (field(16, 1) == 0) {
       return emit(rd == 31 ? (std::string(""))
                            : (std::string(str(reg(rd))) + " = " + str(type) +
