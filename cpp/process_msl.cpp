@@ -1,4 +1,5 @@
 #include "process_msl.hpp"
+#include "guest_neon.hpp"
 #include "guest_memory_msl.hpp"
 
 #include "guest_vector_crypto.hpp"
@@ -921,6 +922,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     }
     @GUEST_VECTOR_CRYPTO_SOURCE@
     @PROCESS_VECTOR_OPS_MSL@
+    @GUEST_NEON_SOURCE@
     ulong2 vector_reduce_long(ulong2 source, uint source_width, uint destination_width, uint bits) {
         ulong sum = 0;
         for (uint lane = 0; lane < bits / source_width; ++lane) sum += lane_read(source, lane, source_width);
@@ -1171,6 +1173,7 @@ std::string render_source(std::string_view rendered_cases) {
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
   const std::array<std::pair<std::string_view, std::string>, 16> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
+      {"@GUEST_NEON_SOURCE@", std::string(neon_metal_source())},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
       {"@GUEST_DATA_ADDRESS_MASK@", decimal(guestDataAddressMask)},
       {"@GUEST_DATA_TOKEN_BUCKETS@", decimal(guestDataTokenBuckets)},

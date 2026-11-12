@@ -1,6 +1,7 @@
 #include "process_decoder.hpp"
 #include "host_service_registry.hpp"
 #include "guest_strings.hpp"
+#include "guest_neon.hpp"
 #include "guest_vector_crypto.hpp"
 #include "process_host.hpp"
 #include "process_vector_ops.hpp"
@@ -1050,6 +1051,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
                  "] = value[1]; }"));
   };
+  if (auto lowered = lower_neon(bits, pc)) {
+    return *lowered;
+  }
   if ((bits & 0xff3ffc00) == 0x5e31b800) {
     const auto source = vector(rn);
     return emit((std::string("{ ulong2 source = ") + str(source) +
