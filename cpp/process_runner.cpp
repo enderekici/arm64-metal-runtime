@@ -3031,7 +3031,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     if (image.mapping_backing_end() > guestMappingLimit - guestMappingBase) {
         throw std::runtime_error("Guest mapping arena exceeds the allocator address limit");
     }
-    GuestHeap mappingHeap({static_cast<std::int64_t>(image.cache_backing_end() + 40),
+    // The first 80 bytes past the cache backing hold the commpage fields published above.
+    GuestHeap mappingHeap({static_cast<std::int64_t>(image.cache_backing_end() + 80),
                            static_cast<std::int64_t>(image.mapping_backing_end())});
     std::uint64_t namedImagePlacementCursor = std::uint64_t{1} << 46U;
     const auto monotonicNanoseconds = []() -> std::uint64_t {
@@ -10006,6 +10007,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             std::cerr << " x" << r << "=0x" << hexadecimal(registers[r]);
                     }
                     std::cerr << '\n';
+                    if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr) {
+                        for (std::size_t r = 0; r < 31; ++r)
+                            std::cerr << " x" << r << "=0x" << hexadecimal(registers[r]);
+                        std::cerr << '\n';
+                        dumpTransitions();
+                    }
                 }
                 return delivery.exitStatus;
             }
