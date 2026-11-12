@@ -3,6 +3,7 @@
 #include "guest_strings.hpp"
 #include "guest_vector_crypto.hpp"
 #include "process_host.hpp"
+#include "process_vector_ops.hpp"
 #include "shared_cache.hpp"
 #include <algorithm>
 #include <limits>
@@ -2241,6 +2242,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                 update ? (std::string(str(base)) + " += ulong(" +
                           str(sign_extend(field(12, 9), 9)) + ");")
                        : (std::string("")));
+  }
+  if (auto lowered = vector_ops::lower(bits, pc, cached)) {
+    return *lowered;
   }
   return translate_core::decode(bits, pc, (std::string("ul")));
 }

@@ -4,6 +4,7 @@
 #include "guest_vector_crypto.hpp"
 #include "integer_ops_shared.h"
 #include "process_host.hpp"
+#include "process_vector_ops_msl.hpp"
 
 #include <array>
 #include <string>
@@ -191,6 +192,14 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         uint right_kind = fp_kind(right, wide);
         if (left_kind < 3u && right_kind < 3u) return false;
         if (left_kind == 4u || right_kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+        if ((state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+            uint fraction_bits = wide ? 52u : 23u;
+            ulong exponent_field = (1ul << (wide ? 11u : 8u)) - 1ul;
+            ulong fraction_field = (1ul << fraction_bits) - 1ul;
+            if ((((left >> fraction_bits) & exponent_field) == 0 && (left & fraction_field) != 0) ||
+                (((right >> fraction_bits) & exponent_field) == 0 && (right & fraction_field) != 0))
+                state[@GUEST_FPSR@] |= 128ul;
+        }
         ulong source = left_kind == 4u ? left : right_kind == 4u ? right :
                        left_kind == 3u ? left : right;
         result = fp_quiet(source, wide, state);
@@ -868,6 +877,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return target;
     }
     @GUEST_VECTOR_CRYPTO_SOURCE@
+    @PROCESS_VECTOR_OPS_MSL@
     ulong2 vector_reduce_long(ulong2 source, uint source_width, uint destination_width, uint bits) {
         ulong sum = 0;
         for (uint lane = 0; lane < bits / source_width; ++lane) sum += lane_read(source, lane, source_width);
@@ -1116,7 +1126,7 @@ std::string render_source(std::string_view rendered_cases) {
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 15> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 16> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
       {"@GUEST_DATA_ADDRESS_MASK@", decimal(guestDataAddressMask)},
@@ -1131,6 +1141,7 @@ std::string render_source(std::string_view rendered_cases) {
       {"@GUEST_TOKEN_START@", decimal(guestTokenStart)},
       {"@GUEST_TOKEN_TAG@", decimal(guestTokenTag)},
       {"@GUEST_VECTOR_CRYPTO_SOURCE@", std::string(vector_crypto_metal_source())},
+      {"@PROCESS_VECTOR_OPS_MSL@", std::string(processVectorOpsMslSource)},
       {"@TYPED_INTEGER_MSL_SOURCE@", std::string(typed_integer_msl_source)},
   }};
   for (const auto& [key, value] : values) replace_all(source, key, value);
