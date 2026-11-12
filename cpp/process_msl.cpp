@@ -1173,7 +1173,7 @@ std::string render_source(std::string_view rendered_cases) {
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 16> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 17> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
       {"@GUEST_NEON_SOURCE@", std::string(neon_metal_source())},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
