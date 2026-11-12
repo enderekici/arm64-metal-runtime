@@ -2386,13 +2386,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     // The lower bound remains the current thread's errno slot. The linear heap
     // above it remains writable by existing policy, including reclaimed
     // allocations; explicit ranges grant live stacks below it access.
+    const std::uint64_t mainErrnoSlot = bootstrap.errnoSlot;
     std::vector<std::uint64_t> writableTable;
     SharedBuffer writableBuffer;
     const auto syncWritableTable = [&](std::uint64_t errnoAddress) {
         writableTable.clear();
         const auto rangeCount = config.writable_regions.size() + liveThreadStacks.size();
         writableTable.reserve(2 + 2 * rangeCount);
-        writableTable.push_back(errnoAddress);
+        writableTable.push_back(std::min(errnoAddress, mainErrnoSlot));
         writableTable.push_back(static_cast<std::uint64_t>(rangeCount));
         for (const auto& range : config.writable_regions) {
             writableTable.push_back(range.begin);
