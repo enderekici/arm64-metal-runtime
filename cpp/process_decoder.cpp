@@ -524,6 +524,18 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                        str(reg(rd)) +
                        " = (value << 32) | (value >> 32); }\n            "));
   }
+  if ((bits & 0x7ffffc00) == 0x5ac00400) {
+    const bool wide = field(31, 1) != 0;
+    const std::string type = wide ? "ulong" : "uint";
+    const std::string low = wide ? "0x00ff00ff00ff00fful" : "0x00ff00ffu";
+    return emit(rd == 31 ? std::string("") :
+                "{ " + type + " value = " + type + "(" + reg(rn) + "); " + str(reg(rd)) +
+                " = ((value & " + low + ") << 8) | ((value >> 8) & " + low + "); }");
+  }
+  if ((bits & 0xffe00c00) == 0xf8a00800 || (bits & 0xffe00c00) == 0xf8800000 ||
+      (bits & 0xffc00000) == 0xf9800000 || (bits & 0xff000000) == 0xd8000000) {
+    return emit();
+  }
   auto leadingCount = bits & 0x7ffff800;
   if (leadingCount == 0x5ac01000) {
     auto wide = field(31, 1) != 0;
@@ -1494,6 +1506,18 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return assignVector("ulong2(((" + str(condition) + ") ? " + left + " : " + right + ")" +
                         mask + ", 0ul)");
   }
+  if ((bits & 0xff000000) == 0x1f000000) {
+    const auto format = field(22, 2);
+    if (format > 1) throw GuestError("Unsupported scalar fused multiply-add format");
+    const auto o1 = field(21, 1);
+    const auto o0 = field(15, 1);
+    const auto n = "x[" + str(806 + 2 * rn) + "]";
+    const auto m = "x[" + str(806 + 2 * field(16, 5)) + "]";
+    const auto addend = "x[" + str(806 + 2 * field(10, 5)) + "]";
+    return assignVector("ulong2(fp_fused(" + addend + ", " + n + ", " + m + ", " +
+                        ((o0 ^ o1) ? "true" : "false") + ", " + (o1 ? "true" : "false") + ", " +
+                        (format == 1 ? "true" : "false") + ", x), 0ul)");
+  }
   if ((bits & 0xff3e7c00) == 0x1e224000) {
     const auto format = field(22, 2);
     const auto target = field(15, 2);
@@ -1567,6 +1591,30 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                          ", " + str(vector(field(16, 5))) + ", " + str(width) +
                          ", " + str(vectorBits) + ", " + str(inclusive) + ", " +
                          str(signedLanes) + ", " + str(equalLanes) + ")"));
+  }
+  if ((bits & 0xdf3ffc00) == 0x5e21d800) {
+    const bool wide = field(22, 1) == 1;
+    const bool unsignedValue = field(29, 1) == 1;
+    const std::string raw = "x[" + str(806 + 2 * rn) + "]";
+    const std::string source = wide ? raw
+        : unsignedValue ? "ulong(uint(" + raw + "))" : "ulong(long(int(" + raw + ")))";
+    const std::string negative = unsignedValue ? "false" : "(long(" + source + ") < 0)";
+    return assignVector("ulong2(integer_to_float(" + source + ", " + negative + ", " +
+                        str(wide ? 52 : 23) + "u, x), 0ul)");
+  }
+  {
+    const auto select = bits & 0xbfe0fc00;
+    if (select == 0x2e601c00 || select == 0x2ea01c00 || select == 0x2ee01c00) {
+      const auto d = vector(rd);
+      const auto n = vector(rn);
+      const auto m = vector(field(16, 5));
+      const std::string expression =
+          select == 0x2e601c00 ? "((" + d + " & " + n + ") | (~" + d + " & " + m + "))"
+          : select == 0x2ea01c00 ? "((" + d + " & ~" + m + ") | (" + n + " & " + m + "))"
+                                 : "((" + d + " & " + m + ") | (" + n + " & ~" + m + "))";
+      const auto mask = vectorBits == 128 ? "" : " & ulong2(~0ul, 0ul)";
+      return assignVector("(" + expression + ")" + mask);
+    }
   }
   auto vectorLogical = bits & 0xbfe0fc00;
   auto operation = Map<std::string>{{0x0e201c00, "&"},

@@ -381,6 +381,113 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         bool inexact = mulhi(root, root) != high || root * root != low;
         return fp_pack(0ul, value.exponent >> 1, root | (inexact ? 1ul : 0ul), wide, state);
     }
+    // Fused multiply-add: result = (negate_addend ? -a : a) + (negate_product ? -(n*m) : n*m)
+    // with one rounding, using 128-bit significands.
+    ulong fp_fused(ulong a_bits, ulong n_bits, ulong m_bits, bool negate_product,
+                   bool negate_addend, bool wide, device ulong *state) {
+        if (negate_addend) a_bits ^= fp_sign_bit(1ul, wide);
+        if (negate_product) n_bits ^= fp_sign_bit(1ul, wide);
+        FpOperand a = fp_unpack(a_bits, wide, state);
+        FpOperand n = fp_unpack(n_bits, wide, state);
+        FpOperand m = fp_unpack(m_bits, wide, state);
+        bool invalid_product = (n.kind == 2u && m.kind == 0u) || (n.kind == 0u && m.kind == 2u);
+        if (a.kind >= 3u || n.kind >= 3u || m.kind >= 3u) {
+            if (a.kind == 3u && invalid_product) {
+                state[@GUEST_FPSR@] |= 1ul;
+                return fp_default_nan(wide);
+            }
+            if (a.kind == 4u || n.kind == 4u || m.kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+            ulong source = a.kind == 4u ? a_bits : n.kind == 4u ? n_bits : m.kind == 4u ? m_bits :
+                           a.kind == 3u ? a_bits : n.kind == 3u ? n_bits : m_bits;
+            return fp_quiet(source & (wide ? ~0ul : 0xfffffffful), wide, state);
+        }
+        if (invalid_product) {
+            state[@GUEST_FPSR@] |= 1ul;
+            return fp_default_nan(wide);
+        }
+        uint mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
+        ulong product_sign = n.sign ^ m.sign;
+        if (n.kind == 2u || m.kind == 2u) {
+            if (a.kind == 2u && a.sign != product_sign) {
+                state[@GUEST_FPSR@] |= 1ul;
+                return fp_default_nan(wide);
+            }
+            return fp_infinity(product_sign, wide);
+        }
+        if (a.kind == 2u) return fp_infinity(a.sign, wide);
+        bool product_zero = n.kind == 0u || m.kind == 0u;
+        if (product_zero) {
+            if (a.kind == 0u)
+                return fp_sign_bit(a.sign == product_sign ? a.sign : (mode == 2u ? 1ul : 0ul), wide);
+            return fp_pack(a.sign, a.exponent, a.significand, wide, state);
+        }
+        ulong p_high = mulhi(n.significand, m.significand);
+        ulong p_low = n.significand * m.significand;
+        int p_exponent = n.exponent + m.exponent + 1;
+        if ((p_high >> 63) == 0) {
+            p_high = (p_high << 1) | (p_low >> 63);
+            p_low <<= 1;
+            p_exponent -= 1;
+        }
+        if (a.kind == 0u) {
+            return fp_pack(product_sign, p_exponent, p_high | (p_low != 0 ? 1ul : 0ul), wide, state);
+        }
+        ulong a_high = a.significand;
+        ulong a_low = 0ul;
+        int a_exponent = a.exponent;
+        ulong sign_big = product_sign;
+        ulong big_high = p_high, big_low = p_low, small_high = a_high, small_low = a_low;
+        int big_exponent = p_exponent, small_exponent = a_exponent;
+        ulong small_sign = a.sign;
+        if (a_exponent > p_exponent || (a_exponent == p_exponent &&
+            (a_high > p_high || (a_high == p_high && a_low > p_low)))) {
+            sign_big = a.sign;
+            big_high = a_high; big_low = a_low; big_exponent = a_exponent;
+            small_high = p_high; small_low = p_low; small_exponent = p_exponent;
+            small_sign = product_sign;
+        }
+        big_low = (big_low >> 1) | (big_high << 63);
+        big_high >>= 1;
+        small_low = (small_low >> 1) | (small_high << 63);
+        small_high >>= 1;
+        uint distance = uint(big_exponent - small_exponent);
+        ulong sticky = 0ul;
+        if (distance >= 128u) {
+            sticky = (small_high | small_low) != 0 ? 1ul : 0ul;
+            small_high = 0ul;
+            small_low = 0ul;
+        } else if (distance >= 64u) {
+            uint extra = distance - 64u;
+            sticky = (small_low != 0 || (small_high & ((1ul << extra) - 1ul)) != 0) ? 1ul : 0ul;
+            small_low = small_high >> extra;
+            small_high = 0ul;
+        } else if (distance > 0u) {
+            sticky = (small_low & ((1ul << distance) - 1ul)) != 0 ? 1ul : 0ul;
+            small_low = (small_low >> distance) | (small_high << (64u - distance));
+            small_high >>= distance;
+        }
+        small_low |= sticky;
+        ulong high;
+        ulong low;
+        if (sign_big == small_sign) {
+            low = big_low + small_low;
+            high = big_high + small_high + (low < big_low ? 1ul : 0ul);
+        } else {
+            low = big_low - small_low;
+            high = big_high - small_high - (big_low < small_low ? 1ul : 0ul);
+            if (high == 0 && low == 0) return fp_sign_bit(mode == 2u ? 1ul : 0ul, wide);
+        }
+        uint zeros = high != 0 ? clz(high) : 64u + clz(low);
+        if (zeros >= 64u) {
+            high = low << (zeros - 64u);
+            low = 0ul;
+        } else if (zeros > 0u) {
+            high = (high << zeros) | (low >> (64u - zeros));
+            low <<= zeros;
+        }
+        return fp_pack(sign_big, big_exponent + 1 - int(zeros),
+                       high | (low != 0 ? 1ul : 0ul), wide, state);
+    }
     // Round a finite nonzero value to an integer magnitude. Rounding modes:
     // 0 ties-even, 1 +inf, 2 -inf, 3 zero, 4 ties-away. 'huge' when >= 2^64.
     ulong fp_round_magnitude(FpOperand value, uint mode, thread bool &inexact, thread bool &huge) {
