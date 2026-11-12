@@ -9,8 +9,8 @@
 static long rawsc5(long n, long a, long b, long c, long d, long e, int *cs) {
   register long x0 __asm__("x0") = a; register long x1 __asm__("x1") = b;
   register long x2 __asm__("x2") = c; register long x3 __asm__("x3") = d; register long x4 __asm__("x4") = e;
-  register long x16 __asm__("x16") = n; long carry;
-  __asm__ volatile("svc #0x80\n cset %1, cs" : "+r"(x0), "=r"(carry) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x16) : "memory", "cc");
+  register long x5 __asm__("x5") = 0; register long x16 __asm__("x16") = n; long carry;
+  __asm__ volatile("svc #0x80\n cset %1, cs" : "+r"(x0), "=r"(carry) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x16) : "memory", "cc");
   *cs = (int)carry; return x0;
 }
 static long rawsc(long n, long a, long b, long c, long d, int *cs) { return rawsc5(n, a, b, c, d, 0, cs); }
