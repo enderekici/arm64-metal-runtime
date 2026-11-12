@@ -10555,6 +10555,71 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 continue;
             }
+            if (syscall == 334 || syscall == 423) {  // __semwait_signal[_nocancel]
+                const auto condName = static_cast<std::uint32_t>(registers[0]);
+                const auto mutexName = static_cast<std::uint32_t>(registers[1]);
+                const bool hasTimeout = static_cast<std::uint32_t>(registers[2]) != 0;
+                const bool relative = static_cast<std::uint32_t>(registers[3]) != 0;
+                const auto seconds = static_cast<std::int64_t>(registers[4]);
+                const auto nanos = static_cast<std::int32_t>(
+                    static_cast<std::uint32_t>(registers[5]));
+                const auto usable = [&](std::uint32_t name) {
+                    const auto right = guestSendRightUrefs.find(name);
+                    return right != guestSendRightUrefs.end() && right->second != 0 &&
+                        guestSemaphoreNames.find(name) != guestSemaphoreNames.end();
+                };
+                if (!usable(condName) || (mutexName != 0 && !usable(mutexName))) {
+                    rawFail(EINVAL);
+                    continue;
+                }
+                std::optional<std::uint64_t> deadline;
+                bool nonblocking = false;
+                if (hasTimeout) {
+                    if (seconds < 0 || nanos < 0 || nanos >= 1'000'000'000) {
+                        rawFail(EINVAL);
+                        continue;
+                    }
+                    const auto now = monotonicNanoseconds();
+                    std::uint64_t requested = 0;
+                    constexpr std::uint64_t cap = std::numeric_limits<std::uint64_t>::max() / 2;
+                    if (relative) {
+                        requested = static_cast<std::uint64_t>(seconds) > 9'000'000'000ULL
+                            ? cap : static_cast<std::uint64_t>(seconds) * 1'000'000'000ULL +
+                                static_cast<std::uint64_t>(nanos);
+                    } else {
+                        timespec wall{};
+                        clock_gettime(CLOCK_REALTIME, &wall);
+                        const auto target = static_cast<__int128>(seconds) * 1'000'000'000 +
+                            nanos;
+                        const auto current = static_cast<__int128>(wall.tv_sec) *
+                            1'000'000'000 + wall.tv_nsec;
+                        requested = target <= current ? 0
+                            : static_cast<std::uint64_t>(
+                                std::min<__int128>(target - current, cap));
+                    }
+                    nonblocking = requested == 0;
+                    deadline = now + requested;
+                }
+                if (mutexName != 0) (void)guestScheduler.signal_semaphore(mutexName);
+                const auto result = guestScheduler.wait_semaphore(
+                    condName, deadline, nonblocking, true);
+                if (result.waiting) {
+                    registers[0] = 0;
+                    registers[32] &= ~std::uint64_t{8};
+                    registers[34] = 0;
+                    const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
+                    auto live = std::vector<std::uint64_t>(state,
+                        state + stateBuffer.size() / sizeof(std::uint64_t));
+                    if (!syncThreadSwitch(false, live)) {
+                        throw std::runtime_error("Guest semaphore wait has no runnable thread");
+                    }
+                    continue;
+                }
+                if (result.error == KERN_SUCCESS) rawOk(0);
+                else if (result.error == KERN_OPERATION_TIMED_OUT) rawFail(ETIMEDOUT);
+                else rawFail(EINVAL);
+                continue;
+            }
             if (syscall == 515 || syscall == 516 || syscall == 544) {  // ulock_wait/wake/wait2
                 constexpr std::uint32_t ulfWakeAll = 0x100;
                 constexpr std::uint32_t ulfNoErrno = 0x01000000;

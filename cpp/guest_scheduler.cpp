@@ -438,7 +438,8 @@ std::int32_t GuestScheduler::destroy_semaphore(std::uint64_t name) {
 }
 
 GuestSemaphoreWaitResult GuestScheduler::wait_semaphore(
-    std::uint64_t name, std::optional<std::uint64_t> deadline, bool nonblocking) {
+    std::uint64_t name, std::optional<std::uint64_t> deadline, bool nonblocking,
+    bool bsd) {
     const auto found = semaphores_.find(name);
     if (found == semaphores_.end()) return {KERN_INVALID_CAPABILITY, false};
     if (found->second.value > 0) {
@@ -449,7 +450,7 @@ GuestSemaphoreWaitResult GuestScheduler::wait_semaphore(
     auto& thread = current();
     if (thread.wait.has_value()) return {KERN_ALREADY_WAITING, false};
     found->second.waiters.push_back(currentId_);
-    thread.wait = GuestSemaphoreWait{name, deadline};
+    thread.wait = GuestSemaphoreWait{name, deadline, bsd};
     return {KERN_SUCCESS, true};
 }
 
@@ -571,7 +572,12 @@ std::size_t GuestScheduler::expire_waiters(std::uint64_t nowNanoseconds) {
                 waiters.erase(std::remove(waiters.begin(), waiters.end(), thread.id),
                               waiters.end());
             }
-            wake(thread.id, KERN_OPERATION_TIMED_OUT);
+            if (semaphore->bsd) {
+                wake(thread.id, ETIMEDOUT);
+                thread.registers[32] |= 8U;
+            } else {
+                wake(thread.id, KERN_OPERATION_TIMED_OUT);
+            }
             ++expired;
             continue;
         }

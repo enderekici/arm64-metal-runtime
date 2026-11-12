@@ -132,7 +132,7 @@ public:
     [[nodiscard]] std::int32_t destroy_semaphore(std::uint64_t name);
     [[nodiscard]] GuestSemaphoreWaitResult wait_semaphore(
         std::uint64_t name, std::optional<std::uint64_t> deadline = std::nullopt,
-        bool nonblocking = false);
+        bool nonblocking = false, bool bsd = false);
     [[nodiscard]] std::int32_t signal_semaphore(std::uint64_t name);
     [[nodiscard]] bool sleep_current(std::uint64_t deadline,
                                     std::optional<std::uint64_t> remainder = std::nullopt);

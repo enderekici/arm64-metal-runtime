@@ -80,6 +80,7 @@ struct GuestSleepWait {
 struct GuestSemaphoreWait {
     std::uint64_t semaphore = 0;
     std::optional<std::uint64_t> deadline;
+    bool bsd = false;
 };
 struct GuestMachReceiveWait {
     std::uint32_t port = 0;
