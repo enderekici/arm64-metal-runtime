@@ -7958,7 +7958,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
-            if (service == 244) {
+            if (service == kDyldConformanceOnDiskService) {
                 // Prebuilt on-disk loader sets are not modeled, so no conformance is
                 // found there; the Swift runtime then scans registered image sections.
                 hostRegisters[0] = 2;

@@ -10,6 +10,7 @@ namespace arm64metal {
 inline constexpr int kMemcpyChkFailureService = 184;
 inline constexpr int kMemsetChkFailureService = 198;
 inline constexpr int kJitWriteStateService = 244;
+inline constexpr int kDyldConformanceOnDiskService = 245;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -210,8 +211,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"__dyld_swift_optimizations_version", 147, true, true},
     {"__dyld_has_preoptimized_swift_protocol_conformances", 148, true, true},
     {"__dyld_find_protocol_conformance", 149, true, true},
-    {"__dyld_find_protocol_conformance_on_disk", 244, true, true},
-    {"__dyld_find_foreign_type_protocol_conformance_on_disk", 244, true, true},
+    {"__dyld_find_protocol_conformance_on_disk", kDyldConformanceOnDiskService, true, true},
+    {"__dyld_find_foreign_type_protocol_conformance_on_disk", kDyldConformanceOnDiskService, true, true},
     {"_dyld_has_inserted_or_interposing_libraries", 176, true, true},
     {"__dyld_call_with_writable_tpro_memory", 178, true, true},
     {"_err", 150, true, true},
