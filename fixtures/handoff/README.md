@@ -670,6 +670,22 @@ release=0 missing=5 missing_null=1 invalid_output=5 result=PASS`. The guest
 command is staged for differential replay; it was not run in this CPU-only
 change.
 
+## Mach port construct option bits
+
+`mach-port-construct-flags.c` checks `MPO_QLIMIT`, `MPO_TEMPOWNER`,
+`MPO_IMPORTANCE_RECEIVER`, `MPO_INSERT_SEND_RIGHT`, `MPO_STRICT` and the Azul
+combination `0x33` (guard, qlimit 1, send right, strict): rights via type and
+`mach_port_get_refs`, destruct, and `KERN_INVALID_VALUE` for qlimit 1025.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -Werror -O2 \
+  fixtures/handoff/mach-port-construct-flags.c \
+  -o .build/handoff-probes/mach-port-construct-flags
+.build/handoff-probes/mach-port-construct-flags
+ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  .build/cpp/arm64-metal launch .build/handoff-probes/mach-port-construct-flags
+```
+
 ## Guarded strict port construction (`0x31`)
 
 `mach-port-construct-31.c` uses the raw construct, type, and destruct traps,

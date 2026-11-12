@@ -3399,7 +3399,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return std::nullopt;
     };
-    struct GuestReceiveRight { std::uint32_t flags; std::uint64_t context; };
+    struct GuestReceiveRight {
+        std::uint32_t flags;
+        std::uint64_t context;
+        std::uint32_t qlimit = 5;
+    };
     std::map<std::uint32_t, GuestReceiveRight> guestReceiveRights;
     std::set<std::uint32_t> guestDeadPortNames;
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
@@ -12904,10 +12908,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernNoSpace = 3;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 constexpr std::uint64_t kernInvalidArgument = 4;
+                constexpr std::uint64_t kernInvalidValue = 18;
                 constexpr std::uint32_t guardedPortFlag = MPO_CONTEXT_AS_GUARD;
                 constexpr std::uint32_t replyPortFlag = 0x00001000;
-                constexpr std::uint32_t guardedSendPortFlags =
-                    MPO_CONTEXT_AS_GUARD | MPO_INSERT_SEND_RIGHT | MPO_STRICT;
+                constexpr std::uint32_t supportedConstructFlags =
+                    MPO_CONTEXT_AS_GUARD | MPO_QLIMIT | MPO_TEMPOWNER |
+                    MPO_IMPORTANCE_RECEIVER | MPO_INSERT_SEND_RIGHT | MPO_STRICT;
+                constexpr std::uint32_t maxQueueLimit = 1024;
+                constexpr std::uint32_t defaultQueueLimit = 5;
                 auto result = kernSuccess;
                 if (static_cast<std::uint32_t>(registers[0]) != guestMachTaskPort) {
                     result = machSendInvalidDest;
@@ -12939,18 +12947,28 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                     const bool existingFlags =
                         (flags & ~(guardedPortFlag | replyPortFlag)) == 0;
+                    const bool supportedFlags =
+                        existingFlags || (flags & ~supportedConstructFlags) == 0;
                     if ((flags & MPO_UNUSED_BITS) != 0) {
                         result = kernInvalidArgument;
-                    } else if (!existingFlags && flags != guardedSendPortFlags) {
+                    } else if (!supportedFlags) {
                         throw std::runtime_error("Unsupported guest Mach port construction flags");
+                    } else if ((flags & MPO_QLIMIT) != 0 &&
+                               portOptions.mpl.mpl_qlimit > maxQueueLimit) {
+                        result = kernInvalidValue;
                     } else if (nextGuestReceiveName >=
                                std::numeric_limits<std::uint32_t>::max() - 4) {
                         result = kernNoSpace;
                     } else {
                         const auto name = nextGuestReceiveName;
                         nextGuestReceiveName += 4;
-                        guestReceiveRights.emplace(name, GuestReceiveRight{flags, registers[2]});
-                        if (flags == guardedSendPortFlags) {
+                        guestReceiveRights.emplace(
+                            name,
+                            GuestReceiveRight{
+                                flags, registers[2],
+                                (flags & MPO_QLIMIT) != 0 ? portOptions.mpl.mpl_qlimit
+                                                          : defaultQueueLimit});
+                        if ((flags & MPO_INSERT_SEND_RIGHT) != 0) {
                             guestSendRightUrefs.emplace(name, 1U);
                         }
                         std::memcpy(output, &name, sizeof(name));
@@ -13180,8 +13198,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t kernInvalidValue = 18;
                 constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 constexpr std::uint64_t machSendInvalidRight = 0x10000004;
-                constexpr std::uint32_t guardedSendPortFlags =
-                    MPO_CONTEXT_AS_GUARD | MPO_INSERT_SEND_RIGHT | MPO_STRICT;
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 const auto name = static_cast<std::uint32_t>(registers[1]);
                 const auto sendRightDelta = static_cast<std::int32_t>(registers[2]);
@@ -13221,7 +13237,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 "Strict Mach port guard mismatch was not terminated");
                         }
                         result = machSendInvalidRight;
-                    } else if (right->second.flags != guardedSendPortFlags &&
+                    } else if ((right->second.flags & MPO_INSERT_SEND_RIGHT) == 0 &&
                                registers[2] != 0) {
                         result = machSendInvalidRight;
                     } else if (sendRightDelta > 0 || sendRightDelta < -1) {
