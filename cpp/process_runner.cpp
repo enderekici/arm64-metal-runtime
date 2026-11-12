@@ -2502,6 +2502,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::int64_t activeEntry = initialEntry;
     std::size_t startupIndex = 0;
     std::string lastKernelSelectionPath = "initial-startup-entry";
+    std::array<std::string, 32> transitionHistory;
+    std::size_t transitionHistoryCount = 0;
+    const auto recordTransition = [&](const std::string& entry) {
+        transitionHistory[transitionHistoryCount++ % transitionHistory.size()] = entry;
+    };
+    const auto dumpTransitions = [&]() {
+        if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") == nullptr) return;
+        const auto count = std::min(transitionHistoryCount, transitionHistory.size());
+        for (std::size_t i = transitionHistoryCount - count; i < transitionHistoryCount; ++i)
+            std::cerr << "  history " << transitionHistory[i % transitionHistory.size()] << '\n';
+    };
     const auto selectKernel = [&](std::int64_t entry) {
         const bool selectorStub = image.cache_reader &&
             (image.cache_reader->stubTarget(entry).has_value() ||
@@ -2509,6 +2520,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
               image.cache_reader->selectorStubInstruction(entry).has_value()));
         if (!image.is_code(entry) && imports.find(entry) == imports.end() &&
             guestStubs.find(entry) == guestStubs.end() && !selectorStub) {
+            dumpTransitions();
             throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
                                      hexadecimal(static_cast<std::uint64_t>(entry)));
         }
@@ -2551,11 +2563,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::size_t packetCount = 0;
     } previousDispatch;
     std::string lastHostTransition = "none";
-    std::array<std::string, 32> transitionHistory;
-    std::size_t transitionHistoryCount = 0;
-    const auto recordTransition = [&](const std::string& entry) {
-        transitionHistory[transitionHistoryCount++ % transitionHistory.size()] = entry;
-    };
     HostServiceState hostServiceState;
     if (performanceSummary.enabled()) {
         hostServiceState.recordPerformanceHostService = [&](double seconds) {
@@ -9839,6 +9846,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (status == 7) {
             const auto pc = registers[33];
             if (pc > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                dumpTransitions();
                 throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
                                          hexadecimal(pc));
             }
