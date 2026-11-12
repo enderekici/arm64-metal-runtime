@@ -2164,6 +2164,32 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                           : std::string{},
                 std::string("}"));
   }
+  if (((bits & 0x3f000000) == 0x3d000000 || ((bits & 0x3f200000) == 0x3c000000 &&
+                                              field(10, 2) != 2)) &&
+      field(30, 2) <= 1 && field(23, 1) == 0) {
+    // LDR/STR/LDUR/STUR of B and H registers (scaled, unscaled, pre/post-index).
+    const bool scaled = (bits & 0x3f000000) == 0x3d000000;
+    const auto width = int64_t(1) << field(30, 2);
+    const bool load = field(22, 1) == 1;
+    const auto mode = scaled ? 0u : field(10, 2);
+    const int64_t displacement = scaled ? int64_t(field(10, 12)) * width
+                                        : sign_extend(field(12, 9), 9);
+    const auto base = reg(rn, true);
+    const auto address = mode == 1 ? std::string(base)
+        : "(" + std::string(base) + " + ulong(" + str(displacement) + "))";
+    const auto slot = 806 + 2 * int64_t(rd);
+    const auto pointer = physical("address", width, load);
+    const auto transfer = load
+        ? "x[" + str(slot) + "] = load_guest_word(memory + " + pointer + ", " + str(width) +
+              "); x[" + str(slot + 1) + "] = 0ul;"
+        : "store_guest_word(memory + " + pointer + ", x[" + str(slot) + "], " + str(width) + ");";
+    return emit("{ ulong address = " + address + ";",
+                "if (" + outside("address", width, load) + ") { x[874] = address; x[34] = 2; return; }",
+                transfer,
+                (mode == 1 || mode == 3) ? std::string(base) + " += ulong(" + str(displacement) + ");"
+                                         : std::string{},
+                "}");
+  }
   auto pair = bits & 0xffc00000;
   auto pairEncoding = pair & 0x7fffffff;
   const bool signedPair = contains({0x69400000, 0x69c00000, 0x68c00000}, pair);
