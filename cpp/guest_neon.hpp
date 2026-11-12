@@ -586,6 +586,45 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
     return assign(rd, "neon_misc(" + u32(opcode) + ", " + flag(u) + ", " + u32(size) + ", " +
                           u32(q) + ", " + d + ", " + n + ", x)", pc);
   }
+  // Modified immediate: MOVI, MVNI, ORR, BIC (integer cmodes).
+  if ((bits & 0x9ff80c00) == 0x0f000400) {
+    const auto cmode = field(12, 4);
+    const std::uint64_t imm8 = (std::uint64_t(field(16, 3)) << 5) | field(5, 5);
+    std::uint64_t value = 0;
+    bool logical = false;
+    const auto replicate32 = [](std::uint64_t v) { return v | (v << 32); };
+    const auto replicate16 = [](std::uint64_t v) { return v | (v << 16) | (v << 32) | (v << 48); };
+    if (cmode < 8) {
+      value = replicate32(imm8 << (8 * (cmode >> 1)));
+      logical = (cmode & 1) != 0;
+    } else if (cmode < 12) {
+      value = replicate16(imm8 << (8 * ((cmode >> 1) & 1)));
+      logical = (cmode & 1) != 0;
+    } else if (cmode < 14) {
+      value = replicate32((cmode & 1) ? ((imm8 << 16) | 0xffff) : ((imm8 << 8) | 0xff));
+    } else if (cmode == 14) {
+      if (!u) {
+        value = imm8 * 0x0101010101010101ull;
+      } else {
+        for (int byte = 0; byte < 8; ++byte)
+          if ((imm8 >> byte) & 1) value |= std::uint64_t(0xff) << (8 * byte);
+      }
+    } else {
+      return std::nullopt;
+    }
+    const bool invertOrClear = u && cmode != 14;
+    const std::string literal = "ulong(" + std::to_string(value) + "ul)";
+    const std::string upper = q ? literal : "0ul";
+    if (logical) {
+      const std::string mask = q ? "" : " & ulong2(~0ul, 0ul)";
+      const std::string imm = "ulong2(" + literal + ", " + literal + ")";
+      return assign(rd, "((" + d + (u ? " & ~" : " | ") + imm + ")" + mask + ")", pc);
+    }
+    if (invertOrClear) {
+      return assign(rd, "ulong2(~" + literal + ", " + (q ? "~" + literal : std::string("0ul")) + ")", pc);
+    }
+    return assign(rd, "ulong2(" + literal + ", " + upper + ")", pc);
+  }
   // Shift by immediate (vector).
   if ((bits & 0x9f800400) == 0x0f000400 && field(19, 4) != 0) {
     const auto opcode = field(11, 5);

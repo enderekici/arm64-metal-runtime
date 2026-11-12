@@ -51,7 +51,13 @@ def by_element():
                         if size == 2 and m: continue  # Rm would be v18, outside the harness inputs
                         yield (0x0f000000 | q << 30 | u << 29 | size << 22 | l << 21 | m << 20 | 2 << 16
                                | opc << 12 | h << 11 | 1 << 5)
-CLASSES = {"three_same": three_same, "three_diff": three_diff, "misc": misc, "permute": permute,
+def modified_imm():
+    for q in (0, 1):
+        for op in (0, 1):
+            for cmode in range(15):
+                for imm8 in (0x00, 0x5a, 0xff, 0x80, 0x01, 0xa5):
+                    yield (0x0f000400 | q << 30 | op << 29 | (imm8 >> 5) << 16 | cmode << 12 | (imm8 & 31) << 5)
+CLASSES = {"modified_imm": modified_imm, "three_same": three_same, "three_diff": three_diff, "misc": misc, "permute": permute,
            "shift_imm": shift_imm, "by_element": by_element}
 
 def disassemble(words):
