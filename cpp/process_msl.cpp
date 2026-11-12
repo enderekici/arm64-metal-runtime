@@ -125,6 +125,352 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         bool max_finite = mode == 3u || (mode == 1u && sign != 0) || (mode == 2u && sign == 0);
         return sign_bit | (max_finite ? 0x7f7ffffful : 0x7f800000ul);
     }
+    // Scalar FP arithmetic on integers (Metal has no binary64). Value of an
+    // operand is significand/2^63 * 2^exponent with bit 63 set.
+    struct FpOperand { ulong sign; int exponent; ulong significand; uint kind; };
+    uint fp_kind(ulong bits, bool wide) {
+        uint fraction_bits = wide ? 52u : 23u;
+        uint exponent_bits = wide ? 11u : 8u;
+        ulong exponent = (bits >> fraction_bits) & ((1ul << exponent_bits) - 1ul);
+        ulong fraction = bits & ((1ul << fraction_bits) - 1ul);
+        if (exponent != (1ul << exponent_bits) - 1ul) return 1u;
+        if (fraction == 0) return 2u;
+        return ((fraction >> (fraction_bits - 1u)) & 1ul) != 0 ? 3u : 4u;
+    }
+    FpOperand fp_unpack(ulong bits, bool wide, device ulong *state) {
+        uint fraction_bits = wide ? 52u : 23u;
+        uint exponent_bits = wide ? 11u : 8u;
+        int bias = wide ? 1023 : 127;
+        bits &= wide ? ~0ul : 0xfffffffful;
+        FpOperand result;
+        result.sign = (bits >> (fraction_bits + exponent_bits)) & 1ul;
+        ulong exponent = (bits >> fraction_bits) & ((1ul << exponent_bits) - 1ul);
+        ulong fraction = bits & ((1ul << fraction_bits) - 1ul);
+        result.exponent = 0;
+        result.significand = fraction;
+        if (exponent == (1ul << exponent_bits) - 1ul) {
+            result.kind = fraction == 0 ? 2u :
+                (((fraction >> (fraction_bits - 1u)) & 1ul) != 0 ? 3u : 4u);
+            return result;
+        }
+        if (exponent == 0) {
+            result.significand = 0;
+            result.kind = 0u;
+            if (fraction == 0) return result;
+            if ((state[@GUEST_FPCR@] & (1ul << 24)) != 0) {
+                state[@GUEST_FPSR@] |= 128ul;
+                return result;
+            }
+            uint top = 63u - clz(fraction);
+            result.kind = 1u;
+            result.exponent = int(top) + (1 - bias - int(fraction_bits));
+            result.significand = fraction << (63u - top);
+            return result;
+        }
+        result.kind = 1u;
+        result.exponent = int(exponent) - bias;
+        result.significand = (fraction | (1ul << fraction_bits)) << (63u - fraction_bits);
+        return result;
+    }
+    ulong fp_sign_bit(ulong sign, bool wide) { return sign << (wide ? 63u : 31u); }
+    ulong fp_default_nan(bool wide) { return wide ? 0x7ff8000000000000ul : 0x7fc00000ul; }
+    ulong fp_infinity(ulong sign, bool wide) {
+        return fp_sign_bit(sign, wide) | (wide ? 0x7ff0000000000000ul : 0x7f800000ul);
+    }
+    ulong fp_quiet(ulong bits, bool wide, device ulong *state) {
+        if ((state[@GUEST_FPCR@] & (1ul << 25)) != 0) return fp_default_nan(wide);
+        return bits | (1ul << (wide ? 51u : 22u));
+    }
+    // ARM FPProcessNaNs: signaling first, then quiet, operand order preserved.
+    bool fp_process_nans(ulong left, ulong right, bool wide, device ulong *state,
+                         thread ulong &result) {
+        ulong mask = wide ? ~0ul : 0xfffffffful;
+        left &= mask;
+        right &= mask;
+        uint left_kind = fp_kind(left, wide);
+        uint right_kind = fp_kind(right, wide);
+        if (left_kind < 3u && right_kind < 3u) return false;
+        if (left_kind == 4u || right_kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+        ulong source = left_kind == 4u ? left : right_kind == 4u ? right :
+                       left_kind == 3u ? left : right;
+        result = fp_quiet(source, wide, state);
+        return true;
+    }
+    // Round value = significand/2^63 * 2^exponent (bit 63 set, bit 0 sticky).
+    ulong fp_pack(ulong sign, int exponent, ulong significand, bool wide, device ulong *state) {
+        uint precision = wide ? 53u : 24u;
+        int minimum = wide ? -1022 : -126;
+        uint fraction_bits = wide ? 52u : 23u;
+        int bias = wide ? 1023 : 127;
+        ulong fpcr = state[@GUEST_FPCR@];
+        uint mode = uint(fpcr >> 22) & 3u;
+        ulong sign_bit = fp_sign_bit(sign, wide);
+        bool tiny = exponent < minimum;
+        if (tiny && (fpcr & (1ul << 24)) != 0) {
+            state[@GUEST_FPSR@] |= 8ul;
+            return sign_bit;
+        }
+        uint shift = 64u - precision;
+        if (tiny) {
+            ulong extra = ulong(minimum - exponent);
+            shift += extra >= 64ul ? 64u : uint(extra);
+        }
+        ulong kept = 0;
+        ulong remainder;
+        ulong halfway;
+        if (shift > 64u) {
+            remainder = 1ul;
+            halfway = 2ul;
+        } else if (shift == 64u) {
+            remainder = significand;
+            halfway = 1ul << 63;
+        } else {
+            kept = significand >> shift;
+            remainder = significand & ((1ul << shift) - 1ul);
+            halfway = 1ul << (shift - 1u);
+        }
+        bool up = (mode == 0u && (remainder > halfway || (remainder == halfway && (kept & 1ul) != 0)))
+               || (mode == 1u && sign == 0 && remainder != 0)
+               || (mode == 2u && sign != 0 && remainder != 0);
+        if (remainder != 0) {
+            state[@GUEST_FPSR@] |= 16ul;
+            if (tiny) state[@GUEST_FPSR@] |= 8ul;
+        }
+        kept += up ? 1ul : 0ul;
+        ulong infinity = wide ? 0x7ff0000000000000ul : 0x7f800000ul;
+        ulong bits;
+        if (tiny) {
+            bits = kept;
+        } else {
+            bits = (ulong(exponent + bias) << fraction_bits) + (kept - (1ul << (precision - 1u)));
+            if (bits >= infinity) {
+                state[@GUEST_FPSR@] |= 20ul;
+                bool max_finite = mode == 3u || (mode == 1u && sign != 0) || (mode == 2u && sign == 0);
+                return sign_bit | (max_finite ? infinity - 1ul : infinity);
+            }
+        }
+        return sign_bit | bits;
+    }
+    ulong fp_add_operands(FpOperand a, FpOperand b, bool wide, device ulong *state) {
+        uint mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
+        if (a.kind == 2u || b.kind == 2u) {
+            if (a.kind == 2u && b.kind == 2u && a.sign != b.sign) {
+                state[@GUEST_FPSR@] |= 1ul;
+                return fp_default_nan(wide);
+            }
+            return fp_infinity(a.kind == 2u ? a.sign : b.sign, wide);
+        }
+        if (a.kind == 0u && b.kind == 0u)
+            return fp_sign_bit(a.sign == b.sign ? a.sign : (mode == 2u ? 1ul : 0ul), wide);
+        if (a.kind == 0u) return fp_pack(b.sign, b.exponent, b.significand, wide, state);
+        if (b.kind == 0u) return fp_pack(a.sign, a.exponent, a.significand, wide, state);
+        if (a.exponent < b.exponent ||
+            (a.exponent == b.exponent && a.significand < b.significand)) {
+            FpOperand swap = a;
+            a = b;
+            b = swap;
+        }
+        uint distance = uint(a.exponent - b.exponent);
+        ulong larger = a.significand >> 1;
+        ulong smaller = b.significand >> 1;
+        ulong aligned = distance >= 63u ? (smaller != 0 ? 1ul : 0ul)
+            : ((smaller >> distance) | (((smaller & ((1ul << distance) - 1ul)) != 0) ? 1ul : 0ul));
+        ulong sum;
+        if (a.sign == b.sign) {
+            sum = larger + aligned;
+        } else {
+            sum = larger - aligned;
+            if (sum == 0) return fp_sign_bit(mode == 2u ? 1ul : 0ul, wide);
+        }
+        uint zeros = clz(sum);
+        return fp_pack(a.sign, a.exponent + 1 - int(zeros), sum << zeros, wide, state);
+    }
+    ulong fp_multiply_operands(FpOperand a, FpOperand b, bool wide, device ulong *state) {
+        ulong sign = a.sign ^ b.sign;
+        if ((a.kind == 2u && b.kind == 0u) || (a.kind == 0u && b.kind == 2u)) {
+            state[@GUEST_FPSR@] |= 1ul;
+            return fp_default_nan(wide);
+        }
+        if (a.kind == 2u || b.kind == 2u) return fp_infinity(sign, wide);
+        if (a.kind == 0u || b.kind == 0u) return fp_sign_bit(sign, wide);
+        ulong high = mulhi(a.significand, b.significand);
+        ulong low = a.significand * b.significand;
+        int exponent = a.exponent + b.exponent + 1;
+        if ((high >> 63) == 0) {
+            high = (high << 1) | (low >> 63);
+            low <<= 1;
+            exponent -= 1;
+        }
+        return fp_pack(sign, exponent, high | (low != 0 ? 1ul : 0ul), wide, state);
+    }
+    // 0 FMUL, 2 FADD, 3 FSUB, 8 FNMUL
+    ulong fp_arithmetic(uint operation, ulong left, ulong right, bool wide, device ulong *state) {
+        ulong nan_result;
+        if (fp_process_nans(left, right, wide, state, nan_result))
+            return operation == 8u ? nan_result ^ fp_sign_bit(1ul, wide) : nan_result;
+        FpOperand a = fp_unpack(left, wide, state);
+        FpOperand b = fp_unpack(right, wide, state);
+        if (operation == 2u) return fp_add_operands(a, b, wide, state);
+        if (operation == 3u) {
+            b.sign ^= 1ul;
+            return fp_add_operands(a, b, wide, state);
+        }
+        ulong product = fp_multiply_operands(a, b, wide, state);
+        return operation == 8u ? product ^ fp_sign_bit(1ul, wide) : product;
+    }
+    ulong fp_flushed(ulong bits, bool wide, device ulong *state) {
+        FpOperand value = fp_unpack(bits, wide, state);
+        if (value.kind == 0u) return fp_sign_bit(value.sign, wide);
+        return bits & (wide ? ~0ul : 0xfffffffful);
+    }
+    ulong fp_order_key(ulong bits, bool wide) {
+        ulong sign = wide ? (1ul << 63) : (1ul << 31);
+        return (bits & sign) != 0 ? ~bits & (wide ? ~0ul : 0xfffffffful) : bits | sign;
+    }
+    // 4 FMAX, 5 FMIN, 6 FMAXNM, 7 FMINNM
+    ulong fp_extreme(uint operation, ulong left, ulong right, bool wide, device ulong *state) {
+        ulong mask = wide ? ~0ul : 0xfffffffful;
+        left &= mask;
+        right &= mask;
+        if (operation >= 6u) {
+            uint left_kind = fp_kind(left, wide);
+            uint right_kind = fp_kind(right, wide);
+            if (left_kind == 3u && right_kind < 3u) return fp_flushed(right, wide, state);
+            if (right_kind == 3u && left_kind < 3u) return fp_flushed(left, wide, state);
+        }
+        ulong nan_result;
+        if (fp_process_nans(left, right, wide, state, nan_result)) return nan_result;
+        left = fp_flushed(left, wide, state);
+        right = fp_flushed(right, wide, state);
+        bool pick_left = (operation & 1u) == 0u
+            ? fp_order_key(left, wide) >= fp_order_key(right, wide)
+            : fp_order_key(left, wide) <= fp_order_key(right, wide);
+        return pick_left ? left : right;
+    }
+    ulong fp_square_root(ulong bits, bool wide, device ulong *state) {
+        ulong mask = wide ? ~0ul : 0xfffffffful;
+        bits &= mask;
+        uint kind = fp_kind(bits, wide);
+        if (kind >= 3u) {
+            if (kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+            return fp_quiet(bits, wide, state);
+        }
+        FpOperand value = fp_unpack(bits, wide, state);
+        if (value.kind == 0u) return fp_sign_bit(value.sign, wide);
+        if (value.sign != 0) {
+            state[@GUEST_FPSR@] |= 1ul;
+            return fp_default_nan(wide);
+        }
+        if (value.kind == 2u) return fp_infinity(0ul, wide);
+        ulong high;
+        ulong low;
+        if ((value.exponent & 1) == 0) {
+            high = value.significand >> 1;
+            low = value.significand << 63;
+        } else {
+            high = value.significand;
+            low = 0ul;
+        }
+        ulong root = 0ul;
+        for (int bit = 63; bit >= 0; --bit) {
+            ulong trial = root | (1ul << uint(bit));
+            ulong trial_high = mulhi(trial, trial);
+            ulong trial_low = trial * trial;
+            if (trial_high < high || (trial_high == high && trial_low <= low)) root = trial;
+        }
+        bool inexact = mulhi(root, root) != high || root * root != low;
+        return fp_pack(0ul, value.exponent >> 1, root | (inexact ? 1ul : 0ul), wide, state);
+    }
+    // Round a finite nonzero value to an integer magnitude. Rounding modes:
+    // 0 ties-even, 1 +inf, 2 -inf, 3 zero, 4 ties-away. 'huge' when >= 2^64.
+    ulong fp_round_magnitude(FpOperand value, uint mode, thread bool &inexact, thread bool &huge) {
+        inexact = false;
+        huge = false;
+        if (value.exponent >= 64) {
+            huge = true;
+            return 0ul;
+        }
+        if (value.exponent == 63) return value.significand;
+        uint shift = uint(63 - value.exponent);
+        ulong kept = 0;
+        ulong remainder;
+        ulong halfway;
+        if (shift > 64u) {
+            remainder = 1ul;
+            halfway = 2ul;
+        } else if (shift == 64u) {
+            remainder = value.significand;
+            halfway = 1ul << 63;
+        } else {
+            kept = value.significand >> shift;
+            remainder = shift == 0u ? 0ul : value.significand & ((1ul << shift) - 1ul);
+            halfway = shift == 0u ? 0ul : 1ul << (shift - 1u);
+        }
+        inexact = remainder != 0;
+        bool up = (mode == 0u && (remainder > halfway || (remainder == halfway && (kept & 1ul) != 0)))
+               || (mode == 1u && value.sign == 0 && remainder != 0)
+               || (mode == 2u && value.sign != 0 && remainder != 0)
+               || (mode == 4u && remainder != 0 && remainder >= halfway);
+        return kept + (up ? 1ul : 0ul);
+    }
+    // FRINT*: mode 0..4 as above, 5 = current FPCR mode; exact flag only for FRINTX.
+    ulong fp_round_to_integral(ulong bits, uint mode, bool signal_inexact, bool wide, device ulong *state) {
+        bits &= wide ? ~0ul : 0xfffffffful;
+        uint kind = fp_kind(bits, wide);
+        if (kind >= 3u) {
+            if (kind == 4u) state[@GUEST_FPSR@] |= 1ul;
+            return fp_quiet(bits, wide, state);
+        }
+        FpOperand value = fp_unpack(bits, wide, state);
+        if (value.kind != 1u) return value.kind == 2u ? bits : fp_sign_bit(value.sign, wide);
+        if (mode == 5u) mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
+        bool inexact;
+        bool huge;
+        ulong integer = fp_round_magnitude(value, mode, inexact, huge);
+        if (huge) return bits;
+        if (inexact && signal_inexact) state[@GUEST_FPSR@] |= 16ul;
+        if (integer == 0) return fp_sign_bit(value.sign, wide);
+        uint zeros = clz(integer);
+        return fp_pack(value.sign, 63 - int(zeros), integer << zeros, wide, state);
+    }
+    // FCVT{N,P,M,Z,A}{S,U} to a W or X destination (value returned zero-extended).
+    ulong fp_to_integer(ulong bits, bool wide_source, bool wide_destination, bool is_unsigned,
+                        uint mode, device ulong *state) {
+        bits &= wide_source ? ~0ul : 0xfffffffful;
+        uint kind = fp_kind(bits, wide_source);
+        ulong width_mask = wide_destination ? ~0ul : 0xfffffffful;
+        ulong signed_limit = wide_destination ? (1ul << 63) : (1ul << 31);
+        if (kind >= 3u) {
+            state[@GUEST_FPSR@] |= 1ul;
+            return 0ul;
+        }
+        FpOperand value = fp_unpack(bits, wide_source, state);
+        bool negative = value.sign != 0;
+        if (value.kind == 0u) return 0ul;
+        ulong magnitude = 0ul;
+        bool inexact = false;
+        bool overflow = false;
+        if (value.kind == 2u) {
+            overflow = true;
+        } else {
+            magnitude = fp_round_magnitude(value, mode, inexact, overflow);
+        }
+        if (!overflow) {
+            if (is_unsigned) {
+                if (negative && magnitude != 0) overflow = true;
+                else if (magnitude > width_mask) overflow = true;
+            } else if (negative ? magnitude > signed_limit : magnitude > signed_limit - 1ul) {
+                overflow = true;
+            }
+        }
+        if (overflow) {
+            state[@GUEST_FPSR@] |= 1ul;
+            if (is_unsigned) return negative ? 0ul : width_mask;
+            return negative ? signed_limit : signed_limit - 1ul;
+        }
+        if (inexact) state[@GUEST_FPSR@] |= 16ul;
+        return (negative ? 0ul - magnitude : magnitude) & width_mask;
+    }
     // IEEE-754 scalar divide using integer significands. Metal lacks binary64;
     // this also gives binary32 the guest FPCR rounding mode and FPSR flags.
     ulong fp_divide(ulong left, ulong right, bool wide, device ulong *state) {
