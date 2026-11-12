@@ -130,6 +130,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     // Scalar FP arithmetic on integers (Metal has no binary64). Value of an
     // operand is significand/2^63 * 2^exponent with bit 63 set.
     struct FpOperand { ulong sign; int exponent; ulong significand; uint kind; };
+    ulong lane_mask_bits(uint width) { return ~0ul >> (64u - width); }
     // Format codes: 0 binary32, 1 binary64, 2 binary16.
     uint fp_fbits(uint f) { return f == 1u ? 52u : (f == 0u ? 23u : 10u); }
     uint fp_ebits(uint f) { return f == 1u ? 11u : (f == 0u ? 8u : 5u); }
@@ -589,12 +590,12 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_pack(value.sign, 63 - int(zeros), integer << zeros, wide, state);
     }
     // FCVT{N,P,M,Z,A}{S,U} to a W or X destination (value returned zero-extended).
-    ulong fp_to_integer_fixed(ulong bits, uint wide_source, uint wide_destination, bool is_unsigned,
+    ulong fp_to_integer_fixed(ulong bits, uint wide_source, uint destination_bits, bool is_unsigned,
                               uint mode, uint fixed_bits, device ulong *state) {
         bits &= fp_vmask(wide_source);
         uint kind = fp_kind(bits, wide_source);
-        ulong width_mask = wide_destination ? ~0ul : 0xfffffffful;
-        ulong signed_limit = wide_destination ? (1ul << 63) : (1ul << 31);
+        ulong width_mask = lane_mask_bits(destination_bits);
+        ulong signed_limit = 1ul << (destination_bits - 1u);
         if (kind >= 3u) {
             state[@GUEST_FPSR@] |= 1ul;
             return 0ul;
@@ -629,7 +630,8 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     }
     ulong fp_to_integer(ulong bits, uint wide_source, uint wide_destination, bool is_unsigned,
                         uint mode, device ulong *state) {
-        return fp_to_integer_fixed(bits, wide_source, wide_destination, is_unsigned, mode, 0u, state);
+        return fp_to_integer_fixed(bits, wide_source, wide_destination != 0u ? 64u : 32u,
+                                   is_unsigned, mode, 0u, state);
     }
     // IEEE-754 scalar divide using integer significands. Metal lacks binary64;
     // this also gives binary32 the guest FPCR rounding mode and FPSR flags.

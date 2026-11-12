@@ -503,6 +503,98 @@ ulong2 neon_fcvtn(ulong2 acc, ulong2 src, uint q, bool double_source, device ulo
                             double_source ? 0u : 2u, state));
     return target;
 }
+ulong2 neon_lane0(ulong2 value, uint w) { return ulong2(value[0] & lane_mask(w), 0ul); }
+uint neon_fp_width(uint f) { return f == 1u ? 64u : (f == 0u ? 32u : 16u); }
+// Two-register FP groups. kind: 0 to integer (arg = rounding mode), 1 from integer, 2 round
+// (arg 0..4 modes, 5 FRINTI, 6 FRINTX), 3 compare with zero (arg 0 EQ, 1 GE, 2 GT, 3 LE, 4 LT), 4 sqrt.
+ulong2 neon_fp_misc(uint kind, uint arg, bool is_unsigned, uint fixed, uint f, uint q, bool scalar,
+                    ulong2 src, device ulong *state) {
+    uint w = neon_fp_width(f);
+    uint lanes = scalar ? 1u : (q != 0 ? 128u : 64u) / w;
+    ulong2 target = ulong2(0);
+    for (uint lane = 0; lane < lanes; ++lane) {
+        ulong a = lane_read(src, lane, w);
+        ulong r = 0ul;
+        switch (kind) {
+        case 0u: r = fp_to_integer_fixed(a, f, w, is_unsigned, arg, fixed, state); break;
+        case 1u: {
+            ulong sign = 0ul;
+            ulong magnitude = a;
+            if (!is_unsigned) {
+                long s = neon_sx(a, w);
+                sign = s < 0 ? 1ul : 0ul;
+                magnitude = s < 0 ? 0ul - ulong(s) : ulong(s);
+            }
+            r = fp_from_integer(magnitude, sign, fixed, f, state);
+            break;
+        }
+        case 2u: r = fp_round_to_integral(a, arg == 6u ? 5u : arg, arg == 6u, f, state); break;
+        case 3u: {
+            uint c = fp_compare(a, 0ul, f, arg != 0u, state);
+            bool t = arg == 0u ? c == 6u : arg == 1u ? (c == 6u || c == 2u) : arg == 2u ? c == 2u
+                   : arg == 3u ? (c == 6u || c == 8u) : c == 8u;
+            r = t ? lane_mask(w) : 0ul;
+            break;
+        }
+        default: r = fp_square_root(a, f, state); break;
+        }
+        lane_add(target, lane, w, r);
+    }
+    return target;
+}
+// Three-same FP groups (non-arithmetic): 0 FMAXNM 1 FMINNM 2 FMAX 3 FMIN 4 FMAXNMP 5 FMINNMP
+// 6 FMAXP 7 FMINP 8 FADDP 9 FABD 10 FMULX 11 FDIV 12 FCMEQ 13 FCMGE 14 FCMGT 15 FACGE 16 FACGT.
+ulong2 neon_fp_three(uint op, uint f, uint q, bool scalar, ulong2 left, ulong2 right,
+                     device ulong *state) {
+    uint w = neon_fp_width(f);
+    uint lanes = scalar ? 1u : (q != 0 ? 128u : 64u) / w;
+    bool pairwise = op >= 4u && op <= 8u;
+    ulong sign = 1ul << (w - 1u);
+    ulong2 target = ulong2(0);
+    for (uint lane = 0; lane < lanes; ++lane) {
+        ulong a, b;
+        if (pairwise && scalar) {
+            a = lane_read(left, 0u, w);
+            b = lane_read(left, 1u, w);
+        } else if (pairwise) {
+            uint half_lanes = lanes / 2u;
+            ulong2 pair_source = lane < half_lanes ? left : right;
+            uint index = (lane % half_lanes) * 2u;
+            a = lane_read(pair_source, index, w);
+            b = lane_read(pair_source, index + 1u, w);
+        } else {
+            a = lane_read(left, lane, w);
+            b = lane_read(right, lane, w);
+        }
+        ulong r = 0ul;
+        switch (op) {
+        case 0u: case 4u: r = fp_extreme(6u, a, b, f, state); break;
+        case 1u: case 5u: r = fp_extreme(7u, a, b, f, state); break;
+        case 2u: case 6u: r = fp_extreme(4u, a, b, f, state); break;
+        case 3u: case 7u: r = fp_extreme(5u, a, b, f, state); break;
+        case 8u: r = fp_arithmetic(2u, a, b, f, state); break;
+        case 9u: r = fp_arithmetic(3u, a, b, f, state) & ~sign; break;
+        case 10u: {
+            FpOperand x = fp_unpack(a, f, state);
+            FpOperand y = fp_unpack(b, f, state);
+            if (x.kind < 3u && y.kind < 3u && ((x.kind == 0u && y.kind == 2u) || (x.kind == 2u && y.kind == 0u)))
+                r = ((x.sign ^ y.sign) != 0 ? sign : 0ul) | (ulong(fp_bias(f) + 1) << fp_fbits(f));
+            else r = fp_arithmetic(0u, a, b, f, state);
+            break;
+        }
+        case 11u: r = fp_divide(a, b, f, state); break;
+        default: {
+            if (op >= 15u) { a &= ~sign; b &= ~sign; }
+            uint c = fp_compare(a, b, f, op != 12u, state);
+            bool t = op == 12u ? c == 6u : (op == 13u || op == 15u) ? (c == 6u || c == 2u) : c == 2u;
+            r = t ? lane_mask(w) : 0ul;
+            break;
+        }
+        }
+        lane_add(target, lane, w, r);
+    }
+    return target;
+}
 )METAL";
   return source;
 }
@@ -528,6 +620,98 @@ inline std::string flag(bool v) { return v ? "true" : "false"; }
 
 }  // namespace neon_detail
 
+// Floating-point AdvSIMD groups handled by neon_fp_misc / neon_fp_three.
+inline std::optional<translate_core::Instruction> lower_neon_fp(std::uint32_t bits, std::int64_t pc) {
+  using namespace neon_detail;
+  const auto field = [&](int start, int width) { return bit_field(bits, start, width); };
+  const std::uint32_t rd = field(0, 5), rn = field(5, 5), rm = field(16, 5);
+  const std::uint32_t q = field(30, 1);
+  const bool u = field(29, 1) != 0;
+  const std::string n = vreg(rn), m = vreg(rm);
+  const bool vectorMisc = (bits & 0x9f3e0c00) == 0x0e200800;
+  const bool scalarMisc = (bits & 0xdf3e0c00) == 0x5e200800;
+  const bool vectorMisc16 = (bits & 0x9f7e0c00) == 0x0e780800;
+  const bool scalarMisc16 = (bits & 0xdf7e0c00) == 0x5e780800;
+  if (vectorMisc || scalarMisc || vectorMisc16 || scalarMisc16) {
+    const bool half = vectorMisc16 || scalarMisc16;
+    const bool scalar = scalarMisc || scalarMisc16;
+    const auto opcode = field(12, 5);
+    const bool a = field(23, 1) != 0;
+    const std::uint32_t f = half ? 2 : (field(22, 1) ? 1 : 0);
+    if (f == 1 && !scalar && q == 0) return std::nullopt;
+    std::uint32_t kind = 0, arg = 0;
+    bool unsignedOp = u;
+    switch (opcode) {
+    case 0x1a: kind = 0; arg = a ? 1 : 0; break;
+    case 0x1b: kind = 0; arg = a ? 3 : 2; break;
+    case 0x1c: if (a) return std::nullopt; kind = 0; arg = 4; break;
+    case 0x1d: if (a) return std::nullopt; kind = 1; break;
+    case 0x18:
+      if (u && a) return std::nullopt;
+      kind = 2; arg = u ? 4 : (a ? 1 : 0); break;
+    case 0x19:
+      kind = 2; arg = u ? (a ? 5 : 6) : (a ? 3 : 2); break;
+    case 0x0c: if (!a) return std::nullopt; kind = 3; arg = u ? 1 : 2; break;
+    case 0x0d: if (!a) return std::nullopt; kind = 3; arg = u ? 3 : 0; break;
+    case 0x0e: if (!a || u) return std::nullopt; kind = 3; arg = 4; break;
+    case 0x1f: if (!a || !u) return std::nullopt; kind = 4; break;
+    default: return std::nullopt;
+    }
+    return assign(rd, "neon_fp_misc(" + u32(kind) + ", " + u32(arg) + ", " + flag(unsignedOp) +
+                          ", 0u, " + u32(f) + ", " + u32(q) + ", " + flag(scalar) + ", " + n + ", x)", pc);
+  }
+  const bool vectorThree = (bits & 0x9f200400) == 0x0e200400 && field(11, 5) >= 0x18;
+  const bool scalarThree = (bits & 0xdf200400) == 0x5e200400 && field(11, 5) >= 0x18;
+  const bool vectorThree16 = (bits & 0x9f60c400) == 0x0e400400;
+  const bool scalarThree16 = (bits & 0xdf60c400) == 0x5e400400;
+  if (vectorThree || scalarThree || vectorThree16 || scalarThree16) {
+    const bool half = vectorThree16 || scalarThree16;
+    const bool scalar = scalarThree || scalarThree16;
+    const auto opc3 = field(11, 3);
+    const bool a = field(23, 1) != 0;
+    const std::uint32_t f = half ? 2 : (field(22, 1) ? 1 : 0);
+    if (f == 1 && !scalar && q == 0) return std::nullopt;
+    int op = -1;
+    if (!u) {
+      switch (opc3) {
+      case 0: op = a ? 1 : 0; break;
+      case 3: if (!a) op = 10; break;
+      case 4: if (!a) op = 12; break;
+      case 6: op = a ? 3 : 2; break;
+      default: break;
+      }
+    } else {
+      switch (opc3) {
+      case 0: op = a ? 5 : 4; break;
+      case 2: op = a ? 9 : 8; break;
+      case 4: op = a ? 14 : 13; break;
+      case 5: op = a ? 16 : 15; break;
+      case 6: op = a ? 7 : 6; break;
+      case 7: if (!a) op = 11; break;
+      default: break;
+      }
+    }
+    if (op < 0) return std::nullopt;
+    if (scalar && op != 9 && op != 10 && !(op >= 12 && op <= 16)) return std::nullopt;
+    return assign(rd, "neon_fp_three(" + u32(op) + ", " + u32(f) + ", " + u32(q) + ", " +
+                          flag(scalar) + ", " + n + ", " + m + ", x)", pc);
+  }
+  // Scalar pairwise FP (FADDP, FMAXP, FMINP, FMAXNMP, FMINNMP) over the two lanes of the source.
+  if ((bits & 0xdf3e0c00) == 0x5e300800 && u) {
+    const auto opcode = field(12, 5);
+    const bool a = field(23, 1) != 0;
+    const std::uint32_t f = field(22, 1) ? 1 : 0;
+    int op = -1;
+    if (opcode == 0x0d && !a) op = 8;
+    if (opcode == 0x0c) op = a ? 5 : 4;
+    if (opcode == 0x0f) op = a ? 7 : 6;
+    if (op < 0) return std::nullopt;
+    return assign(rd, "neon_fp_three(" + u32(op) + ", " + u32(f) + ", 1u, true, " + n + ", " + n +
+                          ", x)", pc);
+  }
+  return std::nullopt;
+}
+
 // Returns the lowered instruction or nullopt when the encoding is not in this subset.
 inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits, std::int64_t pc) {
   using namespace neon_detail;
@@ -537,6 +721,96 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
   const bool u = field(29, 1) != 0;
   const std::string d = vreg(rd), n = vreg(rn), m = vreg(rm);
 
+  // FP groups: two-register misc, three-same (non-arithmetic), scalar and FP16 forms.
+  if (const auto lowered = lower_neon_fp(bits, pc)) return lowered;
+  // Scalar fixed-point FP conversions and 64-bit/narrow scalar integer shifts.
+  if ((bits & 0xdf800400) == 0x5f000400 && field(19, 4) != 0) {
+    const auto opcode = field(11, 5);
+    const auto immh = field(19, 4);
+    const auto immhb = field(16, 7);
+    const std::uint32_t esize = immh >= 8 ? 64 : immh >= 4 ? 32 : immh >= 2 ? 16 : 8;
+    const auto right = 2 * esize - immhb;
+    const auto left = immhb - esize;
+    const std::string w = u32(esize);
+    const std::string zero = "ulong2(0)";
+    const auto lane0 = [&](const std::string &e) { return "neon_lane0(" + e + ", " + w + ")"; };
+    const std::string dm = "neon_lane0(" + d + ", " + w + ")";
+    const std::string nm = "neon_lane0(" + n + ", " + w + ")";
+    if (opcode == 0x1c || opcode == 0x1f) {
+      if (esize == 8) return std::nullopt;
+      const std::uint32_t f = esize == 64 ? 1 : esize == 32 ? 0 : 2;
+      return assign(rd, "neon_fp_misc(" + u32(opcode == 0x1c ? 1 : 0) + ", 3u, " + flag(u) + ", " +
+                            u32(right) + ", " + u32(f) + ", 1u, true, " + n + ", x)", pc);
+    }
+    switch (opcode) {
+    case 0x00: case 0x02: case 0x04: case 0x06: {
+      if (esize != 64) return std::nullopt;
+      const bool accumulate = opcode == 0x02 || opcode == 0x06;
+      return assign(rd, lane0("neon_shift_imm(" + u32(accumulate ? 1 : 0) + ", " + flag(opcode >= 0x04) +
+                              ", " + flag(!u) + ", " + w + ", 1u, " + u32(right) + ", " +
+                              (accumulate ? dm : zero) + ", " + nm + ", x)"), pc);
+    }
+    case 0x08:
+      if (!u || esize != 64) return std::nullopt;
+      return assign(rd, lane0("neon_shift_imm(3u, false, false, " + w + ", 1u, " + u32(right) + ", " +
+                              dm + ", " + nm + ", x)"), pc);
+    case 0x0a:
+      if (esize != 64) return std::nullopt;
+      return assign(rd, lane0("neon_shift_imm(" + u32(u ? 4 : 2) + ", false, false, " + w + ", 1u, " +
+                              u32(left) + ", " + dm + ", " + nm + ", x)"), pc);
+    case 0x0c:
+      if (!u) return std::nullopt;
+      return assign(rd, lane0("neon_shift_imm(6u, false, false, " + w + ", 1u, " + u32(left) + ", " +
+                              zero + ", " + nm + ", x)"), pc);
+    case 0x0e:
+      return assign(rd, lane0("neon_shift_imm(5u, false, " + flag(!u) + ", " + w + ", 1u, " +
+                              u32(left) + ", " + zero + ", " + nm + ", x)"), pc);
+    default:
+      return std::nullopt;
+    }
+  }
+  // Scalar integer three-same, two-register misc and three-different (lane 0 of the vector forms).
+  if ((bits & 0xdf200400) == 0x5e200400 && field(11, 5) < 0x18) {
+    const auto opcode = field(11, 5);
+    const std::string w = u32(8u << size);
+    switch (opcode) {
+    case 0x01: case 0x05: case 0x09: case 0x0b: case 0x16:
+      if (opcode == 0x16 && (size == 0 || size == 3)) return std::nullopt;
+      break;
+    case 0x06: case 0x07: case 0x08: case 0x0a: case 0x10: case 0x11:
+      if (size != 3) return std::nullopt;
+      break;
+    default: return std::nullopt;
+    }
+    return assign(rd, "neon_lane0(neon_three_same(" + u32(opcode) + ", " + flag(u) + ", " + u32(size) +
+                          ", 1u, neon_lane0(" + d + ", " + w + "), neon_lane0(" + n + ", " + w +
+                          "), neon_lane0(" + m + ", " + w + "), x), " + w + ")", pc);
+  }
+  if ((bits & 0xdf200c00) == 0x5e200000 && size != 0 && size != 3) {
+    const auto opcode = field(12, 4);
+    if ((opcode != 9 && opcode != 11 && opcode != 13) || u) return std::nullopt;
+    const std::string w = u32(8u << size);
+    return assign(rd, "neon_lane0(neon_three_diff(" + u32(opcode) + ", false, " + u32(size) + ", 0u, " +
+                          "neon_lane0(" + d + ", " + u32(16u << size) + "), neon_lane0(" + n + ", " + w + "), neon_lane0(" + m + ", " + w + "), x), " + u32(16u << size) + ")", pc);
+  }
+  if ((bits & 0xdf3e0c00) == 0x5e200800) {
+    const auto opcode = field(12, 5);
+    const std::string w = u32(8u << size);
+    switch (opcode) {
+    case 0x03: case 0x07:
+      return assign(rd, "neon_lane0(neon_misc(" + u32(opcode) + ", " + flag(u) + ", " + u32(size) +
+                            ", 1u, neon_lane0(" + d + ", " + w + "), neon_lane0(" + n + ", " + w + "), x), " + w + ")", pc);
+    case 0x08: case 0x09: case 0x0a: case 0x0b:
+      if (size != 3 || (opcode == 0x0a && u)) return std::nullopt;
+      return assign(rd, "neon_lane0(neon_misc(" + u32(opcode) + ", " + flag(u) + ", 3u, 1u, " + d + ", " +
+                            n + ", x), 64u)", pc);
+    case 0x12: case 0x14:
+      if (size == 3 || (opcode == 0x12 && !u)) return std::nullopt;
+      return assign(rd, "neon_lane0(neon_misc(" + u32(opcode) + ", " + flag(u) + ", " + u32(size) +
+                            ", 0u, ulong2(0), neon_lane0(" + n + ", " + u32(16u << size) + "), x), " + w + ")", pc);
+    default: return std::nullopt;
+    }
+  }
   // Three same (integer opcodes only; 0x03 is the bitwise group).
   if ((bits & 0x9f200400) == 0x0e200400) {
     const auto opcode = field(11, 5);
@@ -666,6 +940,12 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
       return assign(rd, "neon_shift_narrow(" + u32(kind) + ", " + flag(round) + ", " +
                             flag(opcode <= 0x11 || !u) + ", " + w + ", " + vq + ", " +
                             u32(right) + ", " + d + ", " + n + ", x)", pc);
+    }
+    case 0x1c: case 0x1f: {
+      if (esize == 8) return std::nullopt;
+      const std::uint32_t f = esize == 64 ? 1 : esize == 32 ? 0 : 2;
+      return assign(rd, "neon_fp_misc(" + u32(opcode == 0x1c ? 1 : 0) + ", 3u, " + flag(u) + ", " +
+                            u32(right) + ", " + u32(f) + ", " + vq + ", false, " + n + ", x)", pc);
     }
     default:
       return std::nullopt;

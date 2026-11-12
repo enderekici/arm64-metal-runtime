@@ -57,7 +57,66 @@ def modified_imm():
             for cmode in range(15):
                 for imm8 in (0x00, 0x5a, 0xff, 0x80, 0x01, 0xa5):
                     yield (0x0f000400 | q << 30 | op << 29 | (imm8 >> 5) << 16 | cmode << 12 | (imm8 & 31) << 5)
-CLASSES = {"modified_imm": modified_imm, "three_same": three_same, "three_diff": three_diff, "misc": misc, "permute": permute,
+
+def fp_misc():
+    for base in (0x0e200800, 0x5e200800):
+        for u in (0, 1):
+            for size in range(4):
+                for opc in range(0x0c, 0x20):
+                    for q in ((0, 1) if base == 0x0e200800 else (0,)):
+                        yield base | q << 30 | u << 29 | size << 22 | opc << 12 | 1 << 5
+def fp_misc16():
+    for base in (0x0e780800, 0x5e780800):
+        for u in (0, 1):
+            for a in (0, 1):
+                for opc in range(0x0c, 0x20):
+                    for q in ((0, 1) if base == 0x0e780800 else (0,)):
+                        yield base | q << 30 | u << 29 | a << 23 | opc << 12 | 1 << 5
+def fp_three():
+    for base in (0x0e200400, 0x5e200400):
+        for u in (0, 1):
+            for size in range(4):
+                for opc in range(0x18, 0x20):
+                    for q in ((0, 1) if base == 0x0e200400 else (0,)):
+                        yield base | q << 30 | u << 29 | size << 22 | 2 << 16 | opc << 11 | 1 << 5
+def fp_three16():
+    for base in (0x0e400400, 0x5e400400):
+        for u in (0, 1):
+            for a in (0, 1):
+                for opc in range(0, 8):
+                    for q in ((0, 1) if base == 0x0e400400 else (0,)):
+                        yield base | q << 30 | u << 29 | a << 23 | 2 << 16 | opc << 11 | 1 << 5
+def fp_pair():
+    for u in (0, 1):
+        for size in range(4):
+            for opc in range(0x0c, 0x10):
+                yield 0x5e300800 | u << 29 | size << 22 | opc << 12 | 1 << 5
+    for u in (0, 1):
+        for a in (0, 1):
+            for opc in range(0x0c, 0x10):
+                yield 0x5e300800 | u << 29 | a << 23 | opc << 12 | 1 << 5
+def fixed_fp():
+    for base in (0x0f000400, 0x5f000400):
+        for u in (0, 1):
+            for immh in (2, 3, 4, 5, 8, 9, 15):
+                for immb in (0, 1, 3, 7):
+                    for opc in (0x1c, 0x1f):
+                        for q in ((0, 1) if base == 0x0f000400 else (0,)):
+                            yield base | q << 30 | u << 29 | immh << 19 | immb << 16 | opc << 11 | 1 << 5
+def scalar_int():
+    for u in (0, 1):
+        for size in range(4):
+            for opc in range(0x18):
+                yield 0x5e200400 | u << 29 | size << 22 | 2 << 16 | opc << 11 | 1 << 5
+            for opc in range(0x18):
+                yield 0x5e200800 | u << 29 | size << 22 | opc << 12 | 1 << 5
+            for opc in range(15):
+                yield 0x5e200000 | u << 29 | size << 22 | 2 << 16 | opc << 12 | 1 << 5
+        for immh in (1, 2, 4, 8, 15):
+            for immb in (0, 1, 3, 7):
+                for opc in (0, 2, 4, 6, 8, 0xa, 0xc, 0xe, 0x10, 0x11, 0x12, 0x13, 0x14):
+                    yield 0x5f000400 | u << 29 | immh << 19 | immb << 16 | opc << 11 | 1 << 5
+CLASSES = {"fp_misc": fp_misc, "fp_misc16": fp_misc16, "fp_three": fp_three, "fp_three16": fp_three16, "fp_pair": fp_pair, "fixed_fp": fixed_fp, "scalar_int": scalar_int, "modified_imm": modified_imm, "three_same": three_same, "three_diff": three_diff, "misc": misc, "permute": permute,
            "shift_imm": shift_imm, "by_element": by_element}
 
 def disassemble(words):
@@ -126,7 +185,11 @@ def main():
     words = sorted(set(CLASSES[cls]()))
     dis = disassemble(words)
     assert len(dis) == len(words), (len(dis), len(words))
-    good = [(w, t) for w, t in zip(words, dis) if not (t.startswith(".") or "unknown" in t or t.startswith("udf"))]
+    good = [(w, t) for w, t in zip(words, dis) if not (t.startswith(".") or "unknown" in t or t.startswith("udf")
+            or re.match(r"(fadd|fsub|fmul|fmla|fmls|fabs|fneg|fmlal|fmlsl)[. ]", t))]
+    ex = os.environ.get("EXCLUDE")
+    if ex:
+        good = [(w, t) for w, t in good if not re.search(ex, t)]
     tests, table = [], []
     for i, (w, t) in enumerate(good):
         tests.append(f'''static void t{i}(const uint64_t *in, uint64_t *out) {{

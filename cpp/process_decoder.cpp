@@ -1434,7 +1434,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     const int format = fpFormat(field(22, 2));
     const uint32_t fixedBits = 64 - field(10, 6);
     const std::string value = "fp_to_integer_fixed(x[" + str(806 + 2 * rn) + "], " + str(format) +
-                              "u, " + (field(31, 1) ? "1u" : "0u") + ", " +
+                              "u, " + (field(31, 1) ? "64u" : "32u") + ", " +
                               (field(16, 1) ? "true" : "false") + ", 3u, " + str(fixedBits) +
                               "u, x)";
     return rd == 31 ? emit() : emit(std::string(str(reg(rd))) + " = " + value + ";");
