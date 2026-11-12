@@ -45,13 +45,12 @@ def by_element():
     for q in (0, 1):
         for u in (0, 1):
             for size in (1, 2):
-                for opc in (0, 2, 3, 4, 6, 7, 8, 0xa, 0xb, 0xc, 0xd):
+                for opc in ((0, 2, 4, 6, 0xa) if u else (2, 3, 6, 7, 8, 0xa, 0xb, 0xc, 0xd)):
                     for hlm in range(8):
                         h, l, m = hlm >> 2 & 1, hlm >> 1 & 1, hlm & 1
-                        rm = 2 | (m << 4 if size == 2 else 0)
-                        mm = m if size == 1 else 0
-                        yield (0x0f000000 | q << 30 | u << 29 | size << 22 | l << 21 | mm << 20 | (rm & 15) << 16
-                               | (rm & 16 if size == 2 else 0) << 0 | opc << 12 | h << 11 | 1 << 5)
+                        if size == 2 and m: continue  # Rm would be v18, outside the harness inputs
+                        yield (0x0f000000 | q << 30 | u << 29 | size << 22 | l << 21 | m << 20 | 2 << 16
+                               | opc << 12 | h << 11 | 1 << 5)
 CLASSES = {"three_same": three_same, "three_diff": three_diff, "misc": misc, "permute": permute,
            "shift_imm": shift_imm, "by_element": by_element}
 

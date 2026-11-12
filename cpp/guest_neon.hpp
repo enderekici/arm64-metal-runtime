@@ -586,6 +586,93 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
     return assign(rd, "neon_misc(" + u32(opcode) + ", " + flag(u) + ", " + u32(size) + ", " +
                           u32(q) + ", " + d + ", " + n + ", x)", pc);
   }
+  // Shift by immediate (vector).
+  if ((bits & 0x9f800400) == 0x0f000400 && field(19, 4) != 0) {
+    const auto opcode = field(11, 5);
+    const auto immh = field(19, 4);
+    const auto immhb = field(16, 7);
+    const std::uint32_t esize = immh >= 8 ? 64 : immh >= 4 ? 32 : immh >= 2 ? 16 : 8;
+    if (esize == 64 && q == 0) return std::nullopt;
+    const auto right = 2 * esize - immhb;
+    const auto left = immhb - esize;
+    const std::string vq = u32(q);
+    const std::string w = u32(esize);
+    const std::string zero = "ulong2(0)";
+    switch (opcode) {
+    case 0x00: case 0x02: case 0x04: case 0x06: {
+      const bool accumulate = opcode == 0x02 || opcode == 0x06;
+      const bool round = opcode >= 0x04;
+      return assign(rd, "neon_shift_imm(" + u32(accumulate ? 1 : 0) + ", " + flag(round) + ", " +
+                            flag(!u) + ", " + w + ", " + vq + ", " + u32(right) + ", " +
+                            (accumulate ? d : zero) + ", " + n + ", x)", pc);
+    }
+    case 0x08:
+      if (!u) return std::nullopt;
+      return assign(rd, "neon_shift_imm(3u, false, false, " + w + ", " + vq + ", " + u32(right) +
+                            ", " + d + ", " + n + ", x)", pc);
+    case 0x0a:
+      return assign(rd, "neon_shift_imm(" + u32(u ? 4 : 2) + ", false, false, " + w + ", " + vq +
+                            ", " + u32(left) + ", " + d + ", " + n + ", x)", pc);
+    case 0x0c:
+      if (!u) return std::nullopt;
+      return assign(rd, "neon_shift_imm(6u, false, false, " + w + ", " + vq + ", " + u32(left) +
+                            ", " + zero + ", " + n + ", x)", pc);
+    case 0x0e:
+      return assign(rd, "neon_shift_imm(5u, false, " + flag(!u) + ", " + w + ", " + vq + ", " +
+                            u32(left) + ", " + zero + ", " + n + ", x)", pc);
+    case 0x10: case 0x11: case 0x12: case 0x13: {
+      if (esize == 64) return std::nullopt;
+      const bool round = (opcode & 1) != 0;
+      const std::uint32_t kind = (opcode <= 0x11) ? (u ? 2 : 0) : 1;
+      return assign(rd, "neon_shift_narrow(" + u32(kind) + ", " + flag(round) + ", " +
+                            flag(opcode <= 0x11 || !u) + ", " + w + ", " + vq + ", " +
+                            u32(right) + ", " + d + ", " + n + ", x)", pc);
+    }
+    default:
+      return std::nullopt;
+    }
+  }
+  // Vector by element (integer).
+  if ((bits & 0x9f000400) == 0x0f000000 && (size == 1 || size == 2)) {
+    const auto opcode = field(12, 4);
+    const std::uint32_t index = size == 1 ? (field(11, 1) << 2) | (field(21, 1) << 1) | field(20, 1)
+                                          : (field(11, 1) << 1) | field(21, 1);
+    const std::uint32_t reg = size == 1 ? field(16, 4) : field(16, 5);
+    const std::uint32_t w = 8u << size;
+    const std::string element = "vector_dup(lane_read(" + vreg(reg) + ", " + u32(index) + ", " +
+                                u32(w) + "), " + u32(w) + ", 128)";
+    std::uint32_t same = 0xff, diff = 0xff;
+    bool flagU = u;
+    if (!u) {
+      switch (opcode) {
+      case 0x2: diff = 8; break;
+      case 0x3: diff = 9; break;
+      case 0x6: diff = 10; break;
+      case 0x7: diff = 11; break;
+      case 0x8: same = 0x13; break;
+      case 0xa: diff = 12; break;
+      case 0xb: diff = 13; break;
+      case 0xc: same = 0x16; flagU = false; break;
+      case 0xd: same = 0x16; flagU = true; break;
+      default: return std::nullopt;
+      }
+    } else {
+      switch (opcode) {
+      case 0x0: same = 0x12; flagU = false; break;
+      case 0x2: diff = 8; break;
+      case 0x4: same = 0x12; flagU = true; break;
+      case 0x6: diff = 10; break;
+      case 0xa: diff = 12; break;
+      default: return std::nullopt;
+      }
+    }
+    if (same != 0xff) {
+      return assign(rd, "neon_three_same(" + u32(same) + ", " + flag(flagU) + ", " + u32(size) +
+                            ", " + u32(q) + ", " + d + ", " + n + ", " + element + ", x)", pc);
+    }
+    return assign(rd, "neon_three_diff(" + u32(diff) + ", " + flag(u) + ", " + u32(size) + ", " +
+                          u32(q) + ", " + d + ", " + n + ", " + element + ", x)", pc);
+  }
   // Permute.
   if ((bits & 0xbf208c00) == 0x0e000800) {
     const auto opcode = field(12, 3);
