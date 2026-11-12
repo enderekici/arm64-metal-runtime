@@ -827,6 +827,14 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
             (dependency.name.rfind("/usr/lib/", 0) == 0 || dependency.name.rfind("/System/Library/", 0) == 0))
           pending.insert(dependency.name);
       }
+      if (name == "/usr/lib/libobjc.A.dylib") {
+        // The cache places distance-optimized copies of _objc_msgSend in
+        // libobjcMsgSend*.dylib images; cached clients branch to the nearest copy.
+        constexpr const char* msgSendPrefix = "/usr/lib/objc/libobjcMsgSend";
+        for (const auto& entry : cache.images()) {
+          if (entry.first.rfind(msgSendPrefix, 0) == 0) pending.insert(entry.first);
+        }
+      }
       for (const auto& [flag, dependency] : cache.preboundLazyDependencies(name)) {
         (void)flag;
         if (++traversedPreboundLazyLoads > maximumPreboundLazyLoads) {
