@@ -43,6 +43,7 @@
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <sys/xattr.h>
+#include "raw_fs_syscalls.hpp"
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -14274,6 +14275,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
+#include "raw_fs_syscalls.inc"
             if (syscall == 92) {  // Darwin fcntl syscall.
                 const char* traceFcntl = std::getenv("ARM64_METAL_TRACE_FCNTL");
                 if (traceFcntl != nullptr && std::strcmp(traceFcntl, "1") == 0) {

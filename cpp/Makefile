@@ -75,7 +75,7 @@ APP_SOURCES := \
 	translate_core.cpp \
 	function_runner.cpp \
 	main.cpp
-APP_HEADERS := $(wildcard *.h *.hpp)
+APP_HEADERS := $(wildcard *.h *.hpp *.inc)
 APP := $(BUILD_DIR)/arm64-metal
 OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
 OPEN_APPEND_NATIVE := $(BUILD_DIR)/open-append-native
