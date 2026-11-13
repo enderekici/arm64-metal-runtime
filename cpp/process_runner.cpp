@@ -15,6 +15,7 @@
 #include "process_decoder.hpp"
 #include "process_host.hpp"
 #include "process_msl.hpp"
+#include "raw_proc_syscalls.hpp"
 #include "translate_core.hpp"
 
 #include <algorithm>
@@ -2011,6 +2012,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options) {
     ScopedProcessUmask guestUmask;
+    RawProcState rawProcState;
     ProcessPerformanceSummary performanceSummary;
     ProgressTrace progressTrace;
     SchedulerTrace schedulerTrace;
@@ -6994,9 +6996,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::vector<std::uint64_t> signalRegisterSnapshot;
     const auto deliverPendingSignal = [&]() -> std::optional<std::int32_t> {
         hostServiceState.ingest_host_signals();
+        const auto suspended = rawProcState.sigsuspendRestore;
+        rawProcState.sigsuspendRestore.reset();
+        const auto restoreSuspendedMask = [&]() {
+            if (!suspended || suspended->first != guestScheduler.current_id()) return;
+            hostServiceState.signals.set_mask_value(suspended->second);
+            hostServiceState.threadSignalMask = hostServiceState.signals.mask();
+        };
         if (!signalRuntime.has_pending_delivery(hostServiceState.signals,
                 hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
                 stateBuffer.size() / sizeof(std::uint64_t))) {
+            restoreSuspendedMask();
             return std::nullopt;
         }
         const auto* stateRegisters = static_cast<const std::uint64_t*>(stateBuffer.data());
@@ -7016,6 +7026,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::memcpy(stateBuffer.data(), signalRegisterSnapshot.data(),
                         signalRegisterSnapshot.size() * sizeof(std::uint64_t));
             selectKernel(static_cast<std::int64_t>(delivery.handler));
+            if (suspended && suspended->first == guestScheduler.current_id()) {
+                signalRuntime.set_top_frame_mask(suspended->first, suspended->second);
+            }
+        } else {
+            restoreSuspendedMask();
         }
         return std::nullopt;
     };
@@ -14287,6 +14302,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " arg=0x" << hexadecimal(registers[2])
                               << " sp=0x" << hexadecimal(registers[31]) << '\n';
                 }
+            }
+            {
+                RawProcContext rawProc{registers, guestMemory, hostServiceState, guestScheduler,
+                                       signalRuntime, rawProcState, bootstrap};
+                rawProc.threadForPort = [&](std::uint32_t port) -> std::optional<std::uint64_t> {
+                    for (const auto& entry : guestThreadPortNames) {
+                        if (entry.second == port) return entry.first;
+                    }
+                    return std::nullopt;
+                };
+                rawProc.acquireTaskPort = [&]() {
+                    return acquireGuestFixedSendRight(
+                        static_cast<std::uint32_t>(guestMachTaskPort));
+                };
+                const auto rawProcOutcome = dispatch_raw_proc_syscall(rawProc, syscall);
+                if (rawProcOutcome == RawProcOutcome::Exit) return rawProc.exitStatus;
+                if (rawProcOutcome == RawProcOutcome::Handled) continue;
             }
             throw std::runtime_error("Guest reached unsupported Darwin syscall 0x" +
                 hexadecimal(registers[16]) + " at PC 0x" + hexadecimal(registers[33]) +

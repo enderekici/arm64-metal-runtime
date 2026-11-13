@@ -160,6 +160,7 @@ public:
     [[nodiscard]] Action action(std::int32_t signal) const;
     void set_action(Action action, std::int32_t signal);
     [[nodiscard]] std::uint32_t mask() const noexcept { return mask_; }
+    [[nodiscard]] std::uint32_t pending() const noexcept { return pending_; }
     void set_mask_value(std::uint32_t mask) noexcept;
     [[nodiscard]] bool set_mask(std::int32_t how, std::uint32_t value);
     void raise(std::int32_t signal);

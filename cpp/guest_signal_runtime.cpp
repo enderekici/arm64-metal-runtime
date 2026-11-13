@@ -328,6 +328,12 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
     return GuestSignalResume{registers[guestSignalPC], frame.executionContext, recompile};
 }
 
+void GuestSignalRuntime::set_top_frame_mask(std::uint64_t threadId, std::uint32_t mask) {
+    const auto frames = framesByThread_.find(threadId);
+    if (frames == framesByThread_.end() || frames->second.empty()) return;
+    frames->second.back().signalMask = mask;
+}
+
 bool GuestSignalRuntime::has_frames(std::uint64_t threadId) const noexcept {
     const auto found = framesByThread_.find(threadId);
     return found != framesByThread_.end() && !found->second.empty();

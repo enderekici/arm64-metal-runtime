@@ -95,6 +95,8 @@ public:
         const std::function<std::optional<std::uint64_t>(std::uint64_t)>&
             restartableRecovery = {}, GuestMemory* memory = nullptr);
 
+    // Rewrites the mask the top signal frame restores when its handler returns.
+    void set_top_frame_mask(std::uint64_t threadId, std::uint32_t mask);
     [[nodiscard]] bool has_frames(std::uint64_t threadId) const noexcept;
     [[nodiscard]] std::size_t frame_depth(std::uint64_t threadId) const noexcept;
     void discard_thread(std::uint64_t threadId) noexcept;
