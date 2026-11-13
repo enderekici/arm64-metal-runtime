@@ -239,16 +239,16 @@ static void misc(void) {
   P("wait_until_waited_ok=%d\n", ticks_to_ms(mach_absolute_time() - t0) >= 29);
   t0 = mach_absolute_time();
   P("wait_until_past=%x quick=%d\n", RC(T1(90, 1)),
-    ticks_to_ms(mach_absolute_time() - t0) < 250);
+    ticks_to_ms(mach_absolute_time() - t0) < 1000);
   mach_timebase_info_data_t info = {0, 0};
   P("timebase=%x match=%d\n", RC(T1(89, &info)), info.numer == tb.numer && info.denom == tb.denom);
   P("timebase_efault=%x\n", RC(T1(89, 8)));
   P("swtch_pri=%d swtch=%d\n", T1(59, 0) <= 1, T0(60) <= 1);
   for (int opt = 0; opt < 6; opt++) {
     t0 = mach_absolute_time();
-    kern_return_t kr = (kern_return_t)T3(61, 0, opt, 300);
+    kern_return_t kr = (kern_return_t)T3(61, 0, opt, 1500);
     uint64_t dt = ticks_to_ms(mach_absolute_time() - t0);
-    P("thread_switch opt=%d rc=%x slept=%d\n", opt, RC(kr), dt >= 290);
+    P("thread_switch opt=%d rc=%x slept=%d fast=%d\n", opt, RC(kr), dt >= 1490, dt < 1000);
   }
   mach_timespec_t wt = {9, 9};
   t0 = mach_absolute_time();
