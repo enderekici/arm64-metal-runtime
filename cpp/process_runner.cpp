@@ -11540,7 +11540,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 169) {
                 if (static_cast<std::uint32_t>(registers[1]) != 0) {
-                    throw std::runtime_error("Unsupported guest csops operation");
+                    throw std::runtime_error("Unsupported guest csops operation " +
+                        std::to_string(static_cast<std::uint32_t>(registers[1])) + " pid " +
+                        std::to_string(static_cast<std::int32_t>(registers[0])) + " pc 0x" +
+                        hexadecimal(registers[33]));
                 }
                 const auto pid = static_cast<std::int32_t>(registers[0]);
                 registers[32] |= 8U;
