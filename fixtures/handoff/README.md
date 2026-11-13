@@ -900,3 +900,44 @@ without adding a guard; caller-owned guard pages remain controlled by guest
 and `../interpreter/pthread-runtime-owned-guard-retry.c`.
 `pthread-attribute-fields.c` checks default values, set/get stack and guard size,
 detached creation, and the null-attribute joinable path.
+
+## Raw Mach trap sweep (`mach-trap-raw.c`)
+
+`mach-trap-raw.c` issues raw `svc #0x80` Mach traps (all eight argument
+registers set explicitly) and prints one line per observation. Sections are
+selected by the first argument: `timers`, `sem`, `misc`, `vm`, `ports`
+(default `all`). Timing results are printed as booleans so native and guest
+output are identical.
+
+- `timers`: `mk_timer_create/destroy/arm/cancel/arm_leeway` (`-91..-95`),
+  expiry message shape (48 bytes, id 0, local port set), blocking, timed and
+  polled receives, re-arm, cancel, past deadline, plain-port and dead-name
+  errors.
+- `sem`: `semaphore_signal_all/signal_thread/wait_signal/timedwait_signal`
+  (`-34/-35/-37/-39`) including two blocked waiters woken at once and a
+  directed wake.
+- `misc`: `mach_wait_until` (`-90`), `mach_timebase_info_trap` (`-89`),
+  `swtch_pri/swtch/thread_switch` (`-59/-60/-61`), `clock_sleep_trap` (`-62`),
+  `mach_generate_activity_id` (`-43`), `thread_get_special_reply_port` (`-50`),
+  `_exclaves_ctl_trap`, `iokit_user_client_trap`, `task_for_pid` (`-45`).
+- `vm`: `_kernelrpc_mach_vm_allocate/deallocate/map_trap` (`-10/-12/-15`).
+- `ports`: `move_member/extract_member/guard/unguard/get_attributes`
+  (`-20/-23/-41/-42/-40`) and `_kernelrpc_mach_vm_purgable_control_trap`.
+
+```sh
+xcrun clang -arch arm64 -Wall -Wextra -O1 -fno-stack-protector \
+  fixtures/handoff/mach-trap-raw.c -o /tmp/mach-trap-raw
+/tmp/mach-trap-raw timers
+ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+  ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+  .build/arm64-metal-cpp-macos/arm64-metal launch /tmp/mach-trap-raw timers
+```
+
+Guest and native stdout must match line for line. Build without
+`-fno-stack-protector` or call `setvbuf(stdout, 0, _IONBF, 0)` and the guest
+dies at startup ("resumed outside translated text at PC 0x0"), so the fixture
+uses `fflush` instead. Documented deviations from the native kernel: the
+`result_time` of `mk_timer_cancel` is the armed deadline (the kernel returns it
+plus timer leeway), `clock_sleep_trap` stores the computed wake time rather than
+the time observed after waking, and the special reply port is a plain receive
+right (native also carries a send-once right).

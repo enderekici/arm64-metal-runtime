@@ -483,6 +483,45 @@ std::int32_t GuestScheduler::signal_semaphore(std::uint64_t name) {
     return KERN_SUCCESS;
 }
 
+std::int32_t GuestScheduler::signal_all_semaphore(std::uint64_t name) {
+    const auto found = semaphores_.find(name);
+    if (found == semaphores_.end()) return KERN_INVALID_CAPABILITY;
+    const auto waiters = std::move(found->second.waiters);
+    found->second.waiters.clear();
+    for (const auto id : waiters) {
+        const auto* thread = find(id);
+        if (thread == nullptr || !thread->wait.has_value()) {
+            throw std::logic_error("Invalid guest semaphore waiter");
+        }
+        const auto* wait = std::get_if<GuestSemaphoreWait>(&*thread->wait);
+        if (wait == nullptr || wait->semaphore != name) {
+            throw std::logic_error("Guest semaphore waiter state does not match queue");
+        }
+        wake(id, KERN_SUCCESS);
+    }
+    return KERN_SUCCESS;
+}
+
+std::int32_t GuestScheduler::signal_semaphore_thread(
+    std::uint64_t name, std::optional<std::uint64_t> target) {
+    constexpr std::int32_t kernNotWaiting = 48;
+    const auto found = semaphores_.find(name);
+    if (found == semaphores_.end()) return KERN_INVALID_CAPABILITY;
+    auto& waiters = found->second.waiters;
+    if (waiters.empty()) return kernNotWaiting;
+    auto chosen = waiters.end();
+    if (target.has_value()) {
+        chosen = std::find(waiters.begin(), waiters.end(), *target);
+        if (chosen == waiters.end()) return kernNotWaiting;
+    } else {
+        chosen = (found->second.policy & 2) != 0 ? waiters.end() - 1 : waiters.begin();
+    }
+    const auto id = *chosen;
+    waiters.erase(chosen);
+    wake(id, KERN_SUCCESS);
+    return KERN_SUCCESS;
+}
+
 bool GuestScheduler::sleep_current(std::uint64_t deadline,
                                    std::optional<std::uint64_t> remainder) {
     auto& thread = current();

@@ -134,6 +134,9 @@ public:
         std::uint64_t name, std::optional<std::uint64_t> deadline = std::nullopt,
         bool nonblocking = false, bool bsd = false);
     [[nodiscard]] std::int32_t signal_semaphore(std::uint64_t name);
+    [[nodiscard]] std::int32_t signal_all_semaphore(std::uint64_t name);
+    [[nodiscard]] std::int32_t signal_semaphore_thread(
+        std::uint64_t name, std::optional<std::uint64_t> thread);
     [[nodiscard]] bool sleep_current(std::uint64_t deadline,
                                     std::optional<std::uint64_t> remainder = std::nullopt);
     [[nodiscard]] bool wait_ulock(std::uint64_t address,

@@ -57,6 +57,7 @@
 #include <mach/kern_return.h>
 #include <mach/host_info.h>
 #include <mach/mach_host.h>
+#include <mach/mach_time.h>
 #include <mach/clock.h>
 #include <mach/ndr.h>
 #include <mach/task_info.h>
@@ -3100,6 +3101,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, GuestMachBlockedReceive> guestMachBlockedReceives;
     std::map<std::int32_t, std::deque<std::uint64_t>> guestUnixReceiveWaiters;
     std::map<std::uint64_t, GuestUnixBlockedReceive> guestUnixBlockedReceives;
+    std::function<void()> fireDueMachTimers;
+    std::function<std::optional<std::uint64_t>()> earliestMachTimerNanoseconds;
     const auto pruneGuestMachReceiveWaiters = [&]() {
         for (auto waiters = guestMachReceiveWaiters.begin();
              waiters != guestMachReceiveWaiters.end();) {
@@ -3124,6 +3127,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
     };
     const auto expireAndPruneGuestMachReceiveWaiters = [&](std::uint64_t now) {
+        if (fireDueMachTimers) fireDueMachTimers();
         const auto expired = guestScheduler.expire_waiters(now);
         if (expired != 0) progressTrace.event("mach-waiters-expired", now, expired);
         pruneGuestMachReceiveWaiters();
@@ -3248,7 +3252,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     break;
                 }
             }
-            const auto deadline = guestScheduler.earliest_deadline();
+            auto deadline = guestScheduler.earliest_deadline();
+            if (const auto timerDeadline = earliestMachTimerNanoseconds
+                    ? earliestMachTimerNanoseconds() : std::nullopt) {
+                if (!deadline || *timerDeadline < *deadline) deadline = timerDeadline;
+            }
             if (!deadline) {
                 progressTrace.event("threads-blocked-no-deadline", activeId);
                 throw std::runtime_error("All guest threads are blocked with no deadline or runnable thread");
@@ -3299,7 +3307,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     const auto preemptAtDispatchBoundary = [&](std::uint64_t status) {
         const auto now = monotonicNanoseconds();
-        const auto deadline = guestScheduler.earliest_deadline();
+        auto deadline = guestScheduler.earliest_deadline();
+        if (const auto timerDeadline = earliestMachTimerNanoseconds
+                ? earliestMachTimerNanoseconds() : std::nullopt) {
+            if (!deadline || *timerDeadline < *deadline) deadline = timerDeadline;
+        }
         const auto expired = deadline && *deadline <= now
             ? expireAndPruneGuestMachReceiveWaiters(now) : 0;
         const auto threadId = guestScheduler.current_id();
@@ -3526,6 +3538,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::set<std::uint32_t> guestDeadPortNames;
     std::map<std::uint32_t, clock_id_t> guestClockServiceIds;
     std::set<std::uint32_t> guestSemaphoreNames;
+    struct GuestMachTimer {
+        std::optional<std::uint64_t> deadline;
+    };
+    std::map<std::uint32_t, GuestMachTimer> guestMachTimers;
+    std::map<std::uint32_t, std::uint32_t> guestPortSetMembers;
+    std::map<std::uint32_t, std::uint64_t> guestPortGuards;
+    std::uint64_t nextGuestActivityId = 1;
     // This reference is held by the emulated task object, independently of
     // the guest namespace's send urefs for the same port name.
     std::optional<std::uint32_t> guestTaskDebugControlPort;
@@ -3722,6 +3741,50 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             guestScheduler.wake(threadId, static_cast<std::int32_t>(delivered));
         }
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
+    };
+    fireDueMachTimers = [&]() {
+        if (guestMachTimers.empty()) return;
+        const auto now = mach_absolute_time();
+        std::vector<std::uint32_t> due;
+        for (auto timer = guestMachTimers.begin(); timer != guestMachTimers.end();) {
+            if (guestReceiveRights.find(timer->first) == guestReceiveRights.end()) {
+                timer = guestMachTimers.erase(timer);
+                continue;
+            }
+            if (timer->second.deadline && *timer->second.deadline <= now) {
+                timer->second.deadline.reset();
+                due.push_back(timer->first);
+            }
+            ++timer;
+        }
+        for (const auto name : due) {
+            constexpr std::uint32_t timerMessageBits = MACH_MSG_TYPE_COPY_SEND;
+            constexpr std::uint32_t timerMessageSize = sizeof(mach_msg_header_t) + 24;
+            guestMachMessageQueues[name].push_back(GuestLocalMessage{
+                timerMessageSize, timerMessageBits, 0, 0, 0,
+                std::vector<std::uint8_t>(24, 0), {}});
+            deliverGuestMachMessage(name);
+        }
+    };
+    earliestMachTimerNanoseconds = [&]() -> std::optional<std::uint64_t> {
+        std::optional<std::uint64_t> earliest;
+        for (const auto& timer : guestMachTimers) {
+            if (!timer.second.deadline) continue;
+            if (!earliest || *timer.second.deadline < *earliest) earliest = timer.second.deadline;
+        }
+        if (!earliest) return std::nullopt;
+        const auto now = mach_absolute_time();
+        std::uint64_t remaining = *earliest > now ? *earliest - now : 0;
+        mach_timebase_info_data_t base{};
+        (void)mach_timebase_info(&base);
+        if (base.denom != 0) {
+            remaining = remaining > std::numeric_limits<std::uint64_t>::max() / base.numer
+                ? std::numeric_limits<std::uint64_t>::max() / base.denom
+                : remaining * base.numer / base.denom;
+        }
+        const auto nanoseconds = monotonicNanoseconds();
+        return nanoseconds + std::min(remaining,
+            std::numeric_limits<std::uint64_t>::max() - nanoseconds);
     };
     std::uint32_t nextGuestReceiveName = 0x80000003U;
     std::optional<std::uint32_t> guestTaskNamePort;
@@ -10185,6 +10248,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         if (status == 13) {
             const auto syscall = registers[16];
+            if (fireDueMachTimers) fireDueMachTimers();
             lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
                 hexadecimal(registers[33]);
             recordTransition(lastHostTransition + " x0=0x" + hexadecimal(registers[0]) +
@@ -12653,6 +12717,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t machReceiveMessage = 0x00000002;
                 constexpr std::uint64_t machReceiveTimeout = 0x00000100;
                 constexpr std::uint64_t mach64SendAny = 0x0000000800000000;
+                constexpr std::uint64_t mach64SendMqCall = 0x0000000400000000;
                 const auto options = registers[1];
                 const auto remote = static_cast<std::uint32_t>(registers[3]);
                 const auto receiveName = static_cast<std::uint32_t>(registers[5] >> 32);
@@ -12680,12 +12745,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machMsgTypeMoveSend = 0x11;
                     constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
                     constexpr std::uint64_t allowedOptions = machSendMessage |
-                        machReceiveMessage | machReceiveTimeout | mach64SendAny;
+                        machReceiveMessage | machReceiveTimeout | mach64SendAny | mach64SendMqCall;
                     std::uint64_t result = 0;
                     if ((options & ~allowedOptions) != 0 ||
                         (!sendRequested && descriptorCount != 0) ||
                         registers[6] >> 32 != 0) {
                         result = kernInvalidArgument;
+                        if (std::getenv("ARM64_METAL_TRACE_MACH_MSG") != nullptr) {
+                            std::cerr << "mach-msg2 invalid args options=0x" << hexadecimal(options)
+                                      << " x2=0x" << hexadecimal(registers[2])
+                                      << " x3=0x" << hexadecimal(registers[3])
+                                      << " x4=0x" << hexadecimal(registers[4])
+                                      << " x5=0x" << hexadecimal(registers[5])
+                                      << " x6=0x" << hexadecimal(registers[6])
+                                      << " x7=0x" << hexadecimal(registers[7]) << '\n';
+                        }
                     } else if (sendRequested) {
                         const auto sendRight = guestSendRightUrefs.find(remote);
                         if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0 ||
@@ -13419,6 +13493,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         result = kernInvalidName;
                     } else if (member->second.portSet || !set->second.portSet) {
                         result = kernInvalidRight;
+                    } else if (guestPortSetMembers.count(name) != 0) {
+                        constexpr std::uint64_t kernAlreadyInSet = 11;
+                        result = kernAlreadyInSet;
+                    } else {
+                        guestPortSetMembers[name] = pset;
                     }
                 }
                 registers[0] = result;
@@ -14291,6 +14370,671 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
 #include "raw_fs_syscalls.inc"
+            if (static_cast<std::int64_t>(syscall) < 0 &&
+                static_cast<std::int64_t>(syscall) >= -128) {
+                constexpr std::uint64_t kernSuccess = 0;
+                constexpr std::uint64_t kernInvalidAddress = 1;
+                constexpr std::uint64_t kernNoSpace = 3;
+                constexpr std::uint64_t kernInvalidArgument = 4;
+                constexpr std::uint64_t kernFailure = 5;
+                constexpr std::uint64_t kernNotInSet = 12;
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t kernNotSupported = 46;
+                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
+                constexpr std::uint32_t machPortDead = std::numeric_limits<std::uint32_t>::max();
+                const auto machTrapNumber = -static_cast<std::int64_t>(syscall);
+                const auto machTaskArgumentValid = [&](std::uint64_t value) {
+                    const auto name = static_cast<std::uint32_t>(value);
+                    const auto right = guestSendRightUrefs.find(name);
+                    return name == guestMachTaskPort && right != guestSendRightUrefs.end() &&
+                           right->second != 0;
+                };
+                const auto machStoreGuest = [&](std::uint64_t address, const void* bytes,
+                                                std::size_t size) {
+                    try {
+                        std::memcpy(guestMemory.buffer(address, size, true), bytes, size);
+                        return true;
+                    } catch (const std::exception&) {
+                        return false;
+                    }
+                };
+                const auto machTicksToNanoseconds = [&](std::uint64_t ticks) {
+                    mach_timebase_info_data_t base{};
+                    (void)mach_timebase_info(&base);
+                    if (base.denom == 0) return ticks;
+                    return ticks > std::numeric_limits<std::uint64_t>::max() / base.numer
+                        ? std::numeric_limits<std::uint64_t>::max() / base.denom * base.numer
+                        : ticks * base.numer / base.denom;
+                };
+                const auto machSleepUntil = [&](std::uint64_t deadlineNanoseconds) {
+                    if (!guestScheduler.sleep_current(deadlineNanoseconds, std::nullopt)) {
+                        throw std::runtime_error("Current guest thread already has a wait reason");
+                    }
+                    registers[0] = kernSuccess;
+                    registers[34] = 0;
+                    std::vector<std::uint64_t> live(
+                        registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                    if (!syncThreadSwitch(false, live)) {
+                        throw std::runtime_error("Guest Mach sleep has no runnable thread");
+                    }
+                };
+                const auto machYield = [&](std::uint64_t result) {
+                    registers[0] = result;
+                    registers[34] = 0;
+                    std::vector<std::uint64_t> live(
+                        registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                    (void)syncThreadSwitch(true, live);
+                };
+                const auto machSemaphoreStatus = [&](std::uint64_t value) -> std::uint64_t {
+                    const auto name = static_cast<std::uint32_t>(value);
+                    const auto right = guestSendRightUrefs.find(name);
+                    if (right == guestSendRightUrefs.end() || right->second == 0) {
+                        return KERN_INVALID_NAME;
+                    }
+                    return guestSemaphoreNames.find(name) == guestSemaphoreNames.end()
+                        ? KERN_INVALID_CAPABILITY : kernSuccess;
+                };
+                const auto machSemaphoreWait = [&](std::uint32_t name,
+                                                    std::optional<std::uint64_t> deadline,
+                                                    bool nonblocking) {
+                    const auto result = guestScheduler.wait_semaphore(name, deadline, nonblocking);
+                    if (!result.waiting) {
+                        registers[0] = static_cast<std::uint32_t>(result.error);
+                        registers[34] = 0;
+                        return false;
+                    }
+                    registers[0] = kernSuccess;
+                    registers[34] = 0;
+                    std::vector<std::uint64_t> live(
+                        registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                    if (!syncThreadSwitch(false, live)) {
+                        throw std::runtime_error("Guest semaphore wait has no runnable thread");
+                    }
+                    return true;
+                };
+                const auto machRelativeDeadline = [&](std::uint32_t seconds,
+                                                       std::int32_t nanoseconds) {
+                    const auto now = monotonicNanoseconds();
+                    const auto requested = seconds >
+                            (std::numeric_limits<std::uint64_t>::max() -
+                                static_cast<std::uint32_t>(nanoseconds)) / 1'000'000'000ULL
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : static_cast<std::uint64_t>(seconds) * 1'000'000'000ULL +
+                            static_cast<std::uint32_t>(nanoseconds);
+                    return now + std::min(requested,
+                                          std::numeric_limits<std::uint64_t>::max() - now);
+                };
+                const auto machDestroyReceiveRight = [&](std::uint32_t name) {
+                    const auto waiting = guestMachReceiveWaiters.find(name);
+                    if (waiting != guestMachReceiveWaiters.end()) {
+                        for (const auto threadId : waiting->second) {
+                            const auto blocked = guestMachBlockedReceives.find(threadId);
+                            auto* thread = guestScheduler.find(threadId);
+                            const auto* receiveWait = thread != nullptr &&
+                                    thread->wait.has_value()
+                                ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+                            if (blocked != guestMachBlockedReceives.end() &&
+                                receiveWait != nullptr && receiveWait->port == name) {
+                                guestMachBlockedReceives.erase(blocked);
+                                guestScheduler.wake(threadId,
+                                    static_cast<std::int32_t>(machReceivePortChanged));
+                            }
+                        }
+                        guestMachReceiveWaiters.erase(waiting);
+                    }
+                    guestReceiveRights.erase(name);
+                    guestMachMessageQueues.erase(name);
+                    guestPortSetMembers.erase(name);
+                    guestPortGuards.erase(name);
+                };
+                bool machTrapHandled = true;
+                switch (machTrapNumber) {
+                case 91: {  // mk_timer_create
+                    if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+                        registers[0] = 0;
+                    } else {
+                        const auto name = nextGuestReceiveName;
+                        nextGuestReceiveName += 4;
+                        guestReceiveRights.emplace(name, GuestReceiveRight{0, 0});
+                        guestMachTimers.emplace(name, GuestMachTimer{});
+                        registers[0] = name;
+                    }
+                    break;
+                }
+                case 92:    // mk_timer_destroy
+                case 93:    // mk_timer_arm
+                case 94:    // mk_timer_cancel
+                case 95: {  // mk_timer_arm_leeway
+                    const auto name = static_cast<std::uint32_t>(registers[0]);
+                    const auto timer = guestMachTimers.find(name);
+                    if (timer == guestMachTimers.end() ||
+                        guestReceiveRights.find(name) == guestReceiveRights.end()) {
+                        registers[0] = guestReceiveRights.find(name) != guestReceiveRights.end()
+                            ? kernInvalidArgument : kernInvalidName;
+                    } else if (machTrapNumber == 92) {
+                        guestMachTimers.erase(timer);
+                        machDestroyReceiveRight(name);
+                        registers[0] = kernSuccess;
+                    } else if (machTrapNumber == 94) {
+                        const auto previous = timer->second.deadline.value_or(0);
+                        timer->second.deadline.reset();
+                        if (registers[1] != 0) (void)machStoreGuest(registers[1], &previous,
+                                                                    sizeof(previous));
+                        registers[0] = kernSuccess;
+                    } else {
+                        timer->second.deadline = machTrapNumber == 93 ? registers[1] : registers[2];
+                        fireDueMachTimers();
+                        registers[0] = kernSuccess;
+                    }
+                    break;
+                }
+                case 90: {  // mach_wait_until
+                    const auto deadlineTicks = registers[0];
+                    const auto nowTicks = mach_absolute_time();
+                    if (deadlineTicks == 0) {
+                        machSleepUntil(std::numeric_limits<std::uint64_t>::max());
+                        continue;
+                    }
+                    if (deadlineTicks <= nowTicks) {
+                        registers[0] = kernSuccess;
+                        break;
+                    }
+                    const auto now = monotonicNanoseconds();
+                    const auto remaining = machTicksToNanoseconds(deadlineTicks - nowTicks);
+                    machSleepUntil(now + std::min(remaining,
+                        std::numeric_limits<std::uint64_t>::max() - now));
+                    continue;
+                }
+                case 89: {  // mach_timebase_info_trap
+                    mach_timebase_info_data_t base{};
+                    (void)mach_timebase_info(&base);
+                    if (registers[0] != 0) (void)machStoreGuest(registers[0], &base, sizeof(base));
+                    registers[0] = kernSuccess;
+                    break;
+                }
+                case 59:    // swtch_pri
+                case 60: {  // swtch
+                    const bool otherReady = !guestScheduler.ready_queue().empty();
+                    if (otherReady) {
+                        machYield(1);
+                        continue;
+                    }
+                    registers[0] = 0;
+                    break;
+                }
+                case 61: {  // thread_switch
+                    const auto option = static_cast<std::uint32_t>(registers[1]);
+                    if (option > 5) {
+                        registers[0] = kernInvalidArgument;
+                        break;
+                    }
+                    const auto milliseconds = static_cast<std::uint32_t>(registers[2]);
+                    if ((option == 2 || option == 5) && milliseconds != 0) {
+                        const auto now = monotonicNanoseconds();
+                        machSleepUntil(now + static_cast<std::uint64_t>(milliseconds) *
+                                                 1'000'000ULL);
+                        continue;
+                    }
+                    if (!guestScheduler.ready_queue().empty()) {
+                        machYield(kernSuccess);
+                        continue;
+                    }
+                    registers[0] = kernSuccess;
+                    break;
+                }
+                case 62: {  // clock_sleep_trap
+                    const auto clockName = static_cast<std::uint32_t>(registers[0]);
+                    const auto sleepType = static_cast<std::uint32_t>(registers[1]);
+                    const auto seconds = static_cast<std::int32_t>(registers[2]);
+                    const auto nanoseconds = static_cast<std::int32_t>(registers[3]);
+                    clock_id_t clockId = SYSTEM_CLOCK;
+                    if (clockName != 0) {
+                        const auto service = guestClockServiceIds.find(clockName);
+                        if (service == guestClockServiceIds.end()) {
+                            registers[0] = kernInvalidArgument;
+                            break;
+                        }
+                        clockId = service->second;
+                    }
+                    if (clockId != SYSTEM_CLOCK) {
+                        registers[0] = kernFailure;
+                        break;
+                    }
+                    if ((sleepType != 0 && sleepType != 1) || seconds < 0 || nanoseconds < 0 ||
+                        nanoseconds >= 1'000'000'000) {
+                        registers[0] = kernInvalidValue;
+                        break;
+                    }
+                    const auto nowTicks = mach_absolute_time();
+                    const auto nowNanoseconds = machTicksToNanoseconds(nowTicks);
+                    const auto requested = static_cast<std::uint64_t>(seconds) * 1'000'000'000ULL +
+                        static_cast<std::uint64_t>(nanoseconds);
+                    const auto wakeNanoseconds = sleepType == 0 ? requested
+                                                                : nowNanoseconds + requested;
+                    if (registers[4] != 0) {
+                        mach_timespec_t wakeTime{
+                            static_cast<unsigned int>(wakeNanoseconds / 1'000'000'000ULL),
+                            static_cast<clock_res_t>(wakeNanoseconds % 1'000'000'000ULL)};
+                        (void)machStoreGuest(registers[4], &wakeTime, sizeof(wakeTime));
+                    }
+                    if (wakeNanoseconds <= nowNanoseconds) {
+                        registers[0] = kernSuccess;
+                        break;
+                    }
+                    const auto now = monotonicNanoseconds();
+                    machSleepUntil(now + (wakeNanoseconds - nowNanoseconds));
+                    continue;
+                }
+                case 43: {  // mach_generate_activity_id
+                    const auto count = static_cast<std::int32_t>(registers[1]);
+                    if (count <= 0) {
+                        registers[0] = kernInvalidArgument;
+                        break;
+                    }
+                    const auto first = nextGuestActivityId;
+                    nextGuestActivityId += static_cast<std::uint64_t>(count);
+                    registers[0] = machStoreGuest(registers[2], &first, sizeof(first))
+                        ? kernSuccess : kernInvalidAddress;
+                    break;
+                }
+                case 50: {  // thread_get_special_reply_port
+                    constexpr std::uint32_t replyPortFlag = 0x00001000;
+                    if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) {
+                        registers[0] = 0;
+                    } else {
+                        const auto name = nextGuestReceiveName;
+                        nextGuestReceiveName += 4;
+                        guestReceiveRights.emplace(name, GuestReceiveRight{replyPortFlag, 0});
+                        registers[0] = name;
+                    }
+                    break;
+                }
+                case 58:  // pfz_exit
+                    registers[0] = kernSuccess;
+                    break;
+                case 88:  // _exclaves_ctl_trap
+                    registers[0] = kernNotSupported;
+                    break;
+                case 100:  // iokit_user_client_trap
+                    registers[0] = 0xffffffffe00002c2ULL;
+                    break;
+                case 45: {  // task_for_pid
+                    if (!machTaskArgumentValid(registers[0]) ||
+                        static_cast<std::int32_t>(registers[1]) !=
+                            static_cast<std::int32_t>(getpid())) {
+                        registers[0] = kernFailure;
+                        break;
+                    }
+                    const auto name = acquireGuestFixedSendRight(guestMachTaskPort);
+                    (void)machStoreGuest(registers[2], &name, sizeof(name));
+                    registers[0] = kernSuccess;
+                    break;
+                }
+                case 34: {  // semaphore_signal_all_trap
+                    const auto status = machSemaphoreStatus(registers[0]);
+                    registers[0] = status != kernSuccess ? status
+                        : static_cast<std::uint32_t>(guestScheduler.signal_all_semaphore(
+                              static_cast<std::uint32_t>(registers[0])));
+                    break;
+                }
+                case 35: {  // semaphore_signal_thread_trap
+                    const auto status = machSemaphoreStatus(registers[0]);
+                    if (status != kernSuccess) {
+                        registers[0] = status;
+                        break;
+                    }
+                    const auto threadName = static_cast<std::uint32_t>(registers[1]);
+                    std::optional<std::uint64_t> threadId;
+                    if (threadName != 0) {
+                        for (const auto& entry : guestThreadPortNames) {
+                            if (entry.second == threadName) threadId = entry.first;
+                        }
+                        const auto right = guestSendRightUrefs.find(threadName);
+                        if (!threadId || right == guestSendRightUrefs.end() ||
+                            right->second == 0) {
+                            registers[0] = kernInvalidArgument;
+                            break;
+                        }
+                    }
+                    registers[0] = static_cast<std::uint32_t>(guestScheduler.signal_semaphore_thread(
+                        static_cast<std::uint32_t>(registers[0]), threadId));
+                    break;
+                }
+                case 37:    // semaphore_wait_signal_trap
+                case 39: {  // semaphore_timedwait_signal_trap
+                    const bool timed = machTrapNumber == 39;
+                    const auto timeoutSeconds = static_cast<std::uint32_t>(registers[2]);
+                    const auto timeoutNanoseconds = static_cast<std::int32_t>(
+                        static_cast<std::uint32_t>(registers[3]));
+                    if (timed && (timeoutNanoseconds < 0 || timeoutNanoseconds >= 1'000'000'000)) {
+                        registers[0] = kernInvalidValue;
+                        break;
+                    }
+                    auto status = machSemaphoreStatus(registers[0]);
+                    if (status == kernSuccess) status = machSemaphoreStatus(registers[1]);
+                    if (status != kernSuccess) {
+                        registers[0] = status;
+                        break;
+                    }
+                    const auto waitName = static_cast<std::uint32_t>(registers[0]);
+                    const auto signalError = guestScheduler.signal_semaphore(
+                        static_cast<std::uint32_t>(registers[1]));
+                    if (signalError != 0) {
+                        registers[0] = static_cast<std::uint32_t>(signalError);
+                        break;
+                    }
+                    std::optional<std::uint64_t> deadline;
+                    const bool nonblocking = timed && timeoutSeconds == 0 &&
+                                             timeoutNanoseconds == 0;
+                    if (timed) deadline = machRelativeDeadline(timeoutSeconds, timeoutNanoseconds);
+                    if (machSemaphoreWait(waitName, deadline, nonblocking)) continue;
+                    break;
+                }
+                case 20:    // _kernelrpc_mach_port_move_member_trap
+                case 23: {  // _kernelrpc_mach_port_extract_member_trap
+                    const auto name = static_cast<std::uint32_t>(registers[1]);
+                    const auto set = static_cast<std::uint32_t>(registers[2]);
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                        break;
+                    }
+                    const auto member = guestReceiveRights.find(name);
+                    if (member == guestReceiveRights.end()) {
+                        registers[0] = kernInvalidName;
+                        break;
+                    }
+                    if (member->second.portSet) {
+                        registers[0] = kernInvalidRight;
+                        break;
+                    }
+                    if (machTrapNumber == 23) {
+                        const auto target = guestReceiveRights.find(set);
+                        const auto membership = guestPortSetMembers.find(name);
+                        if (target == guestReceiveRights.end()) {
+                            registers[0] = kernInvalidName;
+                        } else if (!target->second.portSet) {
+                            registers[0] = kernInvalidRight;
+                        } else if (membership == guestPortSetMembers.end() ||
+                                   membership->second != set) {
+                            registers[0] = kernNotInSet;
+                        } else {
+                            guestPortSetMembers.erase(membership);
+                            registers[0] = kernSuccess;
+                        }
+                        break;
+                    }
+                    if (set != 0) {
+                        const auto target = guestReceiveRights.find(set);
+                        if (target == guestReceiveRights.end()) {
+                            registers[0] = kernInvalidName;
+                            break;
+                        }
+                        if (!target->second.portSet) {
+                            registers[0] = kernInvalidRight;
+                            break;
+                        }
+                        guestPortSetMembers[name] = set;
+                    } else {
+                        guestPortSetMembers.erase(name);
+                    }
+                    registers[0] = kernSuccess;
+                    break;
+                }
+                case 40: {  // _kernelrpc_mach_port_get_attributes_trap
+                    const auto name = static_cast<std::uint32_t>(registers[1]);
+                    const auto flavor = static_cast<std::uint32_t>(registers[2]);
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                        break;
+                    }
+                    const auto right = guestReceiveRights.find(name);
+                    if (right == guestReceiveRights.end()) {
+                        registers[0] = kernInvalidName;
+                        break;
+                    }
+                    std::uint32_t count = 0;
+                    try {
+                        std::memcpy(&count, guestMemory.buffer(registers[4], sizeof(count)),
+                                    sizeof(count));
+                    } catch (const std::exception&) {
+                        registers[0] = kernInvalidAddress;
+                        break;
+                    }
+                    if (flavor == MACH_PORT_LIMITS_INFO) {
+                        if (count < MACH_PORT_LIMITS_INFO_COUNT) {
+                            registers[0] = kernInvalidArgument;
+                            break;
+                        }
+                        const mach_port_limits_t limits{right->second.qlimit};
+                        const std::uint32_t used = MACH_PORT_LIMITS_INFO_COUNT;
+                        registers[0] = machStoreGuest(registers[3], &limits, sizeof(limits)) &&
+                                machStoreGuest(registers[4], &used, sizeof(used))
+                            ? kernSuccess : kernInvalidAddress;
+                    } else if (flavor == MACH_PORT_RECEIVE_STATUS) {
+                        if (count < MACH_PORT_RECEIVE_STATUS_COUNT) {
+                            registers[0] = kernInvalidArgument;
+                            break;
+                        }
+                        mach_port_status_t status{};
+                        status.mps_qlimit = right->second.qlimit;
+                        const auto queue = guestMachMessageQueues.find(name);
+                        status.mps_msgcount = queue == guestMachMessageQueues.end()
+                            ? 0 : static_cast<mach_port_msgcount_t>(queue->second.size());
+                        const auto membership = guestPortSetMembers.find(name);
+                        status.mps_pset = membership == guestPortSetMembers.end() ? 0 : 1;
+                        const std::uint32_t used = MACH_PORT_RECEIVE_STATUS_COUNT;
+                        registers[0] = machStoreGuest(registers[3], &status, sizeof(status)) &&
+                                machStoreGuest(registers[4], &used, sizeof(used))
+                            ? kernSuccess : kernInvalidAddress;
+                    } else {
+                        throw std::runtime_error(
+                            "Unsupported guest mach_port_get_attributes flavor " +
+                            std::to_string(flavor));
+                    }
+                    break;
+                }
+                case 41:    // _kernelrpc_mach_port_guard_trap
+                case 42: {  // _kernelrpc_mach_port_unguard_trap
+                    const auto name = static_cast<std::uint32_t>(registers[1]);
+                    const auto guard = registers[2];
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                        break;
+                    }
+                    const auto right = guestReceiveRights.find(name);
+                    if (name == 0 || name == machPortDead) {
+                        registers[0] = kernInvalidName;
+                    } else if (right == guestReceiveRights.end()) {
+                        const auto send = guestSendRightUrefs.find(name);
+                        registers[0] = send != guestSendRightUrefs.end() && send->second != 0
+                            ? kernInvalidRight : kernInvalidName;
+                    } else if (right->second.portSet) {
+                        registers[0] = kernInvalidRight;
+                    } else if (machTrapNumber == 41) {
+                        if (guestPortGuards.count(name) != 0 ||
+                            (right->second.flags & MPO_CONTEXT_AS_GUARD) != 0) {
+                            registers[0] = kernInvalidArgument;
+                        } else {
+                            guestPortGuards[name] = guard;
+                            registers[0] = kernSuccess;
+                        }
+                    } else {
+                        const auto held = guestPortGuards.find(name);
+                        if (held != guestPortGuards.end() && held->second == guard) {
+                            guestPortGuards.erase(held);
+                            registers[0] = kernSuccess;
+                        } else {
+                            std::vector<std::uint64_t> live(
+                                registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                            const GuestSynchronousFault fault{
+                                SIGKILL, GUARD_TYPE_MACH_PORT, name, registers[33]};
+                            const auto delivery = signalRuntime.deliver_synchronous(
+                                hostServiceState.signals, hostServiceState.threadSignalMask,
+                                live, guestMemory, fault, live[37],
+                                static_cast<std::uint64_t>(activeEntry),
+                                guestScheduler.current_id());
+                            if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                                return delivery.exitStatus;
+                            }
+                            if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                                std::memcpy(stateBuffer.data(), live.data(),
+                                            live.size() * sizeof(std::uint64_t));
+                                selectKernel(static_cast<std::int64_t>(delivery.handler));
+                                continue;
+                            }
+                            throw std::runtime_error(
+                                "Guarded Mach port misuse was not terminated");
+                        }
+                    }
+                    break;
+                }
+                case 10: {  // _kernelrpc_mach_vm_allocate_trap
+                    constexpr std::uint32_t vmFlagsAnywhere = 1U;
+                    constexpr std::uint32_t vmFlagsPurgable = 2U;
+                    constexpr std::uint32_t vmFlagsMte = 0x2000U;
+                    const auto rawFlags = static_cast<std::uint32_t>(registers[3]);
+                    const auto flags = rawFlags & 0x00ffffffU;
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                        break;
+                    }
+                    if ((flags & ~(vmFlagsAnywhere | vmFlagsPurgable | vmFlagsMte)) != 0) {
+                        registers[0] = kernInvalidArgument;
+                        break;
+                    }
+                    std::uint64_t address = 0;
+                    try {
+                        std::memcpy(&address, guestMemory.buffer(registers[1], sizeof(address)),
+                                    sizeof(address));
+                        (void)guestMemory.buffer(registers[1], sizeof(address), true);
+                    } catch (const std::exception&) {
+                        registers[0] = kernInvalidAddress;
+                        break;
+                    }
+                    const auto page = bootstrap.pageSize;
+                    if (registers[2] == 0) {
+                        const std::uint64_t zero = 0;
+                        (void)machStoreGuest(registers[1], &zero, sizeof(zero));
+                        registers[0] = kernSuccess;
+                        break;
+                    }
+                    if (registers[2] > std::numeric_limits<std::uint64_t>::max() - (page - 1)) {
+                        registers[0] = kernNoSpace;
+                        break;
+                    }
+                    const auto size = (registers[2] + page - 1) & ~(page - 1);
+                    std::uint32_t result = static_cast<std::uint32_t>(kernNoSpace);
+                    if ((flags & vmFlagsAnywhere) != 0) {
+                        if (hostServiceState.machVmAllocate) {
+                            result = hostServiceState.machVmAllocate(
+                                size, page, 3, 3, address, false, 1, rawFlags >> 24U);
+                        }
+                    } else if (hostServiceState.machVmReserve) {
+                        result = hostServiceState.machVmReserve(
+                            address, size, 3, 3, 1, rawFlags >> 24U, false);
+                    }
+                    if (result == kernSuccess) {
+                        (void)machStoreGuest(registers[1], &address, sizeof(address));
+                    }
+                    registers[0] = result;
+                    break;
+                }
+                case 11: {  // _kernelrpc_mach_vm_purgable_control_trap
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                    } else if (const auto region = hostServiceState.machVmRegion
+                                   ? hostServiceState.machVmRegion(registers[1]) : std::nullopt;
+                               !region || region->begin > registers[1] ||
+                               registers[1] >= region->end) {
+                        registers[0] = kernInvalidAddress;
+                    } else {
+                        registers[0] = kernInvalidArgument;
+                    }
+                    break;
+                }
+                case 12: {  // _kernelrpc_mach_vm_deallocate_trap
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                    } else if (registers[2] == 0) {
+                        registers[0] = kernSuccess;
+                    } else if (!hostServiceState.machVmDeallocate) {
+                        registers[0] = kernInvalidArgument;
+                    } else {
+                        registers[0] = hostServiceState.machVmDeallocate(registers[1],
+                                                                         registers[2]);
+                    }
+                    break;
+                }
+                case 15: {  // _kernelrpc_mach_vm_map_trap, anonymous memory only
+                    constexpr std::uint32_t vmFlagsAnywhere = 1U;
+                    constexpr std::uint32_t vmFlagsPurgable = 2U;
+                    constexpr std::uint32_t vmFlagsMte = 0x2000U;
+                    const auto rawFlags = static_cast<std::uint32_t>(registers[4]);
+                    const auto flags = rawFlags & 0x00ffffffU;
+                    const auto protection = static_cast<std::uint32_t>(registers[5]);
+                    const auto mask = registers[3];
+                    if (!machTaskArgumentValid(registers[0])) {
+                        registers[0] = machSendInvalidDest;
+                        break;
+                    }
+                    if ((flags & ~(vmFlagsAnywhere | vmFlagsPurgable | vmFlagsMte)) != 0) {
+                        machTrapHandled = false;
+                        break;
+                    }
+                    if (mask >= (1ULL << 62) || (mask & (mask + 1)) != 0 ||
+                        (protection & ~7U) != 0 || (protection & 6U) == 6U) {
+                        registers[0] = kernInvalidArgument;
+                        break;
+                    }
+                    std::uint64_t address = 0;
+                    try {
+                        std::memcpy(&address, guestMemory.buffer(registers[1], sizeof(address)),
+                                    sizeof(address));
+                        (void)guestMemory.buffer(registers[1], sizeof(address), true);
+                    } catch (const std::exception&) {
+                        registers[0] = kernInvalidAddress;
+                        break;
+                    }
+                    const auto page = bootstrap.pageSize;
+                    if (registers[2] == 0) {
+                        registers[0] = kernInvalidArgument;
+                        break;
+                    }
+                    if (registers[2] > std::numeric_limits<std::uint64_t>::max() - (page - 1)) {
+                        registers[0] = kernNoSpace;
+                        break;
+                    }
+                    const auto size = (registers[2] + page - 1) & ~(page - 1);
+                    std::uint32_t result = static_cast<std::uint32_t>(kernNoSpace);
+                    if ((flags & vmFlagsAnywhere) != 0) {
+                        if (hostServiceState.machVmAllocate) {
+                            result = hostServiceState.machVmAllocate(
+                                size, std::max(page, mask + 1), protection, 7, address, false, 1,
+                                rawFlags >> 24U);
+                        }
+                    } else if ((address & mask) != 0) {
+                        result = static_cast<std::uint32_t>(kernInvalidArgument);
+                    } else if (hostServiceState.machVmReserve) {
+                        result = hostServiceState.machVmReserve(
+                            address, size, protection, 7, 1, rawFlags >> 24U, false);
+                    }
+                    if (result == kernSuccess) {
+                        (void)machStoreGuest(registers[1], &address, sizeof(address));
+                    }
+                    registers[0] = result;
+                    break;
+                }
+                default:
+                    machTrapHandled = false;
+                    break;
+                }
+                if (machTrapHandled) {
+                    registers[34] = 0;
+                    continue;
+                }
+            }
             if (syscall == 92) {  // Darwin fcntl syscall.
                 const char* traceFcntl = std::getenv("ARM64_METAL_TRACE_FCNTL");
                 if (traceFcntl != nullptr && std::strcmp(traceFcntl, "1") == 0) {
