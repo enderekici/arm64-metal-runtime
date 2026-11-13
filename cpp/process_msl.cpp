@@ -1108,7 +1108,9 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     ulong authenticate_guest_pointer(device ulong *state, ulong pointer, ulong modifier, ulong key) {
         device ulong *token = guest_pointer_token(state, pointer);
         if (key == 2 && (!token || token[2] != key)) token = guest_data_token(state, pointer, modifier, true);
-        return token && token[1] == modifier && token[2] == key ? token[0] : ~0ul;
+        if (token && token[1] == modifier && token[2] == key) return token[0];
+        if (@GUEST_PLAIN_ARM64_MAIN@ && !token && pointer <= @GUEST_DATA_ADDRESS_MASK@ul) return pointer;
+        return ~0ul;
     }
     kernel void run_process(device uchar *memory [[buffer(0)]],
                             device ulong *x [[buffer(1)]],
@@ -1169,17 +1171,18 @@ void remove_swift_multiline_indentation(std::string& text) {
 
 }  // namespace
 
-std::string render_source(std::string_view rendered_cases) {
+std::string render_source(std::string_view rendered_cases, bool plain_arm64_main) {
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 17> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 18> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
       {"@GUEST_NEON_SOURCE@", std::string(neon_metal_source())},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
       {"@GUEST_DATA_ADDRESS_MASK@", decimal(guestDataAddressMask)},
       {"@GUEST_DATA_TOKEN_BUCKETS@", decimal(guestDataTokenBuckets)},
       {"@GUEST_FPCR@", decimal(guestFPCR)},
+      {"@GUEST_PLAIN_ARM64_MAIN@", plain_arm64_main ? "true" : "false"},
       {"@GUEST_FPSR@", decimal(guestFPSR)},
       {"@GUEST_PACGA_KEY@", decimal(guestPACGAKey)},
       {"@GUEST_PACGA_KEY_PLUS_ONE@", decimal(guestPACGAKey + 1)},

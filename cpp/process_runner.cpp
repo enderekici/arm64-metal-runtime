@@ -2477,7 +2477,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto started = std::chrono::steady_clock::now();
         progressTrace.event("compile-start", static_cast<std::uint64_t>(entry));
         const auto cases = translate_core::render_blocks(plan.instructions, entry, "ul");
-        const auto source = process_msl::render_source(cases);
+        const auto source = process_msl::render_source(
+            cases, image.is_arm64e_code(image.entry) == std::optional<bool>{false});
         auto translated = backend.compileCompute(source, "run_process");
         const auto compileSeconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - started).count();
@@ -3145,6 +3146,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return expired;
     };
+    const auto dumpFrames = [&](const std::uint64_t* r, std::size_t count) {
+        std::vector<std::uint64_t> frames{count > 33 ? r[33] : 0, count > 30 ? r[30] : 0};
+        auto fp = count > 29 ? r[29] : 0;
+        for (int depth = 0; depth < 24 && fp != 0 && guestMemory.is_guest_readable(fp, 16); ++depth) {
+            std::uint64_t pair[2];
+            std::memcpy(pair, guestMemory.buffer(fp, 16), 16);
+            frames.push_back(pair[1]);
+            if (pair[0] <= fp) break;
+            fp = pair[0];
+        }
+        for (const auto pc : frames) {
+            std::uint64_t best = 0, bestIndex = ~std::uint64_t{0};
+            for (std::uint64_t index = 0; index < imageRegistry.size(); ++index) {
+                const auto header = imageRegistry.header_at(index);
+                if (header && *header <= (pc & 0x0000ffffffffffffULL) && *header >= best) {
+                    best = *header; bestIndex = index;
+                }
+            }
+            std::cerr << "  frame 0x" << std::hex << pc << std::dec;
+            if (bestIndex != ~std::uint64_t{0}) {
+                const auto name = imageRegistry.name_at(bestIndex);
+                std::cerr << " " << (name ? std::string(*name) : "?") << "+0x" << std::hex
+                          << ((pc & 0x0000ffffffffffffULL) - best) << std::dec;
+            }
+            std::cerr << '\n';
+        }
+    };
     std::optional<std::uint64_t> idleReportStart;
     bool idleReported = false;
     constexpr std::uint64_t guestDispatchTimeSlice = 32;
@@ -3212,6 +3240,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     hostServiceState.threadSignalMask);
                 if (selected) {
                     switched = true;
+                    idleReportStart.reset();
+                    idleReported = false;
                     break;
                 }
             }
@@ -3234,34 +3264,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " result=" << (t->result ? "done" : "none") << '\n';
                 }
                 dumpTransitions();
-                {
-                    const auto& r = guestScheduler.current().registers;
-                    std::vector<std::uint64_t> frames{r.size() > 33 ? r[33] : 0, r.size() > 30 ? r[30] : 0};
-                    auto fp = r.size() > 29 ? r[29] : 0;
-                    for (int depth = 0; depth < 24 && fp != 0 && guestMemory.is_guest_readable(fp, 16); ++depth) {
-                        std::uint64_t pair[2];
-                        std::memcpy(pair, guestMemory.buffer(fp, 16), 16);
-                        frames.push_back(pair[1]);
-                        if (pair[0] <= fp) break;
-                        fp = pair[0];
-                    }
-                    for (const auto pc : frames) {
-                        std::uint64_t best = 0, bestIndex = ~std::uint64_t{0};
-                        for (std::uint64_t index = 0; index < imageRegistry.size(); ++index) {
-                            const auto header = imageRegistry.header_at(index);
-                            if (header && *header <= (pc & 0x0000ffffffffffffULL) && *header >= best) {
-                                best = *header; bestIndex = index;
-                            }
-                        }
-                        std::cerr << "  frame 0x" << std::hex << pc << std::dec;
-                        if (bestIndex != ~std::uint64_t{0}) {
-                            const auto name = imageRegistry.name_at(bestIndex);
-                            std::cerr << " " << (name ? std::string(*name) : "?") << "+0x" << std::hex
-                                      << ((pc & 0x0000ffffffffffffULL) - best) << std::dec;
-                        }
-                        std::cerr << '\n';
-                    }
-                }
+                dumpFrames(guestScheduler.current().registers.data(),
+                           guestScheduler.current().registers.size());
             }
             if (*deadline > now) {
                 const auto interval = std::min<std::uint64_t>(*deadline - now, 1'000'000ULL);
@@ -10156,6 +10160,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             throw std::runtime_error("Guest authentication fault signal was not delivered");
         }
         if (status == 9 || status == 10 || status == 12) {
+            if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr) {
+                dumpTransitions();
+                dumpFrames(registers, 36);
+            }
             throw std::runtime_error(pac_failure_message(registers,
                 stateBuffer.size() / sizeof(std::uint64_t), status));
         }

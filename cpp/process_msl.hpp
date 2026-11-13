@@ -23,7 +23,10 @@ struct Config {
 
 // Render the shared process Metal source with caller-rendered switch cases and
 // the guest vector crypto helpers. This emits shader source only; it does not
-// run guest instructions on the CPU.
-[[nodiscard]] std::string render_source(std::string_view rendered_cases);
+// run guest instructions on the CPU. A plain arm64 main executable runs with
+// pointer authentication disabled on hardware, so authenticating an unsigned
+// canonical pointer succeeds when plain_arm64_main is set.
+[[nodiscard]] std::string render_source(std::string_view rendered_cases,
+                                        bool plain_arm64_main = false);
 
 }  // namespace arm64metal::process_msl
