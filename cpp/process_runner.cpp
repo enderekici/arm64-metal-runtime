@@ -3145,6 +3145,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return expired;
     };
+    std::optional<std::uint64_t> idleReportStart;
+    bool idleReported = false;
     constexpr std::uint64_t guestDispatchTimeSlice = 32;
     std::uint64_t dispatchesInTimeSlice = 0;
     std::uint64_t timeSliceThread = guestScheduler.current_id();
@@ -3217,6 +3219,49 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (!deadline) {
                 progressTrace.event("threads-blocked-no-deadline", activeId);
                 throw std::runtime_error("All guest threads are blocked with no deadline or runnable thread");
+            }
+            if (!idleReportStart) idleReportStart = now;
+            if (!idleReported && now - *idleReportStart > 20'000'000'000ULL) {
+                idleReported = true;
+                std::cerr << "arm64-metal all guest threads blocked for 20s; threads="
+                          << guestScheduler.thread_count() << '\n';
+                for (std::uint64_t id = 1; id < 256; ++id) {
+                    const auto* t = guestScheduler.find(id);
+                    if (t == nullptr) continue;
+                    std::cerr << "  thread " << id << " pc=0x" << std::hex
+                              << (t->registers.size() > 33 ? t->registers[33] : 0) << std::dec
+                              << " wait=" << (t->wait ? static_cast<int>(t->wait->index()) : -1)
+                              << " result=" << (t->result ? "done" : "none") << '\n';
+                }
+                dumpTransitions();
+                {
+                    const auto& r = guestScheduler.current().registers;
+                    std::vector<std::uint64_t> frames{r.size() > 33 ? r[33] : 0, r.size() > 30 ? r[30] : 0};
+                    auto fp = r.size() > 29 ? r[29] : 0;
+                    for (int depth = 0; depth < 24 && fp != 0 && guestMemory.is_guest_readable(fp, 16); ++depth) {
+                        std::uint64_t pair[2];
+                        std::memcpy(pair, guestMemory.buffer(fp, 16), 16);
+                        frames.push_back(pair[1]);
+                        if (pair[0] <= fp) break;
+                        fp = pair[0];
+                    }
+                    for (const auto pc : frames) {
+                        std::uint64_t best = 0, bestIndex = ~std::uint64_t{0};
+                        for (std::uint64_t index = 0; index < imageRegistry.size(); ++index) {
+                            const auto header = imageRegistry.header_at(index);
+                            if (header && *header <= (pc & 0x0000ffffffffffffULL) && *header >= best) {
+                                best = *header; bestIndex = index;
+                            }
+                        }
+                        std::cerr << "  frame 0x" << std::hex << pc << std::dec;
+                        if (bestIndex != ~std::uint64_t{0}) {
+                            const auto name = imageRegistry.name_at(bestIndex);
+                            std::cerr << " " << (name ? std::string(*name) : "?") << "+0x" << std::hex
+                                      << ((pc & 0x0000ffffffffffffULL) - best) << std::dec;
+                        }
+                        std::cerr << '\n';
+                    }
+                }
             }
             if (*deadline > now) {
                 const auto interval = std::min<std::uint64_t>(*deadline - now, 1'000'000ULL);
@@ -10119,7 +10164,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             lastHostTransition = "syscall=" + std::to_string(syscall) + "@pc=0x" +
                 hexadecimal(registers[33]);
             recordTransition(lastHostTransition + " x0=0x" + hexadecimal(registers[0]) +
-                " x1=0x" + hexadecimal(registers[1]) + " x2=0x" + hexadecimal(registers[2]));
+                " x1=0x" + hexadecimal(registers[1]) + " x2=0x" + hexadecimal(registers[2]) +
+                " x3=0x" + hexadecimal(registers[3]) + " x4=0x" + hexadecimal(registers[4]) +
+                " x5=0x" + hexadecimal(registers[5]));
             progressTrace.event("raw-syscall", registers[33], syscall);
             // Raw BSD stubs return the error in x0 with carry set. The guest's
             // cerror path does not populate errno from it here, so also store it

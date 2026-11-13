@@ -1929,7 +1929,7 @@ std::size_t ExecutableImage::cache_backing_end() const noexcept {
                         !deferred_cache.empty();
   return cache_backing_start() + (hasCache ? 64 * 1024 * 1024 : 0);
 }
-std::size_t ExecutableImage::mapping_backing_end() const noexcept { return cache_backing_end() + 16 * 1024 * 1024; }
+std::size_t ExecutableImage::mapping_backing_end() const noexcept { return cache_backing_end() + 208U * 1024U * 1024U; }
 
 std::uint32_t ExecutableImage::link_time_version(const std::string& name) const noexcept {
   for (auto iter = linked_libraries_.rbegin(); iter != linked_libraries_.rend(); ++iter) {
