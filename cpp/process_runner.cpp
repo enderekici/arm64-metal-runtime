@@ -3092,10 +3092,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return monotonicNow + std::min(
             remaining, std::numeric_limits<std::uint64_t>::max() - monotonicNow);
     };
+    constexpr std::uint32_t machTrailerSizeDefault = sizeof(mach_msg_trailer_t);
     struct GuestMachBlockedReceive {
         std::uint32_t port;
         std::uint64_t buffer;
         std::uint32_t capacity;
+        std::uint32_t trailerSize = machTrailerSizeDefault;
     };
     struct GuestUnixBlockedReceive {
         std::int32_t descriptor;
@@ -3576,12 +3578,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
     constexpr std::uint32_t machReceiveInvalidData = 0x10004008;
     constexpr std::uint32_t machReceivePortChanged = 0x10004006;
-    constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
     const auto copyGuestMachMessage = [&](const GuestLocalMessage& message,
                                           std::uint32_t receiveName,
                                           std::uint64_t outputAddress,
-                                          std::uint32_t capacity) -> std::uint32_t {
-        const auto outputSize = static_cast<std::uint64_t>(message.size) + machTrailerSize;
+                                          std::uint32_t capacity,
+                                          std::uint32_t trailerSize) -> std::uint32_t {
+        const auto outputSize = static_cast<std::uint64_t>(message.size) + trailerSize;
         if (capacity < outputSize) return machReceiveTooLarge;
         if (!guestMemory.is_guest_readable(outputAddress, outputSize) ||
             guestMemory.is_readonly(outputAddress, outputSize)) {
@@ -3609,7 +3611,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 descriptor.disposition = MACH_MSG_TYPE_MOVE_SEND;
                 std::memcpy(output + descriptorOffset, &descriptor, sizeof(descriptor));
             }
-            const mach_msg_trailer_t trailer{0, machTrailerSize};
+            std::memset(output + message.size, 0, trailerSize);
+            const mach_msg_trailer_t trailer{0, trailerSize};
             std::memcpy(output + message.size, &trailer, sizeof(trailer));
             return 0;
         } catch (const std::exception&) {
@@ -3715,10 +3718,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             return true;
         };
-    const auto deliverGuestMachMessage = [&](std::uint32_t port) {
-        expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
+    const auto readyPortSetMember = [&](std::uint32_t set) -> std::optional<std::uint32_t> {
+        for (const auto& membership : guestPortSetMembers) {
+            if (membership.second != set) continue;
+            const auto queue = guestMachMessageQueues.find(membership.first);
+            if (queue != guestMachMessageQueues.end() && !queue->second.empty()) {
+                return membership.first;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto deliverGuestMachPortToWaiters = [&](std::uint32_t port, std::uint32_t source) {
         auto waiting = guestMachReceiveWaiters.find(port);
-        auto queue = guestMachMessageQueues.find(port);
+        auto queue = guestMachMessageQueues.find(source);
         if (waiting == guestMachReceiveWaiters.end() || queue == guestMachMessageQueues.end() ||
             queue->second.empty()) return;
         auto& waiters = waiting->second;
@@ -3731,8 +3743,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
             if (blocked == guestMachBlockedReceives.end() || wait == nullptr ||
                 wait->port != port || blocked->second.port != port) continue;
-            const auto result = copyGuestMachMessage(queue->second.front(), port,
-                blocked->second.buffer, blocked->second.capacity);
+            const auto result = copyGuestMachMessage(queue->second.front(), source,
+                blocked->second.buffer, blocked->second.capacity,
+                blocked->second.trailerSize);
             progressTrace.event("mach-message-wake", threadId, port);
             guestMachBlockedReceives.erase(blocked);
             auto delivered = result;
@@ -3750,6 +3763,20 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             guestScheduler.wake(threadId, static_cast<std::int32_t>(delivered));
         }
         if (waiters.empty()) guestMachReceiveWaiters.erase(waiting);
+    };
+    const auto deliverGuestMachMessage = [&](std::uint32_t port) {
+        expireAndPruneGuestMachReceiveWaiters(monotonicNanoseconds());
+        deliverGuestMachPortToWaiters(port, port);
+        const auto membership = guestPortSetMembers.find(port);
+        if (membership == guestPortSetMembers.end()) return;
+        const auto set = membership->second;
+        while (guestMachReceiveWaiters.find(set) != guestMachReceiveWaiters.end()) {
+            const auto member = readyPortSetMember(set);
+            if (!member) break;
+            const auto before = guestMachMessageQueues[*member].size();
+            deliverGuestMachPortToWaiters(set, *member);
+            if (guestMachMessageQueues[*member].size() == before) break;
+        }
     };
     fireDueMachTimers = [&]() {
         if (guestMachTimers.empty()) return;
@@ -12758,12 +12785,48 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machPortDescriptorType = 0;
                     constexpr std::uint32_t machMsgTypeMoveSend = 0x11;
                     constexpr std::uint32_t machTrailerSize = sizeof(mach_msg_trailer_t);
+                    constexpr std::uint64_t machReceiveLarge = 0x00000004;
+                    constexpr std::uint64_t machReceiveLargeIdentity = 0x00000008;
+                    constexpr std::uint64_t machReceiveInterrupt = 0x00000400;
+                    constexpr std::uint64_t machReceiveVoucher = 0x00000800;
+                    constexpr std::uint64_t machReceiveTrailerMask = 0xff000000;
+                    constexpr std::uint64_t mach64MsgVector = 0x0000000100000000;
                     constexpr std::uint64_t allowedOptions = machSendMessage |
-                        machReceiveMessage | machReceiveTimeout | mach64SendAny | mach64SendMqCall;
+                        machReceiveMessage | machReceiveTimeout | mach64SendAny | mach64SendMqCall |
+                        machReceiveLarge | machReceiveLargeIdentity | machReceiveInterrupt |
+                        machReceiveVoucher | machReceiveTrailerMask | mach64MsgVector;
+                    const bool vectorMessage = (options & mach64MsgVector) != 0;
+                    std::uint64_t receiveAddress = registers[0];
+                    std::uint64_t receiveSize64 = registers[6];
+                    if (vectorMessage && receiveRequested && !sendRequested) {
+                        try {
+                            const auto* vector = guestMemory.buffer(registers[0], 24);
+                            std::uint64_t dataAddress = 0;
+                            std::uint64_t vectorReceiveAddress = 0;
+                            std::uint32_t vectorReceiveSize = 0;
+                            std::memcpy(&dataAddress, vector, sizeof(dataAddress));
+                            std::memcpy(&vectorReceiveAddress, vector + 8,
+                                        sizeof(vectorReceiveAddress));
+                            std::memcpy(&vectorReceiveSize, vector + 20,
+                                        sizeof(vectorReceiveSize));
+                            receiveAddress = vectorReceiveAddress != 0
+                                ? vectorReceiveAddress : dataAddress;
+                            receiveSize64 = vectorReceiveSize;
+                        } catch (const std::out_of_range&) {
+                            receiveAddress = 0;
+                            receiveSize64 = 0;
+                        }
+                    }
+                    const auto receiveSize = static_cast<std::uint32_t>(receiveSize64);
+                    const std::uint32_t trailerSize = std::max<std::uint32_t>(
+                        machTrailerSize,
+                        REQUESTED_TRAILER_SIZE(static_cast<mach_msg_option_t>(options)));
                     std::uint64_t result = 0;
                     if ((options & ~allowedOptions) != 0 ||
+                        (vectorMessage && sendRequested) ||
                         (!sendRequested && descriptorCount != 0) ||
-                        registers[6] >> 32 != 0) {
+                        registers[6] >> 32 != 0 ||
+                        (receiveRequested && !sendRequested && receiveAddress == 0)) {
                         result = kernInvalidArgument;
                         if (std::getenv("ARM64_METAL_TRACE_MACH_MSG") != nullptr) {
                             std::cerr << "mach-msg2 invalid args options=0x" << hexadecimal(options)
@@ -12889,7 +12952,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         if (guestReceiveRights.find(receiveName) == guestReceiveRights.end()) {
                             result = machReceiveInvalidName;
                         } else {
-                            auto& queue = guestMachMessageQueues[receiveName];
+                            auto sourcePort = receiveName;
+                            if (guestReceiveRights.at(receiveName).portSet) {
+                                if (const auto member = readyPortSetMember(receiveName)) {
+                                    sourcePort = *member;
+                                }
+                            }
+                            auto& queue = guestMachMessageQueues[sourcePort];
                             if (queue.empty()) {
                                 if ((options & machReceiveTimeout) != 0) {
                                     const auto timeoutMilliseconds = registers[7];
@@ -12906,15 +12975,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                             timeoutNanoseconds,
                                             std::numeric_limits<std::uint64_t>::max() - now);
                                         const auto threadId = guestScheduler.current_id();
-                                        const auto receiveSize = static_cast<std::uint32_t>(
-                                            registers[6]);
                                         if (!guestScheduler.wait_mach_receive(receiveName,
                                                                               deadline)) {
                                             result = kernInvalidArgument;
                                         } else {
                                             guestMachBlockedReceives[threadId] =
-                                                GuestMachBlockedReceive{receiveName, registers[0],
-                                                                        receiveSize};
+                                                GuestMachBlockedReceive{receiveName, receiveAddress,
+                                                                        receiveSize, trailerSize};
                                             guestMachReceiveWaiters[receiveName].push_back(threadId);
                                             progressTrace.event("mach-receive-wait", threadId,
                                                                 receiveName);
@@ -12929,15 +12996,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     }
                                 } else {
                                     const auto threadId = guestScheduler.current_id();
-                                    const auto receiveSize = static_cast<std::uint32_t>(
-                                        registers[6]);
                                     if (!guestScheduler.wait_mach_receive(receiveName,
                                                                           std::nullopt)) {
                                         result = kernInvalidArgument;
                                     } else {
                                         guestMachBlockedReceives[threadId] =
-                                            GuestMachBlockedReceive{receiveName, registers[0],
-                                                                    receiveSize};
+                                            GuestMachBlockedReceive{receiveName, receiveAddress,
+                                                                    receiveSize, trailerSize};
                                         guestMachReceiveWaiters[receiveName].push_back(threadId);
                                         progressTrace.event("mach-receive-wait", threadId,
                                                             receiveName);
@@ -12951,14 +13016,22 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             } else {
                                 const auto messageSize = queue.front().size;
                                 const auto outputSize = static_cast<std::uint64_t>(messageSize) +
-                                                        machTrailerSize;
-                                const auto receiveSize = static_cast<std::uint32_t>(registers[6]);
+                                                        trailerSize;
                                 if (receiveSize < outputSize) {
                                     result = machReceiveTooLarge;
-                                    queue.pop_front();
+                                    if ((options & machReceiveLarge) == 0) {
+                                        queue.pop_front();
+                                    } else if (receiveSize >= sizeof(mach_msg_header_t)) {
+                                        try {
+                                            std::memcpy(guestMemory.buffer(receiveAddress + 4,
+                                                            sizeof(messageSize), true),
+                                                        &messageSize, sizeof(messageSize));
+                                        } catch (const std::out_of_range&) {
+                                        }
+                                    }
                                 } else {
-                                    result = copyGuestMachMessage(queue.front(), receiveName,
-                                        registers[0], receiveSize);
+                                    result = copyGuestMachMessage(queue.front(), sourcePort,
+                                        receiveAddress, receiveSize, trailerSize);
                                     if (result == 0) {
                                         if (!restoreGuestTransferredSendRight(queue.front())) {
                                             result = machReceiveInvalidData;
@@ -13512,6 +13585,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         result = kernAlreadyInSet;
                     } else {
                         guestPortSetMembers[name] = pset;
+                        deliverGuestMachMessage(name);
                     }
                 }
                 registers[0] = result;
@@ -14794,6 +14868,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             break;
                         }
                         guestPortSetMembers[name] = set;
+                        deliverGuestMachMessage(name);
                     } else {
                         guestPortSetMembers.erase(name);
                     }

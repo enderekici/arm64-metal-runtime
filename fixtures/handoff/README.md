@@ -941,3 +941,15 @@ uses `fflush` instead. Documented deviations from the native kernel: the
 plus timer leeway), `clock_sleep_trap` stores the computed wake time rather than
 the time observed after waking, and the special reply port is a plain receive
 right (native also carries a send-once right).
+
+## Port-set receive (`mach-portset-recv.c`)
+
+Receives on a Mach port set holding an `mk_timer` port, through libc `mach_msg` (vector-form `mach_msg2`
+with RCV_LARGE, RCV_VOUCHER and requested trailer elements): blocking wake, timeout, queued message and
+RCV_LARGE too-large. Native and guest stdout are identical.
+
+```sh
+clang -arch arm64 fixtures/handoff/mach-portset-recv.c -o /tmp/mach-portset-recv
+/tmp/mach-portset-recv
+.build/arm64-metal-cpp-macos/arm64-metal launch /tmp/mach-portset-recv
+```
