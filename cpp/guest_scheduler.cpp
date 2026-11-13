@@ -650,6 +650,9 @@ std::optional<std::uint64_t> GuestScheduler::earliest_deadline() const noexcept 
         } else if (const auto* machReceive =
                        std::get_if<GuestMachReceiveWait>(&*entry.second.wait)) {
             deadline = machReceive->deadline;
+        } else if (const auto* hostPoll =
+                       std::get_if<GuestHostPollWait>(&*entry.second.wait)) {
+            deadline = hostPoll->nextPoll;
         }
         if (deadline.has_value() && (!earliest.has_value() || *deadline < *earliest)) {
             earliest = deadline;

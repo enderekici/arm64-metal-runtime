@@ -51,6 +51,13 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/syscall.h>
+#include <sys/event.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/msg.h>
+#include <sys/ioctl.h>
+#include <sys/poll.h>
+#include <sys/uio.h>
 #include <sys/time.h>
 #include <sys/xattr.h>
 #include <mach/mach.h>
@@ -3103,6 +3110,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint64_t, GuestUnixBlockedReceive> guestUnixBlockedReceives;
     std::function<void()> fireDueMachTimers;
     std::function<std::optional<std::uint64_t>()> earliestMachTimerNanoseconds;
+#include "raw_net_state.inc"
     const auto pruneGuestMachReceiveWaiters = [&]() {
         for (auto waiters = guestMachReceiveWaiters.begin();
              waiters != guestMachReceiveWaiters.end();) {
@@ -3130,6 +3138,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (fireDueMachTimers) fireDueMachTimers();
         const auto expired = guestScheduler.expire_waiters(now);
         if (expired != 0) progressTrace.event("mach-waiters-expired", now, expired);
+        pollGuestHostWaiters(now);
         pruneGuestMachReceiveWaiters();
         for (auto waiters = guestUnixReceiveWaiters.begin();
              waiters != guestUnixReceiveWaiters.end();) {
@@ -11167,7 +11176,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == SYS_bind || syscall == SYS_connect) {
+            if (syscall == SYS_bind || syscall == SYS_connect ||
+                syscall == SYS_connect_nocancel) {
                 constexpr std::uint64_t carryMask = 8U;
                 const auto descriptor = static_cast<std::int32_t>(registers[0]);
                 const auto addressLength = static_cast<std::uint32_t>(registers[2]);
@@ -11231,7 +11241,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == SYS_sendto || syscall == SYS_recvfrom) {
+            if ((syscall == SYS_sendto || syscall == SYS_recvfrom ||
+                 syscall == SYS_sendto_nocancel || syscall == SYS_recvfrom_nocancel) &&
+                hostServiceState.guestUnixSockets.count(
+                    static_cast<std::int32_t>(registers[0])) != 0) {
+                const bool sendsDatagram = syscall == SYS_sendto || syscall == SYS_sendto_nocancel;
                 constexpr std::uint64_t carryMask = 8U;
                 const auto descriptor = static_cast<std::int32_t>(registers[0]);
                 std::uint32_t error = 0;
@@ -11246,7 +11260,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     error = ENOTSUP;
                 } else if (registers[3] != 0) {
                     error = ENOTSUP;
-                } else if (syscall == SYS_sendto) {
+                } else if (sendsDatagram) {
                     const auto byteCount = registers[2];
                     std::int32_t peerDescriptor = -1;
                     if (registers[4] == 0) {
@@ -14059,6 +14073,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == 366) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint64_t maximumPthreadSize = 64U * 1024U;
+                constexpr std::uint64_t bsdthreadSupportedFeatures = 0x4000115fU;
                 struct GuestBsdthreadRegistrationData {
                     std::uint64_t version;
                     std::uint64_t dispatchQueueOffset;
@@ -14152,9 +14167,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 }
                 if (error == 0) {
-                    // Zero advertises no PTHREAD_FEATURE_* bits; operations are
-                    // implemented only as their guest-side handlers become available.
-                    registers[0] = 0;
+                    registers[0] = bsdthreadSupportedFeatures;
                     registers[32] &= ~carryMask;
                 } else {
                     registers[0] = error;
@@ -14187,6 +14200,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t dispatchConfigSize = 24;
                 constexpr std::uint64_t qosClassMask = 0x00003f00;
                 constexpr std::uint64_t overcommitFlag = 0x80000000;
+                constexpr std::uint64_t requestFallbackFlag = 0x04000000;
+                constexpr std::uint64_t requestDefaultQueueFlag = 0x10000000;
                 static_assert(sizeof(GuestWorkqueueDispatchConfig) == dispatchConfigSize);
                 if (registers[0] == threadReturn &&
                     guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0 &&
@@ -14213,7 +14228,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     } else if (registers[1] != 0 || registers[2] != 1) {
                         error = ENOTSUP;
                     } else if (qos == 0 || qos >= 7 ||
-                               (priority & ~(qosClassMask | 0xffU | overcommitFlag)) != 0) {
+                               (priority & ~(qosClassMask | 0xffU | overcommitFlag |
+                                             requestFallbackFlag | requestDefaultQueueFlag)) != 0) {
                         error = EINVAL;
                     } else {
                         const auto workqueueToken = guestBsdthreadRegistration->workqueueStart;
@@ -14323,6 +14339,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                     if (error != 0) {
+                        workqueueTrace.event("request-rejected", requestThreads, registers[33],
+                                             guestScheduler.current_id(), error, priority);
                         registers[0] = error;
                         registers[32] |= carryMask;
                     }
@@ -15035,6 +15053,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     continue;
                 }
             }
+#include "raw_net_syscalls.inc"
             if (syscall == 92) {  // Darwin fcntl syscall.
                 const char* traceFcntl = std::getenv("ARM64_METAL_TRACE_FCNTL");
                 if (traceFcntl != nullptr && std::strcmp(traceFcntl, "1") == 0) {

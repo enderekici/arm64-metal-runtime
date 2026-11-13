@@ -94,9 +94,13 @@ struct GuestUlockWait {
 struct GuestUnixSocketReceiveWait {
     std::int32_t descriptor = -1;
 };
+struct GuestHostPollWait {
+    std::uint64_t nextPoll = 0;
+};
 using GuestWait = std::variant<GuestJoinWait, GuestMutexWait, GuestConditionWait,
                                GuestSleepWait, GuestSemaphoreWait, GuestMachReceiveWait,
-                               GuestUlockWait, GuestUnixSocketReceiveWait>;
+                               GuestUlockWait, GuestUnixSocketReceiveWait,
+                               GuestHostPollWait>;
 
 // Guest thread bookkeeping only. `stack` and addresses are guest virtual
 // offsets; the runtime owns register save/restore and backing memory access.
