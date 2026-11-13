@@ -1,3 +1,4 @@
+#include "guest_csops.hpp"
 #include "guest_dlopen.hpp"
 #include "host_service_registry.hpp"
 #include "guest_exit.hpp"
@@ -2076,6 +2077,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::int64_t, std::int64_t> guestStubs(image.guest_stubs.begin(),
                                                      image.guest_stubs.end());
     const auto signing = guest_signing_policy(executable.string(), image.main_restricted);
+    auto csopsStatus = signing.status;
     ProcessBootstrapInput input;
     input.mappedImage = image.memory;
     input.readOnlyRanges = readonly_ranges(image);
@@ -11538,43 +11540,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 registers[34] = 0;
                 continue;
             }
-            if (syscall == 169) {
-                if (static_cast<std::uint32_t>(registers[1]) != 0) {
-                    throw std::runtime_error("Unsupported guest csops operation " +
-                        std::to_string(static_cast<std::uint32_t>(registers[1])) + " pid " +
-                        std::to_string(static_cast<std::int32_t>(registers[0])) + " pc 0x" +
-                        hexadecimal(registers[33]));
-                }
-                const auto pid = static_cast<std::int32_t>(registers[0]);
-                registers[32] |= 8U;
-                if (pid != 0 && pid != ::getpid()) {
-                    registers[0] = ESRCH;
-                } else if (registers[2] != 0 &&
-                           registers[2] < ExecutableImage::minimum_image_address) {
-                    registers[0] = EFAULT;
-                } else {
-                    try {
-                        if (registers[2] != 0) {
-                            std::memcpy(guestMemory.buffer(registers[2],
-                                sizeof(signing.status), true), &signing.status,
-                                sizeof(signing.status));
-                        }
-                        registers[0] = 0;
-                        registers[32] &= ~std::uint64_t{8};
-                    } catch (const std::out_of_range&) {
-                        registers[0] = EFAULT;
-                    }
-                }
-                registers[34] = 0;
-                continue;
-            }
-            if (syscall == 170) {
+            if (syscall == 169 || syscall == 170) {
+                const bool auditToken = syscall == 170;
                 const auto pid = static_cast<std::int32_t>(registers[0]);
                 const auto operation = static_cast<std::uint32_t>(registers[1]);
                 const auto outputAddress = registers[2];
                 const auto outputCapacity = registers[3];
                 const auto auditTokenAddress = registers[4];
-                if (std::getenv("ARM64_METAL_TRACE_CSOPS_AUDITTOKEN") != nullptr) {
+                if (auditToken && std::getenv("ARM64_METAL_TRACE_CSOPS_AUDITTOKEN") != nullptr) {
                     std::cerr << "arm64-metal trace csops-audittoken"
                               << " pc=0x" << hexadecimal(registers[33])
                               << " lr=0x" << hexadecimal(registers[30])
@@ -11584,26 +11557,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                               << " size=" << outputCapacity
                               << " token=0x" << hexadecimal(auditTokenAddress) << '\n';
                 }
-                constexpr std::uint32_t csOpsStatus = 0;
-                constexpr std::uint32_t csOpsIdentity = 11;
-                constexpr std::uint32_t csOpsDerEntitlementsBlob = 16;
-                constexpr std::uint32_t identityHeaderSize = 8;
-                bool failed = false;
-                registers[32] |= 8U;
-                const auto fail = [&](std::uint32_t error) {
-                    registers[0] = error;
-                    failed = true;
-                };
-                if (auditTokenAddress == 0) {
-                    fail(EINVAL);
-                } else if (operation != csOpsStatus && operation != csOpsIdentity &&
-                           operation != csOpsDerEntitlementsBlob) {
-                    throw std::runtime_error("Unsupported guest csops_audittoken operation");
-                } else if (pid != 0 && pid != ::getpid()) {
-                    fail(ESRCH);
-                } else if (auditTokenAddress < ExecutableImage::minimum_image_address) {
-                    fail(EFAULT);
-                } else {
+                std::uint32_t csopsError = 0;
+                bool csopsTerminate = false;
+                const auto verifyAuditToken = [&]() -> std::uint32_t {
+                    if (auditTokenAddress < ExecutableImage::minimum_image_address) {
+                        return EFAULT;
+                    }
                     constexpr std::size_t auditTokenWords = TASK_AUDIT_TOKEN_COUNT;
                     std::array<std::uint32_t, auditTokenWords> guestAuditToken{};
                     std::array<integer_t, auditTokenWords> hostAuditToken{};
@@ -11613,126 +11572,39 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         std::memcpy(guestAuditToken.data(), tokenBytes,
                                     sizeof(guestAuditToken));
                     } catch (const std::out_of_range&) {
-                        fail(EFAULT);
-                    }
-                    if (failed) {
-                        registers[34] = 0;
-                        continue;
+                        return EFAULT;
                     }
                     auto hostAuditTokenCount = static_cast<mach_msg_type_number_t>(
                         TASK_AUDIT_TOKEN_COUNT);
                     const auto taskInfoResult = ::task_info(::mach_task_self(),
                         TASK_AUDIT_TOKEN, hostAuditToken.data(), &hostAuditTokenCount);
-                    if (taskInfoResult != KERN_SUCCESS || hostAuditTokenCount !=
-                            TASK_AUDIT_TOKEN_COUNT) {
-                        fail(EIO);
-                    } else if (guestAuditToken[5] !=
-                                   static_cast<std::uint32_t>(hostAuditToken[5]) ||
-                               guestAuditToken[7] !=
-                                   static_cast<std::uint32_t>(hostAuditToken[7])) {
-                        fail(ESRCH);
-                    } else if (operation == csOpsStatus) {
-                        if (outputAddress != 0) {
-                            if (outputAddress < ExecutableImage::minimum_image_address) {
-                                fail(EFAULT);
-                            } else {
-                                try {
-                                    auto* output = guestMemory.buffer(
-                                        outputAddress, sizeof(signing.status), true);
-                                    std::memcpy(output, &signing.status,
-                                                sizeof(signing.status));
-                                } catch (const std::out_of_range&) {
-                                    fail(EFAULT);
-                                }
-                            }
-                        }
-                    } else if (operation == csOpsIdentity &&
-                               outputCapacity < identityHeaderSize) {
-                        fail(ERANGE);
-                    } else if (image.main_code_policy.validation !=
-                                   arm64metal::GuestCodeValidation::valid) {
-                        fail(EINVAL);
-                    } else if (operation == csOpsDerEntitlementsBlob) {
-                        const auto& policy = image.main_code_policy;
-                        if (!policy.entitlements_blob_metadata_valid) {
-                            throw std::runtime_error(
-                                "Unsupported malformed guest entitlement signature metadata");
-                        }
-                        if (policy.der_entitlements.empty() && policy.has_xml_entitlements) {
-                            throw std::runtime_error(
-                                "Unsupported guest XML-only entitlements without DER transmutation");
-                        }
-                        if (!policy.der_entitlements.empty()) {
-                            if (outputCapacity < identityHeaderSize) {
-                                fail(ERANGE);
-                            } else if (outputAddress <
-                                           ExecutableImage::minimum_image_address) {
-                                fail(EFAULT);
-                            } else {
-                                try {
-                                    if (outputCapacity < policy.der_entitlements.size()) {
-                                        std::array<std::uint8_t, identityHeaderSize> header{};
-                                        const auto length = htonl(static_cast<std::uint32_t>(
-                                            policy.der_entitlements.size()));
-                                        std::memcpy(header.data() + sizeof(std::uint32_t),
-                                                    &length, sizeof(length));
-                                        auto* output = guestMemory.buffer(outputAddress,
-                                            header.size(), true);
-                                        std::memcpy(output, header.data(), header.size());
-                                        fail(ERANGE);
-                                    } else {
-                                        auto* output = guestMemory.buffer(outputAddress,
-                                            policy.der_entitlements.size(), true);
-                                        std::memcpy(output, policy.der_entitlements.data(),
-                                                    policy.der_entitlements.size());
-                                    }
-                                } catch (const std::out_of_range&) {
-                                    fail(EFAULT);
-                                }
-                            }
-                        }
-                    } else if (image.main_code_policy.identity.empty()) {
-                        fail(ENOENT);
-                    } else {
-                        const auto& identity = image.main_code_policy.identity;
-                        if (identity.size() > std::numeric_limits<std::uint32_t>::max() -
-                                                  identityHeaderSize - 1) {
-                            fail(EOVERFLOW);
-                        } else {
-                            const auto identityLength = static_cast<std::uint32_t>(
-                                identity.size() + 1);
-                            const auto totalLength = identityHeaderSize + identityLength;
-                            const auto encodedLength = htonl(totalLength);
-                            std::array<std::uint8_t, identityHeaderSize> header{};
-                            std::memcpy(header.data() + sizeof(std::uint32_t),
-                                        &encodedLength, sizeof(encodedLength));
-                            if (outputAddress < ExecutableImage::minimum_image_address) {
-                                fail(EFAULT);
-                            } else {
-                                try {
-                                    auto* headerOutput = guestMemory.buffer(
-                                        outputAddress, header.size(), true);
-                                    std::memcpy(headerOutput, header.data(), header.size());
-                                    if (outputCapacity < totalLength) {
-                                        fail(ERANGE);
-                                    } else {
-                                        auto* identityOutput = guestMemory.buffer(
-                                            outputAddress + header.size(), identityLength, true);
-                                        std::memcpy(identityOutput, identity.c_str(),
-                                                    identityLength);
-                                    }
-                                } catch (const std::out_of_range&) {
-                                    fail(EFAULT);
-                                }
-                            }
-                        }
+                    if (taskInfoResult != KERN_SUCCESS ||
+                        hostAuditTokenCount != TASK_AUDIT_TOKEN_COUNT) return EIO;
+                    if (guestAuditToken[5] != static_cast<std::uint32_t>(hostAuditToken[5]) ||
+                        guestAuditToken[7] != static_cast<std::uint32_t>(hostAuditToken[7])) {
+                        return ESRCH;
+                    }
+                    return 0;
+                };
+                if (auditToken && auditTokenAddress == 0) {
+                    csopsError = EINVAL;
+                } else if (pid != 0 && pid != ::getpid()) {
+                    csopsError = guest_csops_other_pid_error(operation);
+                } else {
+                    if (auditToken) csopsError = verifyAuditToken();
+                    if (csopsError == 0) {
+                        const auto outcome = guest_csops_self(guestMemory, image.main_code_policy,
+                            csopsStatus, operation, outputAddress, outputCapacity);
+                        csopsError = outcome.error;
+                        csopsTerminate = outcome.terminate;
                     }
                 }
-                if (!failed) {
-                    registers[0] = 0;
-                    registers[32] &= ~std::uint64_t{8};
+                if (csopsTerminate) return 128 + SIGKILL;
+                if (csopsError != 0) {
+                    rawFail(static_cast<int>(csopsError));
+                } else {
+                    rawOk(0);
                 }
-                registers[34] = 0;
                 continue;
             }
             if (syscall == 6 || syscall == 396 || syscall == 397 || syscall == 399) {

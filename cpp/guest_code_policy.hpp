@@ -20,6 +20,11 @@ struct GuestCodePolicy {
   bool entitlements_blob_metadata_valid = false;
   bool has_xml_entitlements = false;
   std::vector<std::uint8_t> der_entitlements;
+  std::vector<std::uint8_t> xml_entitlements;
+  std::vector<std::uint8_t> code_signature;
+  std::array<std::uint8_t, 20> cdhash{};
+  bool has_cdhash = false;
+  std::string team_id;
   std::array<std::uint8_t, 32> image_sha256{};
   bool hardened_runtime = false;
   bool ad_hoc = false;

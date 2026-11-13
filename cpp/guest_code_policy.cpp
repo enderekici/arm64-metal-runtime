@@ -7,6 +7,9 @@
 #include <Security/SecTrust.h>
 #include <copyfile.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -163,6 +166,9 @@ bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
   }
   const auto signatureOffset = codeSignature->first;
   const auto signatureSize = codeSignature->second;
+  policy.code_signature.assign(
+      image.begin() + static_cast<std::ptrdiff_t>(signatureOffset),
+      image.begin() + static_cast<std::ptrdiff_t>(signatureOffset + signatureSize));
   if (signatureSize < 12 || read_big_u32(image, signatureOffset) !=
           embeddedSignatureMagic) return false;
   const auto superblobLength = read_big_u32(image, signatureOffset + 4);
@@ -171,12 +177,16 @@ bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
       blobCount > (superblobLength - 12) / 8) return false;
   std::optional<std::size_t> xmlBlobOffset;
   std::optional<std::size_t> derBlobOffset;
+  std::vector<std::pair<std::uint32_t, std::size_t>> directories;
   for (std::uint32_t index = 0; index < blobCount; ++index) {
     const auto indexOffset = signatureOffset + 12 + static_cast<std::size_t>(index) * 8;
     const auto slot = read_big_u32(image, indexOffset);
     const auto blobOffset = read_big_u32(image, indexOffset + 4);
     if (blobOffset < 12 + blobCount * 8 || blobOffset > superblobLength ||
         superblobLength - blobOffset < 8) return false;
+    if (slot == 0 || (slot >= 0x1000 && slot < 0x1005)) {
+      directories.emplace_back(slot, signatureOffset + blobOffset);
+    }
     if (slot == xmlEntitlementsSlot) {
       if (xmlBlobOffset) return false;
       xmlBlobOffset = signatureOffset + blobOffset;
@@ -205,6 +215,54 @@ bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
     if (!validateBlob(*derBlobOffset, derEntitlementsMagic, length)) return false;
     policy.der_entitlements.assign(image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset),
         image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset + length));
+  }
+  if (xmlBlobOffset) {
+    const auto length = read_big_u32(image, *xmlBlobOffset + 4);
+    policy.xml_entitlements.assign(
+        image.begin() + static_cast<std::ptrdiff_t>(*xmlBlobOffset),
+        image.begin() + static_cast<std::ptrdiff_t>(*xmlBlobOffset + length));
+  }
+  constexpr std::uint32_t codeDirectoryMagic = 0xfade0c02;
+  constexpr std::size_t codeDirectoryHeader = 48;
+  std::optional<std::size_t> bestDirectory;
+  std::uint8_t bestHashType = 0;
+  for (const auto& [slot, offset] : directories) {
+    (void)slot;
+    if (read_big_u32(image, offset) != codeDirectoryMagic) continue;
+    const auto length = read_big_u32(image, offset + 4);
+    const auto relativeOffset = offset - signatureOffset;
+    if (length < codeDirectoryHeader || relativeOffset > superblobLength ||
+        length > superblobLength - relativeOffset) continue;
+    const auto hashType = image[offset + 37];
+    if (hashType < 1 || hashType > 4) continue;
+    if (!bestDirectory || hashType > bestHashType) {
+      bestDirectory = offset;
+      bestHashType = hashType;
+    }
+  }
+  if (bestDirectory) {
+    const auto offset = *bestDirectory;
+    const auto length = read_big_u32(image, offset + 4);
+    std::array<std::uint8_t, CC_SHA512_DIGEST_LENGTH> digest{};
+    if (bestHashType == 1) {
+      CC_SHA1(image.data() + offset, length, digest.data());
+    } else if (bestHashType == 4) {
+      CC_SHA384(image.data() + offset, length, digest.data());
+    } else {
+      CC_SHA256(image.data() + offset, length, digest.data());
+    }
+    std::copy_n(digest.begin(), policy.cdhash.size(), policy.cdhash.begin());
+    policy.has_cdhash = true;
+    const auto version = read_big_u32(image, offset + 8);
+    if (version >= 0x20200 && length >= 52) {
+      const auto teamOffset = read_big_u32(image, offset + 48);
+      if (teamOffset != 0 && teamOffset < length) {
+        const auto* begin = reinterpret_cast<const char*>(image.data() + offset + teamOffset);
+        const auto limit = length - teamOffset;
+        const auto* end = static_cast<const char*>(std::memchr(begin, 0, limit));
+        if (end != nullptr) policy.team_id.assign(begin, end);
+      }
+    }
   }
   policy.entitlements_blob_metadata_valid = true;
   return true;
