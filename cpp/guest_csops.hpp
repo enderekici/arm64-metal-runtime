@@ -23,6 +23,8 @@ inline constexpr std::uint32_t csOpsStatusHard = 0x100U;
 inline constexpr std::uint32_t csOpsStatusKill = 0x200U;
 inline constexpr std::uint32_t csOpsStatusRestrict = 0x800U;
 inline constexpr std::uint32_t csOpsStatusInstaller = 0x8U;
+inline constexpr std::uint32_t csOpsStatusForcedLibraryValidation = 0x10U;
+inline constexpr std::uint32_t csOpsStatusRequireLibraryValidation = 0x2000U;
 inline constexpr std::uint32_t csOpsSettableMask = 0x00703000U;
 
 // Errno the kernel returns for a pid that is neither the caller nor 0. The
@@ -102,6 +104,10 @@ inline GuestCsopsOutcome guest_csops_self(GuestMemory& memory, const GuestCodePo
         }
         case 7:
             if (!valid) return fail(EINVAL);
+            if (policy.xml_serialisation_unsupported) {
+                throw std::runtime_error(
+                    "Unsupported guest DER entitlement value for csops entitlements blob");
+            }
             if (policy.xml_entitlements.empty()) return outcome;
             return putSized(policy.xml_entitlements.data(), policy.xml_entitlements.size());
         case 8:
@@ -117,7 +123,9 @@ inline GuestCsopsOutcome guest_csops_self(GuestMemory& memory, const GuestCodePo
             } catch (const std::out_of_range&) {
                 return fail(EFAULT);
             }
-            status |= requested & csOpsSettableMask;
+            auto settable = csOpsSettableMask;
+            if ((status & csOpsStatusForcedLibraryValidation) != 0) settable &= ~csOpsStatusRequireLibraryValidation;
+            status |= requested & settable;
             return outcome;
         }
         case 10:

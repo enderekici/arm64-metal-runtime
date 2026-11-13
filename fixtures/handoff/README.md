@@ -953,3 +953,16 @@ clang -arch arm64 fixtures/handoff/mach-portset-recv.c -o /tmp/mach-portset-recv
 /tmp/mach-portset-recv
 .build/arm64-metal-cpp-macos/arm64-metal launch /tmp/mach-portset-recv
 ```
+
+## csops all-operations differential
+
+`csops-all-ops.c` issues every CS_OPS_* operation 0..24 against the calling
+process through libc `csops`/`csops_audittoken` and raw `svc` 169/170, for pid
+0, the own pid and a missing pid, with several buffer sizes, then walks the
+status-mutating operations. Output goes through `write(2)` (guest `fflush`
+is unsupported). Run it natively and as a guest and require identical stdout:
+build it, then make `-ent` (`codesign -s - -i com.test.csops --options runtime
+--entitlements <allow-jit plist>`) and `-plain` (`codesign -s -`) copies next to the
+linker-signed original. `csops-all-ops kill <mode>` (mode 0..3) issues
+MARKINVALID and must exit 137 (SIGKILL) in both worlds. The full guest run
+takes about 20 minutes per binary.

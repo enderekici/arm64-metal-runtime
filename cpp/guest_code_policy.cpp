@@ -128,6 +128,135 @@ std::uint32_t read_big_u32(const std::vector<std::uint8_t>& bytes, std::size_t o
       static_cast<std::uint32_t>(bytes[offset + 3]);
 }
 
+
+struct DerElement {
+  std::uint8_t tag = 0;
+  const std::uint8_t* content = nullptr;
+  std::size_t length = 0;
+  std::size_t total = 0;
+};
+
+bool read_der_element(const std::uint8_t* data, std::size_t size, DerElement& element) {
+  if (size < 2) return false;
+  element.tag = data[0];
+  std::size_t length = data[1];
+  std::size_t header = 2;
+  if ((length & 0x80U) != 0) {
+    const auto count = length & 0x7fU;
+    if (count == 0 || count > 4 || size < 2 + count) return false;
+    length = 0;
+    for (std::size_t index = 0; index < count; ++index) length = (length << 8) | data[2 + index];
+    header += count;
+  }
+  if (length > size - header) return false;
+  element.content = data + header;
+  element.length = length;
+  element.total = header + length;
+  return true;
+}
+
+void append_xml_text(std::string& out, const std::uint8_t* data, std::size_t size) {
+  for (std::size_t index = 0; index < size; ++index) {
+    const char c = static_cast<char>(data[index]);
+    if (c == '&') out += "&amp;";
+    else if (c == '<') out += "&lt;";
+    else if (c == '>') out += "&gt;";
+    else out += c;
+  }
+}
+
+bool der_value_to_xml(const DerElement& value, std::string& out, int depth);
+
+bool der_pairs_to_xml(const std::uint8_t* data, std::size_t size, std::string& out, int depth) {
+  out += "<dict>";
+  while (size != 0) {
+    DerElement pair;
+    if (!read_der_element(data, size, pair) || pair.tag != 0x30) return false;
+    DerElement key;
+    if (!read_der_element(pair.content, pair.length, key) || key.tag != 0x0c) return false;
+    DerElement value;
+    if (!read_der_element(pair.content + key.total, pair.length - key.total, value) ||
+        key.total + value.total != pair.length) return false;
+    out += "<key>";
+    append_xml_text(out, key.content, key.length);
+    out += "</key>";
+    if (!der_value_to_xml(value, out, depth + 1)) return false;
+    data += pair.total;
+    size -= pair.total;
+  }
+  out += "</dict>";
+  return true;
+}
+
+bool der_value_to_xml(const DerElement& value, std::string& out, int depth) {
+  if (depth > 32) return false;
+  switch (value.tag) {
+    case 0x01:
+      if (value.length != 1) return false;
+      out += value.content[0] != 0 ? "<true/>" : "<false/>";
+      return true;
+    case 0x02: {
+      if (value.length == 0 || value.length > 8) return false;
+      std::int64_t number = (value.content[0] & 0x80U) != 0 ? -1 : 0;
+      for (std::size_t index = 0; index < value.length; ++index) {
+        number = static_cast<std::int64_t>((static_cast<std::uint64_t>(number) << 8) |
+                                           value.content[index]);
+      }
+      out += "<integer>" + std::to_string(number) + "</integer>";
+      return true;
+    }
+    case 0x0c:
+      out += "<string>";
+      append_xml_text(out, value.content, value.length);
+      out += "</string>";
+      return true;
+    case 0x30: {
+      out += "<array>";
+      const auto* cursor = value.content;
+      auto remaining = value.length;
+      while (remaining != 0) {
+        DerElement element;
+        if (!read_der_element(cursor, remaining, element) ||
+            !der_value_to_xml(element, out, depth + 1)) return false;
+        cursor += element.total;
+        remaining -= element.total;
+      }
+      out += "</array>";
+      return true;
+    }
+    case 0x31:
+      return der_pairs_to_xml(value.content, value.length, out, depth);
+    default:
+      return false;
+  }
+}
+
+// The kernel serialises the DER entitlements as canonical XML (sorted keys, no
+// whitespace) with a trailing NUL counted in the blob length.
+bool der_entitlements_to_xml_blob(const std::vector<std::uint8_t>& der,
+                                  std::vector<std::uint8_t>& blob) {
+  if (der.size() < 10) return false;
+  DerElement root;
+  if (!read_der_element(der.data() + 8, der.size() - 8, root) || root.tag != 0x70) return false;
+  DerElement version;
+  if (!read_der_element(root.content, root.length, version) || version.tag != 0x02) return false;
+  DerElement dictionary;
+  if (!read_der_element(root.content + version.total, root.length - version.total, dictionary) ||
+      dictionary.tag != 0xb0) return false;
+  std::string xml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST "
+      "1.0//EN\" \"https://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\">";
+  if (!der_pairs_to_xml(dictionary.content, dictionary.length, xml, 0)) return false;
+  xml += "</plist>";
+  const auto total = static_cast<std::uint32_t>(8 + xml.size() + 1);
+  blob.assign({0xfa, 0xde, 0x71, 0x71, static_cast<std::uint8_t>(total >> 24),
+               static_cast<std::uint8_t>(total >> 16), static_cast<std::uint8_t>(total >> 8),
+               static_cast<std::uint8_t>(total)});
+  blob.insert(blob.end(), xml.begin(), xml.end());
+  blob.push_back(0);
+  return true;
+}
+
 bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
                                GuestCodePolicy& policy) {
   constexpr std::uint32_t macho64Magic = 0xfeedfacf;
@@ -216,7 +345,12 @@ bool capture_entitlement_blobs(const std::vector<std::uint8_t>& image,
     policy.der_entitlements.assign(image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset),
         image.begin() + static_cast<std::ptrdiff_t>(*derBlobOffset + length));
   }
-  if (xmlBlobOffset) {
+  if (!policy.der_entitlements.empty()) {
+    if (!der_entitlements_to_xml_blob(policy.der_entitlements, policy.xml_entitlements)) {
+      policy.xml_entitlements.clear();
+      policy.xml_serialisation_unsupported = true;
+    }
+  } else if (xmlBlobOffset) {
     const auto length = read_big_u32(image, *xmlBlobOffset + 4);
     policy.xml_entitlements.assign(
         image.begin() + static_cast<std::ptrdiff_t>(*xmlBlobOffset),

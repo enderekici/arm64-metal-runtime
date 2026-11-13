@@ -21,6 +21,7 @@ struct GuestCodePolicy {
   bool has_xml_entitlements = false;
   std::vector<std::uint8_t> der_entitlements;
   std::vector<std::uint8_t> xml_entitlements;
+  bool xml_serialisation_unsupported = false;
   std::vector<std::uint8_t> code_signature;
   std::array<std::uint8_t, 20> cdhash{};
   bool has_cdhash = false;
