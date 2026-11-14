@@ -966,3 +966,10 @@ build it, then make `-ent` (`codesign -s - -i com.test.csops --options runtime
 linker-signed original. `csops-all-ops kill <mode>` (mode 0..3) issues
 MARKINVALID and must exit 137 (SIGKILL) in both worlds. The full guest run
 takes about 20 minutes per binary.
+
+## Generic mach_msg2 kernel-object sends and JVM startup RPCs
+
+`mach-msg2-generic.c <case>` sends raw `mach_msg2` (trap -47) messages with unknown ids to the task, host and
+thread ports, invalid/null/dead destinations, a receive-only on a send right, and legacy/vector sends to an own port.
+`jvm-startup-rpcs.c` runs the libsystem/CF startup calls a JVM makes. Run both natively and as guests with the
+shared-cache env vars; remaining differences are listed by the `arm64-metal mach-msg2-unhandled` stderr lines.

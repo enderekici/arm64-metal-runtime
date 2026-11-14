@@ -3575,8 +3575,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::int32_t messageId;
         std::vector<std::uint8_t> body;
         std::vector<GuestLocalPortRightTransfer> transferredSendRights;
+        std::uint32_t receivedBits = MACH_MSG_TYPE_MOVE_SEND << 8;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
+    const auto kernelObjectRoutineExists = [](std::int32_t id) {
+        static constexpr std::pair<std::int32_t, std::int32_t> ranges[] = {
+            {200, 207}, {209, 209}, {213, 213}, {215, 222}, {225, 225}, {227, 228},
+            {231, 235}, {400, 405}, {407, 407}, {412, 416}, {418, 420}, {423, 425},
+            {1000, 1002}, {2401, 2403}, {2405, 2410}, {2800, 2834}, {2836, 2891},
+            {3000, 3005}, {3200, 3201}, {3203, 3224}, {3226, 3242}, {3401, 3415},
+            {3418, 3421}, {3433, 3453}, {3455, 3465}, {3600, 3618}, {3624, 3633},
+            {3800, 3819}, {3821, 3826}, {3830, 3831}, {3833, 3833}, {4000, 4000},
+            {4005, 4005}, {4009, 4010}, {4800, 4823}, {4825, 4829}, {4900, 4904},
+            {5400, 5404}, {6200, 6201}};
+        for (const auto& range : ranges) {
+            if (id >= range.first && id <= range.second) return true;
+        }
+        return false;
+    };
     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
     constexpr std::uint32_t machReceiveInvalidData = 0x10004008;
     constexpr std::uint32_t machReceivePortChanged = 0x10004006;
@@ -3595,7 +3611,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             auto* output = guestMemory.buffer(outputAddress, outputSize, true);
             mach_msg_header_t header{};
             header.msgh_bits = (message.bits & MACH_MSGH_BITS_COMPLEX) |
-                               (MACH_MSG_TYPE_MOVE_SEND << 8);
+                               message.receivedBits;
             header.msgh_size = message.size;
             header.msgh_remote_port = message.remotePort;
             header.msgh_local_port = receiveName;
@@ -11841,11 +11857,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint32_t machReceiveTooLarge = 0x10004004;
                     constexpr std::uint32_t requestSize = 40;
                     constexpr std::uint32_t errorReplySize = 36;
-                    constexpr std::uint32_t successReplySize = 72;
                     constexpr std::uint32_t minimumTrailerSize = 8;
                     constexpr std::uint32_t replyMessageId = 3505;
-                    constexpr std::uint32_t taskAuditTokenFlavor = TASK_AUDIT_TOKEN;
-                    constexpr std::uint32_t taskAuditTokenCount = TASK_AUDIT_TOKEN_COUNT;
                     const auto remote = static_cast<std::uint32_t>(registers[3]);
                     const auto taskSendRight = guestSendRightUrefs.find(remote);
                     if (remote != guestMachTaskPort ||
@@ -11887,20 +11900,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         NDR_record_t ndr;
                         kern_return_t returnCode;
                     };
-                    struct TaskInfoSuccessReply {
-                        mach_msg_header_t header;
-                        NDR_record_t ndr;
-                        kern_return_t returnCode;
-                        mach_msg_type_number_t count;
-                        integer_t info[taskAuditTokenCount];
-                    };
                     struct TaskInfoMinimumTrailer {
                         mach_msg_trailer_type_t type;
                         mach_msg_trailer_size_t size;
                     };
                     static_assert(sizeof(TaskInfoRequest) == requestSize);
                     static_assert(sizeof(TaskInfoErrorReply) == errorReplySize);
-                    static_assert(sizeof(TaskInfoSuccessReply) == successReplySize);
                     static_assert(sizeof(TaskInfoMinimumTrailer) == minimumTrailerSize);
                     const auto* requestBytes = guestMemory.buffer(registers[0], requestSize);
                     TaskInfoRequest request{};
@@ -11917,25 +11922,35 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         continue;
                     }
 
-                    if (request.flavor != taskAuditTokenFlavor) {
-                        throw std::runtime_error(
-                            "Unsupported task_info flavor on guest self task");
-                    }
-
+                    constexpr std::size_t taskInfoMaxCount = 1024;
+                    constexpr kern_return_t kernNotSupported = 46;
                     kern_return_t result = KERN_INVALID_ARGUMENT;
-                    audit_token_t token{};
-                    if (request.count >= taskAuditTokenCount) {
-                        auto hostCount = static_cast<mach_msg_type_number_t>(
-                            taskAuditTokenCount);
-                        result = ::task_info(::mach_task_self(), taskAuditTokenFlavor,
-                            reinterpret_cast<task_info_t>(&token), &hostCount);
-                        if (result == KERN_SUCCESS && hostCount != taskAuditTokenCount) {
-                            result = KERN_FAILURE;
+                    std::array<integer_t, taskInfoMaxCount> info{};
+                    mach_msg_type_number_t infoCount = 0;
+                    if (request.count > taskInfoMaxCount) {
+                        result = KERN_INVALID_ARGUMENT;
+                    } else if (request.flavor == TASK_DYLD_INFO) {
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=3405 dest=guest-task"
+                                  << " size=40 options=0x" << hexadecimal(registers[1])
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " reason=task_info-flavor-" << request.flavor
+                                  << " reply=KERN_NOT_SUPPORTED\n";
+                        result = kernNotSupported;
+                    } else {
+                        infoCount = request.count;
+                        result = ::task_info(::mach_task_self(), request.flavor,
+                            reinterpret_cast<task_info_t>(info.data()), &infoCount);
+                        if (result != KERN_SUCCESS || infoCount > request.count) {
+                            if (result == KERN_SUCCESS) result = KERN_FAILURE;
+                            infoCount = 0;
                         }
                     }
 
-                    const auto responseSize = result == KERN_SUCCESS
-                        ? successReplySize : errorReplySize;
+                    const std::uint32_t responseSize = result == KERN_SUCCESS
+                        ? static_cast<std::uint32_t>(sizeof(mach_msg_header_t) +
+                              sizeof(NDR_record_t) + 2 * sizeof(std::uint32_t) +
+                              infoCount * sizeof(integer_t))
+                        : errorReplySize;
                     if (registers[6] < responseSize + minimumTrailerSize) {
                         registers[0] = machReceiveTooLarge;
                         registers[34] = 0;
@@ -11959,13 +11974,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         header.msgh_id = replyMessageId;
                     };
                     if (result == KERN_SUCCESS) {
-                        TaskInfoSuccessReply response{};
-                        prepareHeader(response.header, sizeof(response));
-                        response.ndr = NDR_record;
-                        response.returnCode = KERN_SUCCESS;
-                        response.count = taskAuditTokenCount;
-                        std::memcpy(response.info, &token, sizeof(token));
-                        std::memcpy(replyBuffer, &response, sizeof(response));
+                        mach_msg_header_t header{};
+                        prepareHeader(header, responseSize);
+                        std::memcpy(replyBuffer, &header, sizeof(header));
+                        std::size_t offset = sizeof(header);
+                        std::memcpy(replyBuffer + offset, &NDR_record, sizeof(NDR_record_t));
+                        offset += sizeof(NDR_record_t);
+                        const std::uint32_t words[2] = {KERN_SUCCESS, infoCount};
+                        std::memcpy(replyBuffer + offset, words, sizeof(words));
+                        offset += sizeof(words);
+                        std::memcpy(replyBuffer + offset, info.data(),
+                                    infoCount * sizeof(integer_t));
                     } else {
                         TaskInfoErrorReply response{};
                         prepareHeader(response.header, sizeof(response));
@@ -12347,8 +12366,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         specialPortName = *guestTaskDebugControlPort;
                         specialPortIsDead = guestTaskDebugControlPortDead;
                     } else if (whichPort != static_cast<std::int32_t>(taskBootstrapPort)) {
-                        throw std::runtime_error(
-                            "Unsupported guest task_get_special_port selector");
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=3409 dest=guest-task"
+                                  << " size=" << requestSize << " options=0x"
+                                  << hexadecimal(registers[1]) << " pc=0x"
+                                  << hexadecimal(registers[33]) << " reason=special-port-"
+                                  << whichPort << " reply=KERN_NOT_SUPPORTED\n";
+                        result = 46;
                     }
 
                     const auto responseSize = result == KERN_SUCCESS
@@ -12436,7 +12459,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
-                        throw std::runtime_error("Unsupported guest host_get_clock_service message shape");
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                  << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
+                                  << " size=" << (registers[2] >> 32) << " options=0x"
+                                  << hexadecimal(registers[1]) << " pc=0x"
+                                  << hexadecimal(registers[33]) << " reason=host_get_clock_service-shape\n";
+                        registers[0] = 0x10000002;
+                        registers[34] = 0;
+                        continue;
                     }
                     if ((registers[2] >> 32) != 36 || registers[6] < 36) {
                         registers[0] = machSendInvalidData;
@@ -12479,7 +12509,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const bool supportedClock = clockId == SYSTEM_CLOCK ||
                                                 clockId == CALENDAR_CLOCK;
                     const auto clockName = supportedClock
-                        ? static_cast<std::uint32_t>(guestMachHostPort) + 1U +
+                        ? static_cast<std::uint32_t>(guestMachHostPort) + 2U +
                               static_cast<std::uint32_t>(clockId)
                         : 0U;
                     const auto references = guestSendRightUrefs.find(clockName);
@@ -12562,7 +12592,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
-                        throw std::runtime_error("Unsupported guest clock_get_time message shape");
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                  << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
+                                  << " size=" << (registers[2] >> 32) << " options=0x"
+                                  << hexadecimal(registers[1]) << " pc=0x"
+                                  << hexadecimal(registers[33]) << " reason=clock_get_time-shape\n";
+                        registers[0] = 0x10000002;
+                        registers[34] = 0;
+                        continue;
                     }
                     if ((registers[2] >> 32) != sizeof(mach_msg_header_t) ||
                         registers[6] < 44) {
@@ -12641,9 +12678,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         static_cast<std::uint32_t>(registers[5]);
                 const bool sendRequested = (options & machSendMessage) != 0;
                 const bool receiveRequested = (options & machReceiveMessage) != 0;
+                const bool threadRemote = std::any_of(
+                    guestThreadPortNames.begin(), guestThreadPortNames.end(),
+                    [remote](const auto& entry) { return entry.second == remote; });
+                const bool clockRemote = guestClockServiceIds.find(remote) !=
+                                         guestClockServiceIds.end();
                 const bool specialRemote = remote == guestMachTaskPort ||
-                                           remote == guestMachHostPort || clockServiceMessage;
-                const bool localSend = sendRequested && !specialRemote;
+                                           remote == guestMachHostPort || clockRemote ||
+                                           threadRemote;
+                const bool knownKernelObjectShape = messageId == 200 || messageId == 3207 ||
+                    messageId == 4822 || messageId == 8000 || messageId == 8001;
+                const bool kernelObjectSend = sendRequested && specialRemote &&
+                    !knownKernelObjectShape;
+                const bool localSend = sendRequested && (!specialRemote || kernelObjectSend);
                 const bool localReceive = receiveRequested && !sendRequested &&
                     receiveName != guestMachTaskPort && receiveName != guestMachHostPort;
                 if (localSend || localReceive) {
@@ -12666,7 +12713,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::uint64_t machReceiveVoucher = 0x00000800;
                     constexpr std::uint64_t machReceiveTrailerMask = 0xff000000;
                     constexpr std::uint64_t mach64MsgVector = 0x0000000100000000;
+                    constexpr std::uint64_t mach64SendKernelObjectCall = 0x0000000200000000;
                     constexpr std::uint64_t allowedOptions = machSendMessage |
+                        mach64SendKernelObjectCall |
                         machReceiveMessage | machReceiveTimeout | mach64SendAny | mach64SendMqCall |
                         machReceiveLarge | machReceiveLargeIdentity | machReceiveInterrupt |
                         machReceiveVoucher | machReceiveTrailerMask | mach64MsgVector;
@@ -12698,7 +12747,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         REQUESTED_TRAILER_SIZE(static_cast<mach_msg_option_t>(options)));
                     std::uint64_t result = 0;
                     if ((options & ~allowedOptions) != 0 ||
-                        (vectorMessage && sendRequested) ||
                         (!sendRequested && descriptorCount != 0) ||
                         registers[6] >> 32 != 0 ||
                         (receiveRequested && !sendRequested && receiveAddress == 0)) {
@@ -12712,10 +12760,156 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                       << " x6=0x" << hexadecimal(registers[6])
                                       << " x7=0x" << hexadecimal(registers[7]) << '\n';
                         }
+                    } else if (vectorMessage && sendRequested) {
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                  << " dest=0x" << hexadecimal(remote) << " size="
+                                  << (registers[2] >> 32) << " options=0x" << hexadecimal(options)
+                                  << " pc=0x" << hexadecimal(registers[33])
+                                  << " reason=vector-send\n";
+                        result = machSendInvalidData;
+                    } else if (kernelObjectSend) {
+                        constexpr std::uint32_t machSendInvalidReply = 0x10000009;
+                        const auto sendRight = guestSendRightUrefs.find(remote);
+                        const auto sendSize = registers[2] >> 32;
+                        const auto bits = static_cast<std::uint32_t>(registers[2]);
+                        const auto replyName = static_cast<std::uint32_t>(registers[3] >> 32);
+                        const char* role = remote == guestMachTaskPort ? "guest-task"
+                            : remote == guestMachHostPort ? "guest-host"
+                            : threadRemote ? "guest-thread" : "guest-clock";
+                        if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0) {
+                            result = machSendInvalidDestination;
+                        } else if ((bits & 0x1f) != machMsgTypeCopySend ||
+                                   static_cast<std::uint32_t>(registers[4]) != 0) {
+                            result = machSendInvalidRight;
+                        } else if (sendSize < sizeof(mach_msg_header_t) || (sendSize & 3) != 0) {
+                            result = machSendMessageTooSmall;
+                        } else if (replyName != 0 &&
+                                   guestReceiveRights.find(replyName) ==
+                                       guestReceiveRights.end()) {
+                            result = machSendInvalidReply;
+                        } else if (!guestMemory.is_guest_readable(registers[0],
+                                                                  sizeof(mach_msg_header_t))) {
+                            result = machSendInvalidData;
+                        } else {
+                            const bool inRoutineRange = kernelObjectRoutineExists(
+                                static_cast<std::int32_t>(messageId));
+                            constexpr std::int32_t migBadId = -303;
+                            constexpr std::int32_t kernNotSupported = 46;
+                            constexpr std::int32_t kernInvalidArgumentCode = 4;
+                            constexpr std::int32_t kernInvalidName = 15;
+                            constexpr std::int32_t kernInvalidRight = 17;
+                            constexpr std::int32_t kernInvalidValue = 18;
+                            std::int32_t replyCode = inRoutineRange ? kernNotSupported : migBadId;
+                            std::vector<std::uint8_t> replyExtra;
+                            bool modeled = false;
+                            std::vector<std::uint8_t> requestBytes;
+                            if (guestMemory.is_guest_readable(registers[0], sendSize)) {
+                                const auto* raw = guestMemory.buffer(registers[0], sendSize);
+                                requestBytes.assign(raw, raw + sendSize);
+                            }
+                            const auto requestWord = [&](std::size_t offset) {
+                                std::uint32_t value = 0;
+                                if (offset + sizeof(value) <= requestBytes.size()) {
+                                    std::memcpy(&value, requestBytes.data() + offset,
+                                                sizeof(value));
+                                }
+                                return value;
+                            };
+                            const auto receiveRightFor = [&](std::uint32_t name,
+                                                              std::int32_t& error) {
+                                const auto right = guestReceiveRights.find(name);
+                                if (right != guestReceiveRights.end()) return &right->second;
+                                const auto held = guestSendRightUrefs.find(name);
+                                const bool known = name != 0 &&
+                                    ((held != guestSendRightUrefs.end() && held->second != 0) ||
+                                     guestDeadPortNames.count(name) != 0 ||
+                                     name == std::numeric_limits<std::uint32_t>::max());
+                                error = known ? kernInvalidRight : kernInvalidName;
+                                return static_cast<GuestReceiveRight*>(nullptr);
+                            };
+                            if (remote == guestMachHostPort && messageId == 412 &&
+                                sendSize == 40) {
+                                replyCode = kernInvalidArgumentCode;
+                                modeled = true;
+                            } else if (remote == guestMachTaskPort && messageId == 3228 &&
+                                       sendSize == 36) {
+                                std::int32_t error = 0;
+                                auto* right = receiveRightFor(requestWord(32), error);
+                                replyCode = right == nullptr ? error : 0;
+                                if (right != nullptr) {
+                                    replyExtra.resize(sizeof(std::uint64_t));
+                                    std::memcpy(replyExtra.data(), &right->context,
+                                                sizeof(std::uint64_t));
+                                }
+                                modeled = true;
+                            } else if (remote == guestMachTaskPort && messageId == 3229 &&
+                                       sendSize == 44) {
+                                std::int32_t error = 0;
+                                auto* right = receiveRightFor(requestWord(32), error);
+                                replyCode = right == nullptr ? error : 0;
+                                if (right != nullptr) {
+                                    std::memcpy(&right->context, requestBytes.data() + 36,
+                                                sizeof(std::uint64_t));
+                                }
+                                modeled = true;
+                            } else if (remote == guestMachTaskPort && messageId == 3218 &&
+                                       sendSize == 48 && requestWord(36) == MACH_PORT_LIMITS_INFO &&
+                                       requestWord(40) == MACH_PORT_LIMITS_INFO_COUNT) {
+                                std::int32_t error = 0;
+                                auto* right = receiveRightFor(requestWord(32), error);
+                                const auto qlimit = requestWord(44);
+                                if (right == nullptr) {
+                                    replyCode = error;
+                                } else if (qlimit > MACH_PORT_QLIMIT_MAX) {
+                                    replyCode = kernInvalidValue;
+                                } else {
+                                    right->qlimit = qlimit;
+                                    replyCode = 0;
+                                }
+                                modeled = true;
+                            }
+                            if (!modeled) {
+                                std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                          << " dest=" << role << ":0x" << hexadecimal(remote) << " size=" << sendSize
+                                          << " options=0x" << hexadecimal(options)
+                                          << " pc=0x" << hexadecimal(registers[33])
+                                          << " reply=" << (inRoutineRange ? "KERN_NOT_SUPPORTED"
+                                                                          : "MIG_BAD_ID")
+                                          << '\n';
+                            }
+                            if (replyName != 0) {
+                                struct KernelObjectErrorBody {
+                                    NDR_record_t ndr;
+                                    std::int32_t returnCode;
+                                };
+                                static_assert(sizeof(KernelObjectErrorBody) == 12);
+                                KernelObjectErrorBody errorBody{NDR_record, replyCode};
+                                GuestLocalMessage message{
+                                    static_cast<std::uint32_t>(sizeof(mach_msg_header_t) +
+                                        sizeof(errorBody) + replyExtra.size()),
+                                    0, 0, 0, static_cast<std::int32_t>(messageId + 100), {}, {},
+                                    MACH_MSG_TYPE_MOVE_SEND_ONCE << 8};
+                                message.body.resize(sizeof(errorBody) + replyExtra.size());
+                                std::memcpy(message.body.data(), &errorBody, sizeof(errorBody));
+                                if (!replyExtra.empty()) {
+                                    std::memcpy(message.body.data() + sizeof(errorBody),
+                                                replyExtra.data(), replyExtra.size());
+                                }
+                                guestMachMessageQueues[replyName].push_back(std::move(message));
+                                deliverGuestMachMessage(replyName);
+                            }
+                        }
                     } else if (sendRequested) {
                         const auto sendRight = guestSendRightUrefs.find(remote);
                         if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0 ||
                             guestReceiveRights.find(remote) == guestReceiveRights.end()) {
+                            if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
+                                std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                          << " dest=send-right-without-receive-right size="
+                                          << (registers[2] >> 32) << " options=0x"
+                                          << hexadecimal(options) << " pc=0x"
+                                          << hexadecimal(registers[33]) << '\n';
+                            }
                             result = machSendInvalidDestination;
                         } else if ((static_cast<std::uint32_t>(registers[2]) & 0x1f) !=
                                        machMsgTypeCopySend ||
@@ -12946,7 +13140,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
-                        throw std::runtime_error("Unsupported guest host_info message shape");
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                  << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
+                                  << " size=" << (registers[2] >> 32) << " options=0x"
+                                  << hexadecimal(registers[1]) << " pc=0x"
+                                  << hexadecimal(registers[33]) << " reason=host_info-shape\n";
+                        registers[0] = 0x10000002;
+                        registers[34] = 0;
+                        continue;
                     }
                     if ((registers[2] >> 32) != 40 || registers[6] < 36) {
                         registers[0] = machSendInvalidData;
@@ -13066,7 +13267,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
-                        throw std::runtime_error("Unsupported guest mach_port_get_refs message shape");
+                        std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
+                                  << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
+                                  << " size=" << (registers[2] >> 32) << " options=0x"
+                                  << hexadecimal(registers[1]) << " pc=0x"
+                                  << hexadecimal(registers[33]) << " reason=mach_port_get_refs-shape\n";
+                        registers[0] = 0x10000002;
+                        registers[34] = 0;
+                        continue;
                     }
                     const auto* request = guestMemory.buffer(registers[0], 40);
                     mach_msg_header_t requestHeader{};
@@ -13314,7 +13522,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   << " timeout=" << registers[7];
                         std::cerr << '\n';
                     }
-                    throw std::runtime_error("Unsupported guest Mach message");
+                    std::uint32_t unhandledResult = 0x10000002; // MACH_SEND_INVALID_DATA
+                    const char* unhandledRole = "unknown";
+                    {
+                        const auto remote = static_cast<std::uint32_t>(registers[3]);
+                        unhandledRole = remote == 0 ? "null"
+                            : remote == guestMachTaskPort ? "guest-task"
+                            : remote == guestMachHostPort ? "guest-host"
+                            : guestReceiveRights.find(remote) != guestReceiveRights.end()
+                                  ? "guest-receive-right" : "unknown";
+                    }
+                    if ((registers[1] & 1U) == 0) {
+                        unhandledResult = (registers[1] & 2U) != 0
+                            ? 0x10004002U  // MACH_RCV_INVALID_NAME
+                            : 4U;          // KERN_INVALID_ARGUMENT
+                    }
+                    if (unhandledResult != 0x10004002U)
+                    std::cerr << "arm64-metal mach-msg2-unhandled id="
+                              << static_cast<std::int32_t>(registers[4] >> 32)
+                              << " dest=" << unhandledRole
+                              << " size=" << (registers[2] >> 32)
+                              << " options=0x" << hexadecimal(registers[1])
+                              << " pc=0x" << hexadecimal(registers[33])
+                              << " reason=shape\n";
+                    registers[0] = unhandledResult;
+                    registers[34] = 0;
+                    continue;
                 }
                 const auto sendSize = registers[2] >> 32;
                 auto result = std::uint32_t{4}; // KERN_INVALID_ARGUMENT
@@ -13573,6 +13806,68 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         } catch (const std::exception&) {
                             result = kernMemoryError;
                         }
+                    }
+                }
+                registers[0] = result;
+                registers[34] = 0;
+                continue;
+            }
+            if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-77))) {
+                constexpr std::uint64_t kernInvalidTask = 16;
+                constexpr std::uint64_t kernInvalidName = 15;
+                constexpr std::uint64_t kernInvalidRight = 17;
+                constexpr std::uint64_t kernInvalidValue = 18;
+                constexpr std::uint64_t kernMemoryError = 10;
+                constexpr std::uint64_t kernInvalidCapability = 20;
+                const auto target = static_cast<std::uint32_t>(registers[0]);
+                const auto name = static_cast<std::uint32_t>(registers[1]);
+                const auto notificationId = static_cast<std::int32_t>(registers[2]);
+                const auto notify = static_cast<std::uint32_t>(registers[4]);
+                const auto notifyDisposition = static_cast<std::uint32_t>(registers[5]);
+                std::uint64_t result = 0;
+                const auto taskRight = guestSendRightUrefs.find(target);
+                const auto nameKnown = [&](std::uint32_t port) {
+                    const auto held = guestSendRightUrefs.find(port);
+                    return guestReceiveRights.find(port) != guestReceiveRights.end() ||
+                           (held != guestSendRightUrefs.end() && held->second != 0) ||
+                           guestDeadPortNames.count(port) != 0;
+                };
+                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+                    taskRight->second == 0) {
+                    result = kernInvalidTask;
+                } else if (notificationId != MACH_NOTIFY_PORT_DESTROYED &&
+                           notificationId != MACH_NOTIFY_NO_SENDERS &&
+                           notificationId != MACH_NOTIFY_SEND_ONCE &&
+                           notificationId != MACH_NOTIFY_DEAD_NAME) {
+                    result = kernInvalidValue;
+                } else if (!nameKnown(name)) {
+                    result = kernInvalidName;
+                } else if (notificationId != MACH_NOTIFY_DEAD_NAME &&
+                           guestReceiveRights.find(name) == guestReceiveRights.end()) {
+                    result = kernInvalidRight;
+                } else if (notify != 0 &&
+                           (!nameKnown(notify) ||
+                            (notifyDisposition != MACH_MSG_TYPE_MAKE_SEND_ONCE &&
+                             notifyDisposition != MACH_MSG_TYPE_MAKE_SEND &&
+                             notifyDisposition != MACH_MSG_TYPE_COPY_SEND &&
+                             notifyDisposition != MACH_MSG_TYPE_MOVE_SEND &&
+                             notifyDisposition != MACH_MSG_TYPE_MOVE_SEND_ONCE))) {
+                    result = kernInvalidCapability;
+                } else if (registers[6] == 0) {
+                    result = kernMemoryError;
+                } else {
+                    try {
+                        const std::uint32_t previous = 0;
+                        std::memcpy(guestMemory.buffer(registers[6], sizeof(previous), true),
+                                    &previous, sizeof(previous));
+                        if (notify != 0) {
+                            std::cerr << "arm64-metal mach-notify-request-not-delivered name=0x"
+                                      << hexadecimal(name) << " msgid=" << notificationId
+                                      << " notify=0x" << hexadecimal(notify) << " pc=0x"
+                                      << hexadecimal(registers[33]) << '\n';
+                        }
+                    } catch (const std::exception&) {
+                        result = kernMemoryError;
                     }
                 }
                 registers[0] = result;
