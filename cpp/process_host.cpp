@@ -728,14 +728,32 @@ HostServiceResult dispatch_guest_host_service(
         throw std::invalid_argument("Guest host service requires a complete register file");
     }
     const auto string_at = [&](std::uint64_t address) {
-        const auto extent = memory.contiguous_readable_size(address);
-        if (extent == 0) throw std::out_of_range("Guest string pointer is invalid");
-        const auto* bytes = memory.buffer(address, extent);
-        const auto* end = static_cast<const std::uint8_t*>(std::memchr(
-            bytes, 0, static_cast<std::size_t>(extent)));
-        if (end == nullptr) throw std::out_of_range("Guest string is not terminated");
-        return std::string(reinterpret_cast<const char*>(bytes),
+        // A string may continue into an adjacent mapping (e.g. a cache page that
+        // is mapped on demand), so walk mapping by mapping until the terminator.
+        constexpr std::uint64_t maximumLength = 1U << 20;
+        std::string text;
+        auto cursor = address;
+        while (true) {
+            const auto extent = memory.contiguous_readable_size(cursor);
+            if (extent == 0) {
+                throw std::out_of_range(cursor == address ? "Guest string pointer is invalid"
+                                                          : "Guest string is not terminated");
+            }
+            const auto* bytes = memory.buffer(cursor, extent);
+            const auto* end = static_cast<const std::uint8_t*>(std::memchr(
+                bytes, 0, static_cast<std::size_t>(extent)));
+            if (end != nullptr) {
+                text.append(reinterpret_cast<const char*>(bytes),
                             static_cast<std::size_t>(end - bytes));
+                return text;
+            }
+            text.append(reinterpret_cast<const char*>(bytes), static_cast<std::size_t>(extent));
+            if (text.size() > maximumLength ||
+                extent > std::numeric_limits<std::uint64_t>::max() - cursor) {
+                throw std::out_of_range("Guest string is not terminated");
+            }
+            cursor += extent;
+        }
     };
     const auto load_u64 = [&](std::uint64_t address) {
         std::uint64_t value = 0;
