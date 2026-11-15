@@ -1,7 +1,10 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
+#include <mach/mach_voucher.h>
 #include <mach/thread_act.h>
+#include <mach/thread_policy.h>
+#include <mach/task_policy.h>
 #include <notify.h>
 #include <os/log.h>
 #include <pthread.h>
@@ -106,6 +109,39 @@ int main(void) {
   out("pthread_attr_set_qos=%d\n", pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INITIATED, 0));
   qos_class_t q; int rp; out("pthread_get_qos=%d q=0x%x\n", pthread_get_qos_class_np(pthread_self(), &q, &rp), q);
   out("pthread_set_qos=%d\n", pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0));
+  static const char *svc[] = {"com.apple.logd", "com.apple.cfprefsd.daemon", "com.apple.fonts", "com.apple.timed", "com.apple.securityd"};
+  for (unsigned i = 0; i < sizeof(svc) / sizeof(svc[0]); i++) {
+    mach_port_t sp2 = MACH_PORT_NULL; kern_return_t k = bootstrap_look_up(bootstrap_port, svc[i], &sp2);
+    out("look_up %s=%d port=%d\n", svc[i], k, sp2 != MACH_PORT_NULL);
+  }
+  {
+    struct { mach_voucher_attr_recipe_data_t r; uint8_t c[4]; } rc = {{MACH_VOUCHER_ATTR_KEY_USER_DATA, MACH_VOUCHER_ATTR_USER_DATA_STORE, 0, 4}, {1, 2, 3, 4}};
+    mach_voucher_t v = MACH_PORT_NULL;
+    out("host_create_mach_voucher=%d\n", host_create_mach_voucher(mach_host_self(), (mach_voucher_attr_raw_recipe_array_t)&rc, sizeof(rc), &v));
+    out("thread_set_mach_voucher=%d\n", thread_set_mach_voucher(mach_thread_self(), v));
+    mach_voucher_t got = MACH_PORT_NULL;
+    out("thread_get_mach_voucher=%d same=%d\n", thread_get_mach_voucher(mach_thread_self(), 0, &got), got == v);
+    uint8_t buf[64]; mach_msg_type_number_t bl = sizeof(buf);
+    out("voucher_extract_attr_recipe=%d len=%u\n", mach_voucher_extract_attr_recipe(v, MACH_VOUCHER_ATTR_KEY_USER_DATA, (mach_voucher_attr_raw_recipe_t)buf, &bl), bl);
+    bl = 2; out("voucher_extract small=%d\n", mach_voucher_extract_attr_recipe(v, MACH_VOUCHER_ATTR_KEY_USER_DATA, (mach_voucher_attr_raw_recipe_t)buf, &bl));
+    out("thread_set_mach_voucher null=%d\n", thread_set_mach_voucher(mach_thread_self(), MACH_PORT_NULL));
+  }
+  {
+    thread_time_constraint_policy_data_t tcp; mach_msg_type_number_t c = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t d = 1;
+    out("thread_policy_get time_constraint=%d default=%d period=%u\n", thread_policy_get(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tcp, &c, &d), d, tcp.period);
+    thread_precedence_policy_data_t pr = {5};
+    out("thread_policy_set precedence=%d\n", thread_policy_set(mach_thread_self(), THREAD_PRECEDENCE_POLICY, (thread_policy_t)&pr, THREAD_PRECEDENCE_POLICY_COUNT));
+    c = THREAD_PRECEDENCE_POLICY_COUNT; d = 0;
+    out("thread_policy_get precedence=%d importance=%d\n", thread_policy_get(mach_thread_self(), THREAD_PRECEDENCE_POLICY, (thread_policy_t)&pr, &c, &d), pr.importance);
+    task_category_policy_data_t cp; c = TASK_CATEGORY_POLICY_COUNT; d = 0;
+    out("task_policy_get category=%d\n", task_policy_get(mach_task_self(), TASK_CATEGORY_POLICY, (task_policy_t)&cp, &c, &d));
+    mach_port_t tsp = MACH_PORT_NULL;
+    out("thread_get_special_port=%d\n", thread_get_special_port(mach_thread_self(), THREAD_KERNEL_PORT, &tsp));
+    exception_mask_t em[EXC_TYPES_COUNT]; mach_msg_type_number_t ec = EXC_TYPES_COUNT; mach_port_t eh[EXC_TYPES_COUNT]; exception_behavior_t eb[EXC_TYPES_COUNT]; thread_state_flavor_t ef[EXC_TYPES_COUNT];
+    kern_return_t ek = task_get_exception_ports(mach_task_self(), EXC_MASK_ALL, em, &ec, eh, eb, ef);
+    out("task_get_exception_ports=%d count=%u first_beh=%d first_flavor=%d\n", ek, ec, ec ? (int)eb[0] : -1, ec ? (int)ef[0] : -1);
+    out("pthread_setname_np=%d\n", pthread_setname_np("voucher-probe"));
+  }
   out("done\n");
   return 0;
 }
