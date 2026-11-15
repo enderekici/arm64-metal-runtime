@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <utility>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -61,6 +63,9 @@ inline std::vector<ScannedCall> scan_virtual_calls(const std::vector<std::uint8_
                                    (static_cast<std::uint32_t>(code[i + 1]) << 8) |
                                    (static_cast<std::uint32_t>(code[i + 2]) << 16) |
                                    (static_cast<std::uint32_t>(code[i + 3]) << 24);
+        // Stop at the function's return so a function without an APIs call
+        // cannot pick up a neighbouring function's slot.
+        if (insn == 0xD65F03C0U || insn == 0xD65F0BFFU || insn == 0xD65F0FFFU) break;
         const unsigned rd = insn & 31U;
         const unsigned rn = (insn >> 5) & 31U;
         if ((insn & 0xFF800000U) == 0xF2800000U) {  // movk (64-bit)
@@ -177,6 +182,25 @@ inline DyldApiAbi derive_dyld_api_abi(const SharedCache& cache) {
         throw std::runtime_error(message.str());
     }
     abi.vptrDiscriminator = *vptr;
+    if (const char* trace = std::getenv("ARM64_METAL_TRACE_DYLD_API_ABI");
+        trace != nullptr && trace[0] == '1') {
+        const std::pair<const char*, const DyldApiCall*> rows[] = {
+            {"initialize", &abi.initialize}, {"writableTpro", &abi.writableTpro},
+            {"basePlatform", &abi.basePlatform}, {"activePlatform", &abi.activePlatform},
+            {"simulatorPlatform", &abi.simulatorPlatform},
+            {"bulkImageLoads", &abi.bulkImageLoads},
+            {"sharedCacheRealPath", &abi.sharedCacheRealPath},
+            {"sharedCacheContainsPath", &abi.sharedCacheContainsPath},
+            {"dlopenFrom", &abi.dlopenFrom}, {"programSdkVersion", &abi.programSdkVersion},
+            {"programMinOsVersion", &abi.programMinOsVersion}};
+        std::fprintf(stderr, "arm64-metal dyld-api vptr-disc=0x%llx\n",
+                     static_cast<unsigned long long>(abi.vptrDiscriminator));
+        for (const auto& [name, call] : rows) {
+            std::fprintf(stderr, "arm64-metal dyld-api %s slot=0x%llx disc=0x%llx\n", name,
+                         static_cast<unsigned long long>(call->offset),
+                         static_cast<unsigned long long>(call->discriminator));
+        }
+    }
     for (const auto* call : {&abi.initialize, &abi.writableTpro, &abi.basePlatform,
                              &abi.activePlatform, &abi.simulatorPlatform, &abi.bulkImageLoads,
                              &abi.sharedCacheRealPath, &abi.sharedCacheContainsPath,
