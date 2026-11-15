@@ -9907,6 +9907,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             if (service == 134) {
+                static const bool traceObjcLoaded = [] {
+                    const char* value = std::getenv("ARM64_METAL_TRACE_OBJC_LOADED");
+                    return value != nullptr && value[0] == '1';
+                }();
+                if (traceObjcLoaded && image.cache_reader) {
+                    if (const auto table = image.cache_reader->objcHeaderTable(true)) {
+                        try {
+                            const auto base = static_cast<std::uint64_t>(table->address);
+                            std::uint32_t count = 0;
+                            std::memcpy(&count, guestMemory.buffer(base, 4), 4);
+                            std::string loaded;
+                            std::size_t set = 0;
+                            for (std::uint32_t index = 0; index < count; ++index) {
+                                const auto bit = *guestMemory.buffer(base + 8 + index * 8ULL, 1) & 1U;
+                                if (bit) {
+                                    ++set;
+                                    if (loaded.size() < 400) loaded += " " + std::to_string(index);
+                                }
+                            }
+                            std::cerr << "arm64-metal objc-loaded set=" << set << " of " << count
+                                      << " indices:" << loaded << '\n';
+                        } catch (const std::exception& error) {
+                            std::cerr << "arm64-metal objc-loaded unreadable: " << error.what() << '\n';
+                        }
+                    }
+                }
                 hostRegisters[0] = image.cache_reader
                     ? image.cache_reader->objcClassCount() : 0;
                 std::copy_n(hostRegisters.begin(), 36,
