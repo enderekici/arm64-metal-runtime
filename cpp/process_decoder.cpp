@@ -2414,6 +2414,29 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                           str(sign_extend(field(12, 9), 9)) + ");")
                        : (std::string("")));
   }
+  // LDRAA/LDRAB: authenticate Xn with DA/DB and a zero modifier, then load
+  // 64 bits at the authenticated address plus the scaled S:imm9 offset.
+  if ((bits & 0xff200400) == 0xf8200400) {
+    const auto key = 2 + field(23, 1);
+    const auto offset = sign_extend((field(22, 1) << 9) | field(12, 9), 10) * 8;
+    const bool writeback = field(11, 1) == 1;
+    if (writeback && rn == rd && rn != 31) {
+      throw GuestError("Unpredictable LDRAA/LDRAB writeback overlap");
+    }
+    const auto base = reg(rn, true);
+    return emit("{ ulong authenticated = authenticate_guest_pointer(x, " + base + ", 0ul, " +
+                    str(key) + "ul);",
+                "if (authenticated == ~0ul) { x[" + str(guestFaultAddress) + "] = " + base +
+                    "; x[" + str(guestCacheFaultAddress) + "] = 0ul; x[33] = " + str(pc) +
+                    "ul; x[34] = 9; return; }",
+                "ulong address = authenticated + ulong(" + str(offset) + ");",
+                "if (" + outside("address", 8, true) + ") { x[" + str(guestFaultAddress) +
+                    "] = address; x[34] = 2; return; }",
+                "ulong value = load_guest_word(memory + " + physical("address", 8, true) +
+                    ", 8);",
+                writeback ? base + " = address;" : std::string(),
+                rd == 31 ? std::string() : reg(rd) + " = value;", "}");
+  }
   if (auto lowered = vector_ops::lower(bits, pc, cached)) {
     return *lowered;
   }

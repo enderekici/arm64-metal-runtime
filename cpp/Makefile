@@ -715,6 +715,17 @@ verify-ldnp-stnp: $(LDNP_STNP_NATIVE) $(APP)
 	"$(APP)" launch "$(LDNP_STNP_NATIVE)" >"$(BUILD_DIR)/ldnp-stnp.gpu.out"
 	cmp "$(BUILD_DIR)/ldnp-stnp.native.out" "$(BUILD_DIR)/ldnp-stnp.gpu.out"
 
+LDRAA_NATIVE := $(BUILD_DIR)/ldraa-differential
+$(LDRAA_NATIVE): ../fixtures/handoff/ldraa-differential.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O1 -fno-stack-protector "$<" -o "$@"
+
+.PHONY: verify-ldraa
+verify-ldraa: $(LDRAA_NATIVE) $(APP)
+	"$(LDRAA_NATIVE)" >"$(BUILD_DIR)/ldraa.native.out"
+	"$(APP)" launch "$(LDRAA_NATIVE)" >"$(BUILD_DIR)/ldraa.gpu.out"
+	cmp "$(BUILD_DIR)/ldraa.native.out" "$(BUILD_DIR)/ldraa.gpu.out"
+
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
