@@ -99,10 +99,33 @@ std::optional<CacheResidencyPlanner::Plan> CacheResidencyPlanner::plan(
                 SharedCache::Segment{selected->segment.name, selected->segment.address + delta, length,
                                      selected->segment.fileOffset + delta, fileBytes, false}};
         } else {
+            // A part of this segment can already be resident (an earlier window,
+            // constant slot or staged image); map only the gap around the request
+            // so no logical address gets two backings.
+            auto lower = selected->logical_start;
+            auto upper = selected->logical_end;
             for (const auto& region : resident) {
+                if (!overlaps(lower, upper, region.logical_start, region.logical_end)) continue;
                 if (region.logical_start <= address && address < region.logical_end) return std::nullopt;
+                if (region.logical_end <= address) lower = std::max(lower, region.logical_end);
+                if (region.logical_start > address) upper = std::min(upper, region.logical_start);
             }
-            pending = *selected;
+            if (minimumBytes > static_cast<std::uint64_t>(upper - address)) {
+                residencyError("Cached read crosses a resident mapping boundary");
+            }
+            if (lower == selected->logical_start && upper == selected->logical_end) {
+                pending = *selected;
+            } else {
+                const auto delta = static_cast<std::uint64_t>(lower - selected->logical_start);
+                const auto length = static_cast<std::uint64_t>(upper - lower);
+                const auto fileBytes = delta < selected->segment.fileSize
+                    ? std::min(length, selected->segment.fileSize - delta) : 0;
+                pending = DeferredSegment{
+                    lower, upper,
+                    SharedCache::Segment{selected->segment.name, selected->segment.address + delta,
+                                         length, selected->segment.fileOffset + delta, fileBytes,
+                                         selected->segment.writable}};
+            }
         }
     } else {
         const auto slot = cache.constantRebaseSlot(address);
