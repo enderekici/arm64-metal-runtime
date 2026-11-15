@@ -104,6 +104,9 @@ ulong guest_offset(ulong address, ulong count, ulong size,
                    device const ulong *writable, bool write,
                    device ulong *state, device const ulong *resident,
                    device const ulong *config) {
+    // Darwin arm64 user data accesses ignore the top byte (TBI); objc now
+    // tags heap method lists with bit 63 and stores through them.
+    address &= 0x00fffffffffffffful;
     const ulong minimumImageAddress = config[0];
     const ulong sharedGuestBase = config[1];
     const ulong linearImageEnd = config[2];

@@ -416,8 +416,12 @@ void GuestMemory::validate_logical_interval(std::uint64_t address,
     }
 }
 
+// Darwin arm64 user data accesses ignore the top address byte (TBI).
+constexpr std::uint64_t kGuestTopByteMask = 0x00ffffffffffffffULL;
+
 std::uint8_t* GuestMemory::buffer(std::uint64_t address, std::uint64_t length,
                                  bool writable) {
+    address &= kGuestTopByteMask;
     validate_logical_interval(address, length);
     const auto find_mapping = [&]() -> const GuestMemoryMapping* {
         for (const auto& mapping : mappings_) {
@@ -461,6 +465,7 @@ std::uint8_t* GuestMemory::buffer(std::uint64_t address, std::uint64_t length,
 }
 
 const std::uint8_t* GuestMemory::buffer(std::uint64_t address, std::uint64_t length) const {
+    address &= kGuestTopByteMask;
     validate_logical_interval(address, length);
     const auto find_mapping = [&]() -> const GuestMemoryMapping* {
         for (const auto& mapping : mappings_) {
@@ -491,6 +496,7 @@ const std::uint8_t* GuestMemory::buffer(std::uint64_t address, std::uint64_t len
 }
 
 std::uint64_t GuestMemory::contiguous_readable_size(std::uint64_t address) const {
+    address &= kGuestTopByteMask;
     for (const auto& mapping : mappings_) {
         if (address >= mapping.logicalBegin && address < mapping.logicalEnd) {
             if (!mapping.readable) throw std::out_of_range("Guest memory is not readable");
@@ -514,6 +520,7 @@ std::uint64_t GuestMemory::contiguous_readable_size(std::uint64_t address) const
 
 bool GuestMemory::is_guest_readable(std::uint64_t address,
                                     std::uint64_t length) const noexcept {
+    address &= kGuestTopByteMask;
     if (length > std::numeric_limits<std::uint64_t>::max() - address) return false;
     for (const auto& mapping : mappings_) {
         if (address >= mapping.logicalBegin && address < mapping.logicalEnd) {
