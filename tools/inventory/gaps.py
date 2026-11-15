@@ -74,15 +74,16 @@ def wrapper_rows(api):
     out = []
     k = kgraph.get(api)
     base = api[1:] if api.startswith("_") else api
-    traps = [c for c in (k["callees"] if k else []) if c.startswith("__kernelrpc_") and c.endswith("_trap")]
+    traps = [c for c in (k["callees"] if k else []) if c.endswith("_trap") and kgraph.get(c, {}).get("svc")]
     traps_n = [(c, n) for c in traps for n in kgraph[c]["svc"]]
-    if base in mig:
-        mid = mig[base]["id"]
+    mname = base if base in mig else "_kernelrpc_" + base if "_kernelrpc_" + base in mig else None
+    if mname:
+        mid = mig[mname]["id"]
         if traps_n:
             for c, n in traps_n:
                 out.append(("mach-trap", -n, c, f"MIG fallback id {mid} ({base})"))
         else:
-            out.append(("mig-id", mid, api, mig[base]["subsystem"]))
+            out.append(("mig-id", mid, api, mig[mname]["subsystem"]))
         return out
     if not k: return out
     seen, frontier = {api}, [api]
@@ -117,12 +118,12 @@ def flav_name(table, v):
     return FLAVNAMES.get(table, {}).get(v, str(v))
 # mig id -> (arg index of selector in C signature, table, predicate(handled?), note)
 SUBOP = {
- 3405: (1, "mach/task_info.h", lambda f: f != 17, "process_runner.cpp:11925-11944: TASK_DYLD_INFO(17) -> KERN_NOT_SUPPORTED; every other flavor is forwarded to the RUNNER's own task (values describe the host process, not the guest)"),
- 200: (1, "mach/host_info.h", lambda f: True, "host_info forwarded to host for any flavor (process_runner.cpp:13185-13215)"),
- 3409: (1, "mach/task_special_ports.h", lambda f: f in (1, 3, 4, 10), "task_get_special_port models selectors 1,3,4,10 only (process_runner.cpp:12282+)"),
- 3410: (1, "mach/task_special_ports.h", lambda f: f == 10, "task_set_special_port models selector 10 only (process_runner.cpp:12156+)"),
- 412: (2, "mach/host_special_ports.h", lambda f: False, "host_get_special_port: size-40 shape replies KERN_INVALID_ARGUMENT for every selector (process_runner.cpp:12830)"),
- 3218: (2, "mach/port.h", lambda f: f == 1, "mach_port_set_attributes models MACH_PORT_LIMITS_INFO only (process_runner.cpp:12855)"),
+ 3405: (1, "mach/task_info.h", lambda f: f != 17, "process_runner.cpp messageId==3405 handler: TASK_DYLD_INFO(17) -> KERN_NOT_SUPPORTED; every other flavor is forwarded to the RUNNER's own task (values describe the host process, not the guest)"),
+ 200: (1, "mach/host_info.h", lambda f: True, "host_info forwarded to host for any flavor (messageId==200 handler)"),
+ 3409: (1, "mach/task_special_ports.h", lambda f: f in (1, 3, 4, 10), "task_get_special_port models selectors 1,3,4,10 only (messageId==3409 handler)"),
+ 3410: (1, "mach/task_special_ports.h", lambda f: f == 10, "task_set_special_port models selector 10 only (messageId==3410 handler)"),
+ 412: (2, "mach/host_special_ports.h", lambda f: False, "host_get_special_port: size-40 shape replies KERN_INVALID_ARGUMENT for every selector (messageId==412 branch in the kernel-object send path)"),
+ 3218: (2, "mach/port.h", lambda f: f == 1, "mach_port_set_attributes models MACH_PORT_LIMITS_INFO only (messageId==3218 branch in the kernel-object send path)"),
 }
 
 def kernel_status(kind, num):
@@ -148,7 +149,7 @@ def kernel_status(kind, num):
 def ingest_api(tgt, run, api, rec):
     cnt = rec["count"]
     for kind, num, via, note in wrapper_rows(api):
-        nm = bsd_name(num) if kind == "bsd" else "thread_set_tsd_base" if kind == "machdep" else TRAP_NAMES.get(num, f"trap{num}") if kind == "mach-trap" else mig_by_id.get(num, "?")
+        nm = bsd_name(num) if kind == "bsd" else "thread_set_tsd_base" if kind == "machdep" else TRAP_NAMES.get(num, f"trap{num}") if kind == "mach-trap" else mig_by_id.get(num, "?").replace("_kernelrpc_", "")
         r = row(kind, num, nm)
         r["native"][tgt] += cnt; r["apis"].add(api)
         if note: r["notes"].add(note)
@@ -196,7 +197,7 @@ def ingest_api(tgt, run, api, rec):
 FLAVOR_TABLE_FOR = {"task": "mach/task_info.h", "thread": "mach/thread_info.h", "host": "mach/host_info.h",
                     "mach": "mach/vm_region.h", "vm": "mach/vm_region.h"}
 def flavor_index(name):
-    d = mig.get(name)
+    d = mig.get(name) or mig.get("_kernelrpc_" + name)
     if not d: return None
     for i, (pn, ty, dr) in enumerate(d["params"]):
         if any("array" in t[1] or "pointer" in t[1] for t in d["params"][:i]): return None
@@ -248,6 +249,12 @@ for fname, syms in imports.items():
             r = row(kind, num, nm); r["static"].add(os.path.basename(fname)); r["apis"].add(s)
 
 # ---- classify -----------------------------------------------------------------------------
+BYPASS = {("bsd", 301): ("pthread_mutex", {"_pthread_mutex_lock", "_pthread_mutex_unlock"}),
+          ("bsd", 302): ("pthread_mutex", {"_pthread_mutex_lock", "_pthread_mutex_unlock"}),
+          ("bsd", 303): ("pthread_cond", {"_pthread_cond_wait", "_pthread_cond_signal", "_pthread_cond_broadcast"}),
+          ("bsd", 304): ("pthread_cond", {"_pthread_cond_wait", "_pthread_cond_signal", "_pthread_cond_broadcast"}),
+          ("bsd", 305): ("pthread_cond", {"_pthread_cond_wait", "_pthread_cond_signal", "_pthread_cond_broadcast"}),
+          ("bsd", 360): ("pthread_create", {"_pthread_create"}), ("bsd", 361): ("pthread_exit", {"_pthread_exit"})}
 SYSCTL_OK_MIB = {"1.2", "1.35", "1.59"}  # CTL_KERN: KERN_OSRELEASE, KERN_USRSTACK32, KERN_USRSTACK64 (process_runner.cpp:11006)
 BOOT_OK = {"com.apple.windowserver.active"}
 def classify(r):
@@ -260,25 +267,35 @@ def classify(r):
     elif k == "proc_info":
         call, flav = divmod(n, 1000)
         st = "yes" if call == 2 and flav in (13, 17) else "no"
-        eff = "" if st == "yes" else "EINVAL (call!=2) or unmodeled flavor (process_runner.cpp:10889)"
+        eff = "" if st == "yes" else "EINVAL (call!=2) or unmodeled flavor (process_runner.cpp syscall==336 handler)"
     elif k == "csops-op":
         st = "yes" if n in handled["csops_ops_modelled"] else "no"
     elif k == "sysctl-mib":
         st = "yes" if n in SYSCTL_OK_MIB else "no"
-        eff = "" if st == "yes" else "EINVAL (raw __sysctl numeric MIB supports kern.usrstack*/osrelease only; process_runner.cpp:10983)"
+        eff = "" if st == "yes" else "EINVAL (raw __sysctl numeric MIB supports kern.usrstack*/osrelease only; process_runner.cpp syscall==202 handler)"
     elif k == "sysctl-name":
-        st, eff = "yes", "reads forwarded to host; writes denied (raw_proc_syscalls.cpp:986)"
+        st, eff = "yes", "reads forwarded to host; writes denied (raw_proc_syscalls.cpp case 274)"
     elif k == "bootstrap-service":
         st = "yes" if n in BOOT_OK else "no"
-        eff = "" if st == "yes" else "BOOTSTRAP_UNKNOWN_SERVICE (host-service _bootstrap_look_up, process_host.cpp:969); look_up2/3, check_in, xpc connections are not intercepted"
+        if st == "yes": eff = ""
+        elif "bootstrap_look_up" in r["apis"]: eff = "BOOTSTRAP_UNKNOWN_SERVICE (host-service _bootstrap_look_up, process_host.cpp case 183)"
+        else: eff = "launchd/XPC message to a non-modeled port (only the plain bootstrap_look_up is intercepted)"
     elif k == "msg-id":
         st, eff = "no", "send to a non-modeled port: MACH_SEND_* error / mach-msg2-unhandled log"
     elif k == "ioctl-req":
-        st, eff = "partial", "generic host forward only for 'netFdUsable' descriptors (raw_net_syscalls.inc:1574)"
+        st, eff = "partial", "generic host forward only for 'netFdUsable' descriptors (raw_net_syscalls.inc netSyscall==54 handler)"
     elif k in ("notify-name", "dlopen-path"):
         st = "n/a"
     # host-service API intercept makes some syscall rows handled at API level
     if r["missing"] and st == "yes": st = "partial"
+    byp = BYPASS.get((k, n if k == "bsd" else None)) if k == "bsd" else None
+    if k == "sysctl-mib" and st == "no" and "_sysctl" in host_rt:
+        byp = ("sysctl", {"_sysctl"})
+    if byp and st in ("no", "stub") and byp[1] <= host_rt:
+        eff = f"bypass-likely: entry {'/'.join(sorted(byp[1]))} is intercepted by cache address (host_service_registry + image_loader imports.emplace); " + ("ABORT/EINVAL only if reached by a non-intercepted entry" if k == "bsd" else "service 50 forwards any MIB to the host; EINVAL only for a raw __sysctl SVC")
+        r["bypass"] = True
+    else:
+        r["bypass"] = False
     hs = sorted(a for a in r["apis"] if a in host_rt)
     r["status"], r["effect"], r["hs"] = st, eff, hs
     partial = ""
@@ -290,7 +307,8 @@ def classify(r):
     tg = len(r["native"])
     obs = tg > 0
     bad = st in ("no", "stub") or (st == "partial") or bool(r["missing"])
-    if obs and (st in ("no", "stub") or r["missing"]): pri = "P0"
+    if obs and r["bypass"]: pri = "P1" if k == "bsd" else "P2"
+    elif obs and (st in ("no", "stub") or r["missing"]): pri = "P0"
     elif obs and (n in SUBOP if k == "mig-id" else False) and st in ("yes", "partial"): pri = "P1"
     elif obs and st == "partial": pri = "P1"
     elif r["static"] and st in ("no", "stub"): pri = "P2"
@@ -298,7 +316,7 @@ def classify(r):
     else: pri = "P3"
     if st == "n/a": pri = "info"
     r["pri"] = pri
-    abort = 3 if eff.startswith("ABORT") else 2 if (eff.startswith("EINVAL") or eff.startswith("UNVERIFIED") or "ENOTSUP" in eff or "BOOTSTRAP" in eff) else 1 if eff else 0
+    abort = 3 if eff.startswith("ABORT") else 2 if (eff.startswith("EINVAL") or eff.startswith("UNVERIFIED") or "ENOTSUP" in eff or eff.startswith("BOOTSTRAP")) else 1 if eff else 0
     r["effect_rank"] = abort
     r["score"] = abort * 100000 + len(r["native"]) * 1000 + min(sum(r["native"].values()), 999)
 for r in rows.values(): classify(r)
@@ -310,8 +328,6 @@ def seen(r):
         if r["callers"]: parts.append("callers: " + ", ".join(f"{a}" for a, _ in r["callers"].most_common(3)))
     if r["static"]: parts.append("static: " + ", ".join(sorted(r["static"])))
     if r["apis"]: parts.append("api: " + ", ".join(sorted(r["apis"])[:3]))
-    if "libsystem_pthread.dylib" in r["callers"] and r["kind"] == "bsd":
-        parts.append("NOTE reached from libsystem_pthread; pthread_* imports of the main image are host-service intercepted, so this fires only for guest-internal callers (unverified)")
     return "; ".join(parts)
 
 def fmt_num(r):
@@ -320,6 +336,19 @@ def fmt_num(r):
     if r["kind"] == "machdep": return "0x80000000"
     return str(n)
 order = {"P0": 0, "P1": 1, "P2": 2}
+def group_of(r):
+    k, n, nm = r["kind"], r["num"], r["name"]
+    if k == "bsd" and n in (301, 302, 303, 304, 305, 360, 361): return "pthread kernel interface (psynch_*, bsdthread_create/terminate)"
+    if k == "mach-trap" and n == 70: return "voucher trap -70 host_create_mach_voucher (MIG fallback 222)"
+    if k in ("bootstrap-service", "msg-id"): return "launchd/XPC/notifyd/configd/cfprefsd/logd lookups and messages"
+    if k == "sysctl-mib": return "numeric sysctl MIBs through raw __sysctl"
+    if k == "machdep": return "thread_set_tsd_base (x16=0x80000000)"
+    if k == "proc_info": return "proc_info callnum != 2 (setcontrol threadname)"
+    if k == "bsd" and n in (375, 443, 530): return "kevent_id / workloop kqueue"
+    if k == "bsd" and n in (447, 448, 449, 480, 481): return "multipath/batch socket calls"
+    if k == "mig-id" and r["status"] == "no": return f"unmodeled kernel-object RPC {nm} ({n})"
+    if k == "ioctl-req": return "ioctl on non-socket descriptors"
+    return f"{k} {nm} ({n})"
 ranked = sorted([r for r in rows.values() if r["pri"] in order], key=lambda r: (order[r["pri"]], -r["score"], str(r["num"])))
 ok_rows = [r for r in rows.values() if r["pri"] == "ok"]
 univ = collections.Counter()
@@ -335,8 +364,23 @@ md.append("# Service gap inventory (Azul java -version, JNI fixture, plutil -lin
 md.append("Generated by tools/inventory (see Reproduce). Status columns come from reading the runtime source (`handled.json`), "
           "not from running it: nothing here executed on the GPU runtime. 'native' = observed on this host by the interposer tracer; "
           "'static' = imported by the Azul closure and resolved through libsystem_kernel; rows only in the dyld-cache universe are summarised at the end.\n")
-md.append("Priority: P0 observed natively and unhandled/stub/missing flavor; P1 observed, handled but partial; P2 static import only, unhandled; "
+md.append("With ARM64_METAL_SURVEY=1 (added in c5ba09a) the runtime logs unhandled syscalls/traps and returns ENOSYS / KERN_INVALID_ARGUMENT instead of throwing; without it an unhandled number throws. ABORT below means the default (throwing) mode. bypass-likely: the numbers are reached through a symbol the shared-cache launcher replaces by host service (address-keyed), so the raw syscall may never be issued; this was not run.\n\nPriority: P0 observed natively and unhandled/stub/missing flavor; P1 observed, handled but partial; P2 static import only, unhandled; "
           "ranked by number of targets, then effect (ABORT > error code > soft reply), then native call count.\n")
+groups = collections.OrderedDict()
+for r in ranked:
+    g = groups.setdefault(group_of(r), {"rows": [], "pri": r["pri"], "targets": set(), "eff": 0, "score": r["score"]})
+    g["rows"].append(r); g["targets"] |= set(r["native"]); g["eff"] = max(g["eff"], r["effect_rank"] if not r["bypass"] else 0)
+    g["pri"] = min(g["pri"], r["pri"]); g["score"] = max(g["score"], r["score"])
+    if r["kind"] == "mig-id" and r["status"] == "partial": g["eff"] = max(g["eff"], 1)
+gl = sorted(groups.items(), key=lambda kv: (kv[1]["pri"], -kv[1]["eff"], -len(kv[1]["targets"]), -kv[1]["score"]))
+md.append("## Distinct gaps (rows that share one fix are grouped; the full per-row table follows)\n")
+md.append("| # | gap | rows | targets | priority | worst effect |")
+md.append("|---|---|---|---|---|---|")
+EFF = {3: "ABORT (throws)", 2: "error code to the guest", 1: "soft reply/message error", 0: "none or bypass-likely"}
+for i, (name, g) in enumerate(gl, 1):
+    md.append(f"| {i} | {cell(name)} | {len(g['rows'])} | {','.join(sorted(g['targets'])) or 'static only'} | {g['pri']} | {EFF[g['eff']]} |")
+md.append("")
+md.append("## Per-row table\n")
 md.append("| # | kind | number/id | name | seen where (static/native) | handled? | partial (flavors missing)? | priority |")
 md.append("|---|---|---|---|---|---|---|---|")
 for i, r in enumerate(ranked, 1):
@@ -354,16 +398,16 @@ json.dump([{k: (sorted(v) if isinstance(v, set) else dict(v) if isinstance(v, co
 audit = """
 ## Partial implementations (audit of what the runtime models)
 
-All from reading the source, not from running it. Line numbers are in cpp/ of branch codex/tu-trace.
+All from reading the source, not from running it. Handlers are cited by id/function; exact lines are in handled.json `where`.
 - task_info (MIG 3405, process_runner.cpp:11925): TASK_DYLD_INFO (17) replies KERN_NOT_SUPPORTED; every other flavor is forwarded to the runner's own task, so TASK_AUDIT_TOKEN / TASK_BASIC_INFO / TASK_VM_INFO describe the host process, not the guest. Only the 40-byte request shape on the guest task port is accepted.
 - task_get_special_port (3409): selectors 1, 3, 4, 10 only. task_set_special_port (3410): selector 10 only. host_get_special_port (412): every selector replies KERN_INVALID_ARGUMENT.
 - mach_port_set_attributes (3218): MACH_PORT_LIMITS_INFO only. mach_port_get_attributes is served by trap -40 instead. get/set_context (3228/3229) modeled.
 - host_info (200): any flavor forwarded to the host. host_statistics/host_statistics64 (216/219) are in the exists-range: KERN_NOT_SUPPORTED. thread_info (3612), task_set_exception_ports (3413), mach_make_memory_entry_64 (3825) likewise.
-- kernelObjectRoutineExists (process_runner.cpp:3581) is only a 'this id exists' table: ids in it reply KERN_NOT_SUPPORTED, ids outside reply MIG_BAD_ID. Only the 16 ids in handled.json are modeled, each gated on destination port, message size and shape.
-- proc_info (336, process_runner.cpp:10889): callnum 2 (PIDINFO) for the caller's own pid, flavors 13 (SHORTBSDINFO) and 17 (UNIQIDENTIFIERINFO) only; any other callnum is EINVAL, a foreign pid ESRCH.
-- sysctl: raw __sysctl numeric MIB (202, process_runner.cpp:10983) supports kern.usrstack32/usrstack64/osrelease only, everything else EINVAL; sysctlbyname (274) forwards reads of any name to the host and denies writes.
-- bootstrap: the host-service `_bootstrap_look_up` (process_host.cpp:969) resolves `com.apple.windowserver.active` only; any other name is BOOTSTRAP_UNKNOWN_SERVICE. bootstrap_look_up2/3, check_in and xpc_connection_create_mach_service are not intercepted, so their launchd/XPC messages go to non-modeled ports.
-- ioctl (54, raw_net_syscalls.inc:1574): generic host forward for descriptors the net table owns; other descriptors are EBADF.
+- kernelObjectRoutineExists (process_runner.cpp) is only a 'this id exists' table: ids in it reply KERN_NOT_SUPPORTED, ids outside reply MIG_BAD_ID. Only the 16 ids in handled.json are modeled, each gated on destination port, message size and shape.
+- proc_info (336, process_runner.cpp syscall==336 handler): callnum 2 (PIDINFO) for the caller's own pid, flavors 13 (SHORTBSDINFO) and 17 (UNIQIDENTIFIERINFO) only; any other callnum is EINVAL, a foreign pid ESRCH.
+- sysctl: raw __sysctl numeric MIB (202, process_runner.cpp syscall==202 handler) supports kern.usrstack32/usrstack64/osrelease only, everything else EINVAL; sysctlbyname (274) forwards reads of any name to the host and denies writes.
+- bootstrap: the host-service `_bootstrap_look_up` (process_host.cpp case 183) resolves `com.apple.windowserver.active` only; any other name is BOOTSTRAP_UNKNOWN_SERVICE. bootstrap_look_up2/3, check_in and xpc_connection_create_mach_service are not intercepted, so their launchd/XPC messages go to non-modeled ports.
+- ioctl (54, raw_net_syscalls.inc netSyscall==54 handler): generic host forward for descriptors the net table owns; other descriptors are EBADF.
 - fcntl (92): {n_fcntl} commands modeled ({fcntl_names}); the SDK defines {n_sdk_fcntl} F_* commands.
 - csops: ops 0-17 modeled (guest_csops.hpp); other-pid operations return the kernel's errno table.
 - kevent: 363/369/374 modeled; kevent_id (375), guarded_kqueue_np (443), kqueue_workloop_ctl (530) return EINVAL/ENOTSUP. Stub-only BSD numbers (heuristic, see handled.py): {stubs}.

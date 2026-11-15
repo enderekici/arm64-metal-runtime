@@ -52,6 +52,13 @@ def terminal_is_stub(lines, i, f):
     # an if/else before the failing statement makes it conditional (the call has a working path)
     return bool(m) and not re.search(r"\bif\b|\belse\b", text[:m.start()].split("case", 1)[-1])
 
+def in_run(lines, i):
+    """True when line i (1-based) is inside RawProcOutcome Dispatcher::run() (the routing table)."""
+    for j in range(i - 1, -1, -1):
+        if lines[j].startswith("RawProcOutcome Dispatcher::run"): return True
+        if lines[j].startswith("}") and j < i - 1: return False
+    return False
+
 for f in FILES:
     lines = open(os.path.join(wt, f), errors="replace").read().split("\n")
     stack, depth = [], 0
@@ -64,7 +71,7 @@ for f in FILES:
         for m in re.finditer(r"\bcase\s+([A-Za-z_0-9]+)\s*:", line):
             n = num(m.group(1))
             # raw_proc run(): routing table to sub-dispatchers; the sub-dispatcher's own case is the handler
-            if f.endswith("raw_proc_syscalls.cpp") and "RawProcOutcome Dispatcher::run" in "\n".join(lines[max(0, i - 60):i]) and i > 1205:
+            if f.endswith("raw_proc_syscalls.cpp") and in_run(lines, i):
                 continue
             if top in SW: add(bsd, n, f"{f}:{i}", stub)
             elif top == "machTrapNumber": add(mach, n, f"{f}:{i}")
@@ -89,7 +96,7 @@ csops = sorted({int(x) for x in re.findall(r"\bcase\s+(\d+):", open(os.path.join
 
 # fcntl commands: names in the switch(command) of the fcntl handler -> numbers via the SDK header
 net = open(os.path.join(wt, "cpp/raw_net_syscalls.inc")).read().split("\n")
-start = next(i for i, l in enumerate(net) if "switch (command)" in l and i > 1300)
+start = next(i for i, l in enumerate(net) if "switch (command)" in l and "case F_DUPFD" in "".join(net[i + 1:i + 4]))
 fnames = set()
 for l in net[start:start + 220]:
     for n in re.findall(r"\bcase (F_[A-Z_0-9]+):", l): fnames.add(n)
