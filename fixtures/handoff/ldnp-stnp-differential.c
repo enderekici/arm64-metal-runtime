@@ -38,7 +38,7 @@ int main(void) {
   fill();
   __asm__ volatile("ldnp q0, q1, [%0]\n stnp q1, q0, [%0, #64]\n"
                    "ldnp d2, d3, [%0, #8]\n stnp d3, d2, [%0, #-8]\n"
-                   "ldnp s4, s5, [%0, #-256]\n stnp s5, s4, [%0, #252]\n"
+                   "ldnp s4, s5, [%0, #-128]\n stnp s5, s4, [%0, #120]\n"
                    : : "r"(base) : "v0", "v1", "v2", "v3", "v4", "v5", "memory");
   mix_buf();
   printf("simd %016llx\n", (unsigned long long)h);
