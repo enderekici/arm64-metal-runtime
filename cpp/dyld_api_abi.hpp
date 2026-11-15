@@ -36,6 +36,8 @@ struct DyldApiAbi {
     DyldApiCall dlopenFrom;
     DyldApiCall programSdkVersion;
     DyldApiCall programMinOsVersion;
+    // Optional: only present in caches whose libdyld exports the API.
+    std::optional<DyldApiCall> stackRange;
     std::uint64_t vtableBytes = 0;    // highest derived slot end
 };
 
@@ -168,6 +170,12 @@ inline DyldApiAbi derive_dyld_api_abi(const SharedCache& cache) {
     take("_dlopen_from", abi.dlopenFrom);
     take("_dyld_get_program_sdk_version", abi.programSdkVersion);
     take("_dyld_get_program_min_os_version", abi.programMinOsVersion);
+    if (const auto resolved = cache.resolveExport(libdyld, "__dyld_stack_range");
+        resolved && resolved->guest_address >= 0) {
+        DyldApiCall call;
+        take("__dyld_stack_range", call);
+        abi.stackRange = call;
+    }
     if (!missing.empty() || !vptr) {
         std::ostringstream message;
         message << "Unsupported dyld API ABI for shared-cache UUID ";
@@ -195,6 +203,11 @@ inline DyldApiAbi derive_dyld_api_abi(const SharedCache& cache) {
             {"programMinOsVersion", &abi.programMinOsVersion}};
         std::fprintf(stderr, "arm64-metal dyld-api vptr-disc=0x%llx\n",
                      static_cast<unsigned long long>(abi.vptrDiscriminator));
+        if (abi.stackRange) {
+            std::fprintf(stderr, "arm64-metal dyld-api stackRange slot=0x%llx disc=0x%llx\n",
+                         static_cast<unsigned long long>(abi.stackRange->offset),
+                         static_cast<unsigned long long>(abi.stackRange->discriminator));
+        }
         for (const auto& [name, call] : rows) {
             std::fprintf(stderr, "arm64-metal dyld-api %s slot=0x%llx disc=0x%llx\n", name,
                          static_cast<unsigned long long>(call->offset),
@@ -210,6 +223,12 @@ inline DyldApiAbi derive_dyld_api_abi(const SharedCache& cache) {
             throw std::runtime_error("Derived dyld APIs vtable slot is not a pointer slot");
         }
         abi.vtableBytes = std::max(abi.vtableBytes, call->offset + 8);
+    }
+    if (abi.stackRange) {
+        if (abi.stackRange->offset % 8 != 0 || abi.stackRange->offset > 0x10000) {
+            throw std::runtime_error("Derived dyld APIs vtable slot is not a pointer slot");
+        }
+        abi.vtableBytes = std::max(abi.vtableBytes, abi.stackRange->offset + 8);
     }
     return abi;
 }

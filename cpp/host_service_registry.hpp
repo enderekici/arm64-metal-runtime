@@ -261,6 +261,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"__dyld_register_for_bulk_image_loads", 216, true, true},
     {"__guest_dyld_shared_cache_real_path", 217, true, true},
     {"__guest_dyld_shared_cache_contains_path", 218, true, true},
+    {"__guest_dyld_stack_range", 250, true, true},
     {"_chmod", 240, true, true},
     {"_fchmod", 241, true, true},
     {"_futimens", 242, true, true},

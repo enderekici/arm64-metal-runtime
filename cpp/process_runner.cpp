@@ -1257,6 +1257,13 @@ DyldApisFacade initialize_dyld_apis(
                                          programMinOsVersionModifier));
     store_u64(bootstrap.memory, initializeSlot,
               append_guest_pointer_token(bootstrap, initializeService, 0, initializeModifier));
+    if (abi.stackRange) {
+        const auto stackRangeService = addSyntheticService("__guest_dyld_stack_range");
+        const auto slot = vtable + abi.stackRange->offset;
+        store_u64(bootstrap.memory, slot,
+                  append_guest_pointer_token(bootstrap, stackRangeService, 0,
+                      (slot & addressMask) | (abi.stackRange->discriminator << 48)));
+    }
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
     if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
     bootstrap.heap.begin += reservation;
@@ -8235,6 +8242,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 callbackRegisters[30] = guestReturnSentinel;
                 callbackRegisters[33] = callback;
                 selectKernel(static_cast<std::int64_t>(callback));
+                continue;
+            }
+            if (service == 250) {
+                // dyld4::APIs::_dyld_stack_range reports dyld's protected stack;
+                // the guest has none, which dyld reports as a null range.
+                if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
+                    throw std::runtime_error(
+                        "Dyld stack-range method did not use the published API object");
+                }
+                const std::uint64_t none = 0;
+                for (const auto out : {hostRegisters[1], hostRegisters[2]}) {
+                    if (out != 0) std::memcpy(guestMemory.buffer(out, 8, true), &none, 8);
+                }
                 continue;
             }
             if (service == 217 || service == 218) {
