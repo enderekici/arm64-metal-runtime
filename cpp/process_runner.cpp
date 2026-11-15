@@ -2563,8 +2563,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             guestStubs.find(entry) == guestStubs.end() && !selectorStub) {
             stopPcForDiagnostic = static_cast<std::uint64_t>(entry);
             dumpTransitions();
+            const auto* live = static_cast<const std::uint64_t*>(stateBuffer.data());
             throw std::runtime_error("Guest process resumed outside translated text at PC 0x" +
-                                     hexadecimal(static_cast<std::uint64_t>(entry)));
+                                     hexadecimal(static_cast<std::uint64_t>(entry)) +
+                                     dyld_api_slot_state().describe_null_branch(
+                                         static_cast<std::uint64_t>(entry), live[16], live[17],
+                                         live[30]));
         }
         auto found = kernels.find(entry);
         if (found == kernels.end()) {

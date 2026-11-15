@@ -23,8 +23,16 @@
                     // it only when an image is unloaded, never at registration.
                     slotState.register_remove_image(hostRegisters[1]);
                 } else {
+                    // dyld strips pointer authentication from the queried address;
+                    // a signed arm64e function pointer is a guest token here.
+                    auto address = hostRegisters[1];
+                    if ((address & 0xffff000000000000ULL) == 0xa64e000000000000ULL) {
+                        const auto stripped = decode_guest_ia0_callback(
+                            hostRegisters.data(), hostRegisters.size(), address);
+                        if (stripped) address = *stripped;
+                    }
                     const auto found = slotState.image_containing(
-                        hostRegisters[1], image.mapped_image_segments,
+                        address, image.mapped_image_segments,
                         image.metadata_cache_reader());
                     if (!found) {
                         registers[0] = 0;

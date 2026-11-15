@@ -995,3 +995,37 @@ MIG_BAD_ID replies (plus the existing `mach-msg2-unhandled` stderr lines) and th
 stops at syscall 0x13c. With it the guest continues: ENOSYS (78) for both
 syscalls, then `done`. The log gets three lines: msgh_id 30583, syscall 316 and
 syscall 317.
+
+## dyld APIs vtable slots (`dyld-api-slots.c`)
+
+libdyld exports that are not in `host_service_registry.hpp` run their cached code and
+call a `dyld4::APIs` vtable slot. Native reachability comes from
+`tools/dyldapis/build_tracer.sh` (DYLD_INSERT_LIBRARIES counting stubs over all 225
+libdyld text exports) under java -version, the JNI entry, plutil -lint and tar list/extract.
+Outside the registry, natively reached are the façade core slots plus four
+reached only from libsystem_trace under java: `_dyld_get_shared_cache_uuid` (0x1e0),
+`_dyld_register_func_for_remove_image` (0x38), `dyld_image_header_containing_address`
+(0x1b0) and `dyld_image_path_containing_address` (0x168). These are served by
+services 260-263 (`cpp/dyld_api_services.inc`, slots from `cpp/dyld_api_slots.hpp`).
+
+- containing-address answers for any shared-cache image, loaded or not (native does).
+  Addresses in a non-text segment of an unloaded cache image return null (gap).
+- remove-image registration is recorded; dyld calls it on unload, the runtime does not,
+  so unloading an image after a registration stops with
+  `Guest image 0x... unload needs N _dyld_register_func_for_remove_image callback(s); not modeled`.
+- any other slot reached by guest code stops with
+  `...; unmodeled dyld APIs vtable slot 0x<off> (index N) reached from libdyld <exports>, guest lr 0x...`.
+  `ARM64_METAL_TRACE_DYLD_API_ABI=1` prints every derived slot.
+
+```sh
+xcrun clang -arch arm64e -O1 -fno-stack-protector fixtures/handoff/dyld-api-slots.c -o dyld-api-slots
+xcrun clang -arch arm64e -O1 -dynamiclib fixtures/handoff/dyld-api-slots-lib.c -o lib.dylib
+OFF=$(./dyld-api-slots --find-appkit)      # native only: AppKit's cache offset
+./dyld-api-slots $OFF                      # guest output must equal native
+./dyld-api-slots --unmodeled               # guest: named slot 0x1d8 error
+./dyld-api-slots --remove-exit $PWD/lib.dylib     # guest = native, exit 0
+./dyld-api-slots --remove-dlclose $PWD/lib.dylib  # native removed_after_close=1; guest: named unload error
+```
+On the guest the `cache-image` line reads `header=mismatch dladdr_base=none path=AppKit`:
+the slot answers match native, the guest `dladdr` (service 165) does not resolve unloaded
+cache images.

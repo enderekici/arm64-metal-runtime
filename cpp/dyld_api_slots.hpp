@@ -131,12 +131,24 @@ public:
         if (slot != slots_.end()) {
             out << " reached from libdyld";
             for (const auto& name : slot->exports) out << ' ' << name;
-            for (const auto& name : slot->laterCalls) out << " (later call in " << name << ')';
+            // Later calls can come from scanning past a tail call into the
+            // next function, so they are named only when nothing calls it first.
+            if (slot->exports.empty()) {
+                for (const auto& name : slot->laterCalls) out << " (later call in " << name << ')';
+            }
         } else {
             out << " (no libdyld export uses it)";
         }
         out << std::hex << ", guest lr 0x" << linkRegister;
         return out.str();
+    }
+
+    // A null slot reached by braa/blraa resumes at PC 0. clang's arm64e virtual
+    // call keeps the slot modifier in x16 (tail call) or x17 (call).
+    std::string describe_null_branch(std::uint64_t pc, std::uint64_t x16, std::uint64_t x17,
+                                     std::uint64_t linkRegister) const {
+        auto note = describe_unmodeled_slot(pc, x16, linkRegister);
+        return note.empty() ? describe_unmodeled_slot(pc, x17, linkRegister) : note;
     }
 
     void register_remove_image(std::uint64_t callback) {
