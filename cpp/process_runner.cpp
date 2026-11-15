@@ -48,6 +48,7 @@
 #include <sys/mount.h>
 #include <sys/xattr.h>
 #include "raw_fs_syscalls.hpp"
+#include "dyld_api_abi.hpp"
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -1120,13 +1121,7 @@ DyldApisFacade initialize_dyld_apis(
     std::map<std::int64_t, std::string>& imports,
     const std::map<std::int64_t, std::int64_t>& guestStubs) {
     if (!image.cache_reader) return {};
-    constexpr std::array<std::uint8_t, 16> supportedCacheUuid{
-        0xc2, 0x84, 0xa2, 0x91, 0xb6, 0x8b, 0x3d, 0x0d,
-        0xa1, 0xa0, 0x3f, 0x86, 0x6f, 0x87, 0xef, 0xdc};
-    if (!std::equal(supportedCacheUuid.begin(), supportedCacheUuid.end(),
-                    image.cache_reader->uuid().begin(), image.cache_reader->uuid().end())) {
-        throw std::runtime_error("Unsupported dyld API ABI for this shared-cache UUID");
-    }
+    const auto abi = derive_dyld_api_abi(*image.cache_reader);
     const auto cell = image.cache_reader->dyldApisCell();
     if (!cell) throw std::runtime_error("Cached libdyld has no __dyld_apis publication cell");
     const auto cellOffset = memory_backing_offset(image,
@@ -1190,8 +1185,8 @@ DyldApisFacade initialize_dyld_apis(
         "__guest_dyld_get_program_min_os_version");
 
     constexpr std::uint64_t objectBytes = 16;
-    constexpr std::uint64_t vtableBytes = 0x428;
-    constexpr std::uint64_t reservation = objectBytes + vtableBytes;
+    const std::uint64_t vtableBytes = abi.vtableBytes;
+    const std::uint64_t reservation = objectBytes + vtableBytes;
     const auto object = bootstrap.heap.begin;
     if (reservation > bootstrap.heap.end - bootstrap.heap.begin ||
         object > bootstrap.memory.size() || reservation > bootstrap.memory.size() - object) {
@@ -1199,37 +1194,37 @@ DyldApisFacade initialize_dyld_apis(
     }
     const auto vtable = object + objectBytes;
     constexpr std::uint64_t addressMask = 0x0000ffffffffffffULL;
-    const auto vptrModifier = (object & addressMask) | 0x63fa000000000000ULL;
+    const auto vptrModifier = (object & addressMask) | (abi.vptrDiscriminator << 48);
     store_u64(bootstrap.memory, object,
               append_guest_pointer_token(bootstrap, vtable, 2, vptrModifier));
-    const auto methodSlot = vtable + 0x420;
-    const auto methodModifier = (methodSlot & addressMask) | 0x8c7f000000000000ULL;
+    const auto methodSlot = vtable + abi.writableTpro.offset;
+    const auto methodModifier = (methodSlot & addressMask) | (abi.writableTpro.discriminator << 48);
     store_u64(bootstrap.memory, methodSlot,
               append_guest_pointer_token(bootstrap,
                   static_cast<std::uint64_t>(method->guest_address), 0, methodModifier));
-    const auto initializeSlot = vtable + 0x8;
-    const auto initializeModifier = (initializeSlot & addressMask) | 0x8379000000000000ULL;
-    const auto basePlatformSlot = vtable + 0x218;
-    const auto basePlatformModifier = (basePlatformSlot & addressMask) | 0xdafc000000000000ULL;
-    const auto activePlatformSlot = vtable + 0x210;
-    const auto activePlatformModifier = (activePlatformSlot & addressMask) | 0xc6a9000000000000ULL;
-    const auto simulatorPlatformSlot = vtable + 0x220;
+    const auto initializeSlot = vtable + abi.initialize.offset;
+    const auto initializeModifier = (initializeSlot & addressMask) | (abi.initialize.discriminator << 48);
+    const auto basePlatformSlot = vtable + abi.basePlatform.offset;
+    const auto basePlatformModifier = (basePlatformSlot & addressMask) | (abi.basePlatform.discriminator << 48);
+    const auto activePlatformSlot = vtable + abi.activePlatform.offset;
+    const auto activePlatformModifier = (activePlatformSlot & addressMask) | (abi.activePlatform.discriminator << 48);
+    const auto simulatorPlatformSlot = vtable + abi.simulatorPlatform.offset;
     const auto simulatorPlatformModifier =
-        (simulatorPlatformSlot & addressMask) | 0x198a000000000000ULL;
-    const auto bulkImageSlot = vtable + 0x290;
-    const auto bulkImageModifier = (bulkImageSlot & addressMask) | 0x8dec000000000000ULL;
-    const auto sharedCacheRealPathSlot = vtable + 0x2d0;
+        (simulatorPlatformSlot & addressMask) | (abi.simulatorPlatform.discriminator << 48);
+    const auto bulkImageSlot = vtable + abi.bulkImageLoads.offset;
+    const auto bulkImageModifier = (bulkImageSlot & addressMask) | (abi.bulkImageLoads.discriminator << 48);
+    const auto sharedCacheRealPathSlot = vtable + abi.sharedCacheRealPath.offset;
     const auto sharedCacheRealPathModifier =
-        (sharedCacheRealPathSlot & addressMask) | 0x222a000000000000ULL;
-    const auto sharedCacheContainsPathSlot = vtable + 0x2d8;
+        (sharedCacheRealPathSlot & addressMask) | (abi.sharedCacheRealPath.discriminator << 48);
+    const auto sharedCacheContainsPathSlot = vtable + abi.sharedCacheContainsPath.offset;
     const auto sharedCacheContainsPathModifier =
-        (sharedCacheContainsPathSlot & addressMask) | 0x11cb000000000000ULL;
-    const auto dlopenFromSlot = vtable + 0x2e0;
+        (sharedCacheContainsPathSlot & addressMask) | (abi.sharedCacheContainsPath.discriminator << 48);
+    const auto dlopenFromSlot = vtable + abi.dlopenFrom.offset;
     const auto dlopenFromModifier = (dlopenFromSlot & addressMask) |
-                                    0xd48c000000000000ULL;
-    const auto programSdkVersionSlot = vtable + 0x188;
+                                    (abi.dlopenFrom.discriminator << 48);
+    const auto programSdkVersionSlot = vtable + abi.programSdkVersion.offset;
     const auto programSdkVersionModifier = (programSdkVersionSlot & addressMask) |
-                                           0x6fd4000000000000ULL;
+                                           (abi.programSdkVersion.discriminator << 48);
     store_u64(bootstrap.memory, basePlatformSlot,
               append_guest_pointer_token(bootstrap, basePlatformService, 0,
                                          basePlatformModifier));
@@ -1254,9 +1249,9 @@ DyldApisFacade initialize_dyld_apis(
     store_u64(bootstrap.memory, programSdkVersionSlot,
               append_guest_pointer_token(bootstrap, programSdkVersionService, 0,
                                          programSdkVersionModifier));
-    const auto programMinOsVersionSlot = vtable + 0x190;
+    const auto programMinOsVersionSlot = vtable + abi.programMinOsVersion.offset;
     const auto programMinOsVersionModifier =
-        (programMinOsVersionSlot & addressMask) | 0x3683000000000000ULL;
+        (programMinOsVersionSlot & addressMask) | (abi.programMinOsVersion.discriminator << 48);
     store_u64(bootstrap.memory, programMinOsVersionSlot,
               append_guest_pointer_token(bootstrap, programMinOsVersionService, 0,
                                          programMinOsVersionModifier));
