@@ -204,6 +204,31 @@ std::optional<translate_core::Instruction> lower_vector_crypto(
                        {pc + 4}};
   }
 
+  // FEAT_SHA3: EOR3, BCAX (four-register), RAX1, XAR (64-bit lanes).
+  {
+    const auto d = sha_destination_register, n = sha_source_register,
+               m = sha_third_register, a = (bits >> 10) & 0x1fu;
+    std::string expression;
+    if ((bits & 0xffe08000u) == 0xce000000u) {
+      expression = vector_value(n) + " ^ " + vector_value(m) + " ^ " + vector_value(a);
+    } else if ((bits & 0xffe08000u) == 0xce200000u) {
+      expression = vector_value(n) + " ^ (" + vector_value(m) + " & ~" + vector_value(a) + ")";
+    } else if ((bits & 0xffe0fc00u) == 0xce608c00u) {
+      expression =vector_value(n) + " ^ rotate(" + vector_value(m) + ", ulong2(1ul))";
+    } else if ((bits & 0xffe00000u) == 0xce800000u) {
+      const auto shift = std::to_string((bits >> 10) & 0x3fu);
+      expression = "rotate(" + vector_value(n) + " ^ " + vector_value(m) + ", ulong2((64ul - " +
+                   shift + "ul) & 63ul))";
+    }
+    if (!expression.empty()) {
+      const int slot = 806 + 2 * static_cast<int>(d);
+      return translate_core::Instruction{{"{ ulong2 value = " + expression + "; x[" +
+                                          std::to_string(slot) + "] = value[0]; x[" +
+                                          std::to_string(slot + 1) + "] = value[1]; }"},
+                                         {pc + 4}};
+    }
+  }
+
   // This 64-bit lane form has fixed size/Q bits; reject byte/halfword forms.
   if ((bits & 0xbfe0fc00u) != 0x0ee0e000u) {
     return std::nullopt;

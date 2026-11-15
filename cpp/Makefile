@@ -681,6 +681,18 @@ $(SWEEP): tools/sweep.cpp $(SWEEP_SOURCES) $(APP_HEADERS)
 .PHONY: sweep
 sweep: $(SWEEP)
 
+# Native-vs-GPU crypto-extension differential (GPU: run under bin/gpulock).
+CRYPTO_EXT_NATIVE := $(BUILD_DIR)/crypto-ext-differential
+$(CRYPTO_EXT_NATIVE): ../fixtures/handoff/crypto-ext-differential.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O1 -fno-stack-protector "$<" -o "$@"
+
+.PHONY: verify-crypto-ext
+verify-crypto-ext: $(CRYPTO_EXT_NATIVE) $(APP)
+	"$(CRYPTO_EXT_NATIVE)" >"$(BUILD_DIR)/crypto-ext.native.out"
+	"$(APP)" launch "$(CRYPTO_EXT_NATIVE)" >"$(BUILD_DIR)/crypto-ext.gpu.out"
+	cmp "$(BUILD_DIR)/crypto-ext.native.out" "$(BUILD_DIR)/crypto-ext.gpu.out"
+
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
