@@ -3430,10 +3430,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return threadPort->second;
     };
     std::function<bool(std::uint64_t)> beginThreadTsdCleanup;
+    int guestWorkqHostKq = -1;
+    std::map<std::pair<std::int16_t, std::uint64_t>, std::uint32_t> guestWorkqKeventQos;
+    std::uint64_t guestWorkqKeventWorker = 0;
+    std::function<int()> workqHostKqueue;
+    std::function<void(std::uint64_t, std::uint64_t)> workqApplyChanges;
     const auto finishGuestThread = [&](std::uint64_t result,
                                        std::vector<std::uint64_t>& live) {
         const auto completedId = guestScheduler.current_id();
         if (beginThreadTsdCleanup && beginThreadTsdCleanup(result)) return false;
+        if (completedId == guestWorkqKeventWorker) guestWorkqKeventWorker = 0;
         if (guestWorkqueueThreadIds.erase(completedId) != 0) {
             const auto port = guestThreadPortNames.find(completedId);
             if (port != guestThreadPortNames.end()) {
@@ -7709,6 +7715,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         return false;
     };
 #include "thread_tsd_cleanup.inc"
+#include "workq_kevent_delivery.inc"
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;
@@ -14839,6 +14846,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t requestFallbackFlag = 0x04000000;
                 constexpr std::uint64_t requestDefaultQueueFlag = 0x10000000;
                 static_assert(sizeof(GuestWorkqueueDispatchConfig) == dispatchConfigSize);
+                if (registers[0] == 0x40 &&
+                    guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0) {
+                    // WQOPS_THREAD_KEVENT_RETURN: apply returned changes, then retire.
+                    workqApplyChanges(registers[1], registers[2]);
+                    registers[0] = threadReturn;
+                    registers[1] = registers[2] = registers[3] = 0;
+                }
                 if (registers[0] == threadReturn &&
                     guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0 &&
                     registers[1] == 0 && registers[2] == 0 && registers[3] == 0) {

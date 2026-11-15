@@ -225,7 +225,7 @@
         constexpr std::uint32_t keventWorkloop = 0x400U;
         const int kind = netSyscall == 363 ? 0 : netSyscall == 369 ? 1 : 2;
         const std::size_t stride = kind == 0 ? 32U : kind == 1 ? 48U : 64U;
-        const auto kq = static_cast<std::int32_t>(registers[0]);
+        auto kq = static_cast<std::int32_t>(registers[0]);
         const auto changesAddress = registers[1];
         const auto changeCount = std::max<std::int32_t>(static_cast<std::int32_t>(registers[2]), 0);
         const auto eventsAddress = registers[3];
@@ -244,17 +244,19 @@
             rawFail(EINVAL);
             continue;
         }
-        if ((flags & (keventWorkq | keventWorkqManager | keventWorkloop)) != 0) {
-            // A real kqueue descriptor rejects the workq flags; the process workq kqueue
-            // (kq == -1) and workloops are not modeled.
+        const bool workqKevent = (flags & (keventWorkq | keventWorkqManager)) != 0;
+        if ((flags & keventWorkloop) != 0 ||
+            (workqKevent && (kq != -1 || kind != 2))) {
+            // Workloops are not modeled; only the process workq kqueue (kq -1) is.
             rawFail(kq == -1 ? ENOTSUP : EINVAL);
             continue;
         }
-        if (!netFdUsable(kq)) {
+        if (workqKevent) kq = workqHostKqueue();
+        if (!workqKevent && !netFdUsable(kq)) {
             rawFail(EBADF);
             continue;
         }
-        bool immediate = (flags & keventImmediate) != 0 && kind != 0;
+        bool immediate = ((flags & keventImmediate) != 0 && kind != 0) || workqKevent;
         std::optional<std::uint64_t> deadline;
         if (timeoutAddress != 0) {
             std::int64_t pair[2] = {0, 0};
@@ -286,10 +288,37 @@
             }
             ++keptChanges;
         }
-        const auto hostFlags = flags & ~keventStackData;
+        const auto hostFlags = flags & ~(keventStackData | keventWorkq | keventWorkqManager);
         std::vector<std::uint8_t> events(static_cast<std::size_t>(eventCount) * stride);
         const auto delivered = netHostKevent(kind, kq, changes, keptChanges, events,
                                              eventCount, hostFlags);
+        if (workqKevent) {
+            // The host kqueue is not a workq kqueue and may not echo the
+            // registered priority, so remember it for delivery.
+            for (int i = 0; i < keptChanges; ++i) {
+                const auto* c = changes.data() + static_cast<std::size_t>(i) * stride;
+                std::int16_t f; std::uint16_t fl; std::uint32_t q; std::uint64_t id;
+                std::memcpy(&id, c, 8); std::memcpy(&f, c + 8, 2); std::memcpy(&fl, c + 10, 2);
+                std::memcpy(&q, c + 12, 4);
+                if ((fl & EV_ADD) != 0 && q != 0) guestWorkqKeventQos[{f, id}] = q;
+            }
+        }
+        if (workqKevent && std::getenv("ARM64_METAL_TRACE_WORKQ")) {
+            for (int i = 0; i < keptChanges; ++i) {
+                std::int16_t f; std::uint16_t fl; std::uint32_t ff; std::int64_t d;
+                std::uint64_t id;
+                const auto* c = changes.data() + static_cast<std::size_t>(i) * stride;
+                std::memcpy(&id, c, 8); std::memcpy(&f, c + 8, 2); std::memcpy(&fl, c + 10, 2);
+                std::memcpy(&ff, c + 24, 4); std::memcpy(&d, c + 32, 8);
+                std::cerr << "  change id=0x" << std::hex << id << " f=" << std::dec << f
+                          << " fl=0x" << std::hex << fl << " ff=0x" << ff << std::dec << " qos=0x" << std::hex << *reinterpret_cast<const std::uint32_t*>(c + 12) << std::dec
+                          << " data=" << d << '\n';
+            }
+        }
+        if (workqKevent && std::getenv("ARM64_METAL_TRACE_WORKQ"))
+            std::cerr << "workq-kevent changes=" << keptChanges << " flags=0x" << std::hex
+                      << flags << std::dec << " result=" << delivered << " errno=" << errno
+                      << '\n';
         if (delivered < 0) {
             rawFail(errno);
             continue;
