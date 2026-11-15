@@ -10212,9 +10212,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 result = dispatch_guest_host_service(hostRegisters, guestMemory, bootstrap,
                                                      hostServiceState, service);
             } catch (const std::exception& error) {
+                std::cerr << "arm64-metal: host service " << service << " failed at "
+                          << lastHostTransition << ": " << error.what() << '\n';
                 dumpTransitions();
-                throw std::runtime_error(std::string(error.what()) + " (host service " +
-                                         std::to_string(service) + " " + lastHostTransition + ")");
+                throw;
             }
             std::copy_n(hostRegisters.begin(), 36,
                         static_cast<std::uint64_t*>(stateBuffer.data()));
