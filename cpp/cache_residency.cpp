@@ -23,6 +23,38 @@ bool overlaps(std::int64_t lower, std::int64_t upper,
     return lower < otherUpper && otherLower < upper;
 }
 
+// A page window of a read-only, executable cache mapping that holds no
+// deferred segment of a loaded image.
+std::optional<CacheResidencyPlanner::DeferredSegment> textWindow(
+    const SharedCache& cache, std::int64_t address, std::size_t minimumBytes,
+    std::size_t pageSize, const std::vector<CacheResidencyPlanner::Span>& resident) {
+    if (pageSize == 0 || (pageSize & (pageSize - 1)) != 0) return std::nullopt;
+    const auto requestEnd = address + static_cast<std::int64_t>(minimumBytes);
+    for (const auto& region : cache.cacheRegions()) {
+        if ((region.protection & 7) != 5 || (region.maximumProtection & 2) != 0 ||
+            region.start < SharedCache::guestBase || region.start >= SharedCache::guestLimit ||
+            region.size > static_cast<std::uint64_t>(SharedCache::guestLimit - region.start)) continue;
+        const auto regionEnd = region.start + static_cast<std::int64_t>(region.size);
+        if (address < region.start || requestEnd > regionEnd) continue;
+        const auto mask = static_cast<std::int64_t>(pageSize - 1);
+        auto lower = std::max(address & ~mask, region.start);
+        auto upper = std::min(std::max((address & ~mask) + static_cast<std::int64_t>(pageSize),
+                                       requestEnd), regionEnd);
+        for (const auto& span : resident) {
+            if (!overlaps(lower, upper, span.logical_start, span.logical_end)) continue;
+            if (span.logical_start <= address && address < span.logical_end) return std::nullopt;
+            if (span.logical_end <= address) lower = std::max(lower, span.logical_end);
+            if (span.logical_start > address) upper = std::min(upper, span.logical_start);
+        }
+        if (requestEnd > upper) return std::nullopt;
+        const auto length = static_cast<std::uint64_t>(upper - lower);
+        return CacheResidencyPlanner::DeferredSegment{
+            lower, upper,
+            SharedCache::Segment{"__TEXT", cache.originalAddress(lower), length, 0, length, false}};
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::optional<CacheResidencyPlanner::Plan> CacheResidencyPlanner::plan(
@@ -139,6 +171,10 @@ std::optional<CacheResidencyPlanner::Plan> CacheResidencyPlanner::plan(
             }
             const auto logicalStart = cache.guestAddress(slot->address);
             pending = DeferredSegment{logicalStart, logicalStart + 8, *slot};
+        } else if (const auto text = textWindow(cache, address, minimumBytes, pageSize, resident)) {
+            // The real process maps the whole cache, so libobjc may read read-only
+            // text (e.g. relative method lists) of images that were never loaded.
+            pending = *text;
         } else {
             // Coalesced cache constants can lie outside all image segments and
             // include scalar data that has no slide/rebase entry.
