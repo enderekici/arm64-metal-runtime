@@ -3949,6 +3949,76 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             state[33] = 0;
             return true;
         };
+        environment.portTypes = [&]() {
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> ports;
+            std::set<std::uint32_t> names;
+            for (const auto& entry : guestReceiveRights) names.insert(entry.first);
+            for (const auto& entry : guestSendRightUrefs) {
+                if (entry.second != 0) names.insert(entry.first);
+            }
+            for (const auto name : names) {
+                std::uint32_t type = 0;
+                const auto receive = guestReceiveRights.find(name);
+                const auto send = guestSendRightUrefs.find(name);
+                const bool hasSend = send != guestSendRightUrefs.end() && send->second != 0;
+                if (receive != guestReceiveRights.end()) {
+                    type |= receive->second.portSet ? 0x80000U : 0x20000U;
+                }
+                if (hasSend) {
+                    type |= guestDeadPortNames.count(name) != 0 ? 0x100000U : 0x10000U;
+                }
+                ports.emplace_back(name, type);
+            }
+            return ports;
+        };
+        environment.allocateGuest = [&](const void* bytes, std::size_t size,
+                                        std::uint64_t& address) {
+            if (!hostServiceState.machVmAllocate || size == 0) return false;
+            const auto page = bootstrap.pageSize;
+            const auto rounded = (size + page - 1) & ~(page - 1);
+            if (hostServiceState.machVmAllocate(rounded, page, 3, 7, address, false, 1, 0) !=
+                0) {
+                return false;
+            }
+            try {
+                std::memcpy(guestMemory.buffer(address, size, true), bytes, size);
+            } catch (const std::exception&) {
+                return false;
+            }
+            return true;
+        };
+        environment.destroyPort = [&](std::uint32_t name) -> std::int32_t {
+            const auto receive = guestReceiveRights.find(name);
+            const auto send = guestSendRightUrefs.find(name);
+            const bool hasSend = send != guestSendRightUrefs.end() && send->second != 0;
+            if (receive == guestReceiveRights.end() && !hasSend) return KERN_INVALID_NAME;
+            if (receive != guestReceiveRights.end()) {
+                const auto waiting = guestMachReceiveWaiters.find(name);
+                if (waiting != guestMachReceiveWaiters.end()) {
+                    for (const auto threadId : waiting->second) {
+                        const auto blocked = guestMachBlockedReceives.find(threadId);
+                        auto* thread = guestScheduler.find(threadId);
+                        const auto* receiveWait = thread != nullptr && thread->wait.has_value()
+                            ? std::get_if<GuestMachReceiveWait>(&*thread->wait) : nullptr;
+                        if (blocked != guestMachBlockedReceives.end() &&
+                            receiveWait != nullptr && receiveWait->port == name) {
+                            guestMachBlockedReceives.erase(blocked);
+                            guestScheduler.wake(threadId,
+                                static_cast<std::int32_t>(machReceivePortChanged));
+                        }
+                    }
+                    guestMachReceiveWaiters.erase(waiting);
+                }
+                guestReceiveRights.erase(receive);
+                guestMachMessageQueues.erase(name);
+                guestPortSetMembers.erase(name);
+                guestPortGuards.erase(name);
+            }
+            if (send != guestSendRightUrefs.end()) guestSendRightUrefs.erase(send);
+            guestDeadPortNames.erase(name);
+            hostServiceState.guestBootstrapSendRights.erase(name);
+            return KERN_SUCCESS;
+        };
         environment.threadHandle = [&](std::uint64_t threadId) -> std::uint64_t {
             const auto* thread = guestScheduler.find(threadId);
             return thread == nullptr ? 0 : static_cast<std::uint64_t>(thread->tsdAddress);

@@ -1,6 +1,8 @@
 #include "guest_mach_models.hpp"
 
 #include <mach/exception_types.h>
+#include <mach/mach.h>
+#include <mach/mach_host.h>
 
 #include <cstring>
 
@@ -507,6 +509,41 @@ bool GuestMachModels::handle_task(const Request& request, Reply& reply) {
     case 3414:  // task_get_exception_ports(mask)
         exception_ports(request, reply, true);
         return true;
+    case 3205:  // mach_port_destroy(name)
+        if (request.size != 36 || !env_.destroyPort) return false;
+        reply.code = env_.destroyPort(word(request, 32));
+        return true;
+    case 3200: {  // mach_port_names: two out-of-line arrays
+        if (request.size != 24 || !env_.portTypes || !env_.allocateGuest) return false;
+        const auto ports = env_.portTypes();
+        std::vector<std::uint32_t> names;
+        std::vector<std::uint32_t> types;
+        for (const auto& port : ports) {
+            names.push_back(port.first);
+            types.push_back(port.second);
+        }
+        std::uint64_t namesAddress = 0;
+        std::uint64_t typesAddress = 0;
+        const auto bytes = names.size() * sizeof(std::uint32_t);
+        if (!env_.allocateGuest(names.data(), bytes, namesAddress) ||
+            !env_.allocateGuest(types.data(), bytes, typesAddress)) {
+            reply.code = kernNoSpace;
+            return true;
+        }
+        reply.complex = true;
+        append32(reply.body, 2);
+        for (const auto address : {namesAddress, typesAddress}) {
+            append32(reply.body, static_cast<std::uint32_t>(address));
+            append32(reply.body, static_cast<std::uint32_t>(address >> 32));
+            append32(reply.body, 0x01000101U);  // deallocate, virtual copy, OOL type
+            append32(reply.body, static_cast<std::uint32_t>(bytes));
+        }
+        append32(reply.body, 0);
+        append32(reply.body, 1);
+        append32(reply.body, static_cast<std::uint32_t>(names.size()));
+        append32(reply.body, static_cast<std::uint32_t>(names.size()));
+        return true;
+    }
     case 3420:  // task_policy_set(flavor, count, info[count])
         if (request.size < 40 || count > 16) return false;
         if (request.size != 40 + 4 * static_cast<std::size_t>(count)) {
@@ -543,11 +580,41 @@ bool GuestMachModels::handle_host(const Request& request, Reply& reply) {
         reply.code = kernInvalidArgument;
         return true;
     }
-    if (request.id == 222) {  // host_create_mach_voucher(recipes)
+    switch (request.id) {
+    case 213:  // processor_set_default
+        if (request.size != 24) return false;
+        if (processorSetName_ == 0 || !env_.holdsSendRight(processorSetName_)) {
+            processorSetName_ = env_.allocateName();
+        }
+        port_reply(reply, processorSetName_);
+        return true;
+    case 216:    // host_statistics(flavor, count)
+    case 219: {  // host_statistics64(flavor, count)
+        if (request.size != 40) return false;
+        const auto flavor = static_cast<host_flavor_t>(word(request, 32));
+        const auto count = word(request, 36);
+        constexpr std::uint32_t maxInfoWords = 1024;
+        integer_t info[maxInfoWords] = {};
+        mach_msg_type_number_t produced = count > maxInfoWords ? maxInfoWords : count;
+        static const mach_port_t hostPort = mach_host_self();
+        const auto status = request.id == 216
+            ? host_statistics(hostPort, flavor, info, &produced)
+            : host_statistics64(hostPort, flavor, info, &produced);
+        if (status != KERN_SUCCESS) {
+            reply.code = status;
+            return true;
+        }
+        append32(reply.extra, produced);
+        for (mach_msg_type_number_t i = 0; i < produced; ++i) {
+            append32(reply.extra, static_cast<std::uint32_t>(info[i]));
+        }
+        return true;
+    }
+    case 222: {  // host_create_mach_voucher(recipes)
         const auto count = word(request, 32);
         if (request.size < 36 || count > maxRecipeBytes ||
             request.size != 36 + ((static_cast<std::size_t>(count) + 3) & ~std::size_t{3})) {
-            reply.code = -304;  // MIG_BAD_ARGUMENTS
+            reply.code = migBadArguments;
             return true;
         }
         std::size_t index = 0;
@@ -559,7 +626,9 @@ bool GuestMachModels::handle_host(const Request& request, Reply& reply) {
         port_reply(reply, voucher_name(index));
         return true;
     }
-    return false;
+    default:
+        return false;
+    }
 }
 
 // thread_get_exception_ports / task_get_exception_ports: no handler ports are

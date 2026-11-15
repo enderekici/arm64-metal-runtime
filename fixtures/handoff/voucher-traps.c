@@ -356,11 +356,7 @@ static void task_rpcs(void) {
   rpc(task, 3205, a, 3); shape("mach_port_destroy bad name", 1); nl();
   {
     u32 port = 0;
-    a[2] = 1;  // MACH_PORT_RIGHT_RECEIVE
-    rpc(task, 3204, a, 3);  // mach_port_allocate(right)
-    port = rep[7];
-    ps("mach_port_allocate"); pkh("r", last_r); pk("ret", (i32)rep[8]); pk("nonnull", rep[9] != 0); nl();
-    port = rep[9];
+    TRAP(16, task, 1, &port, 0);  // mach_port_allocate(RECEIVE)
     a[2] = port;
     rpc(task, 3205, a, 3); shape("mach_port_destroy receive", 1); nl();
     rpc(task, 3205, a, 3); shape("mach_port_destroy again", 1); nl();
@@ -395,8 +391,28 @@ static void host_rpcs(void) {
 
 static void mach_port_names_rpc(void) {
   u32 a[4] = {0, 1, 0, 0};
+  u32 port = 0, send_port = 0;
+  TRAP(16, task, 1, &port, 0);
+  TRAP(16, task, 1, &send_port, 0);
+  u32 insert[5] = {0, 0, 0, 0, 0};
+  TRAP(21, task, send_port, send_port, 20);  // insert_right(MAKE_SEND)
   rpc(task, 3200, a, 0);
-  dump("mach_port_names");
+  ps("mach_port_names"); pkh("r", last_r); pkh("bits", rep[0]); pk("id", (i32)rep[5]);
+  pk("desc", rep[6]);
+  const u32 *names = (const u32 *)(u64)u64at(7);
+  const u32 *types = (const u32 *)(u64)u64at(11);
+  u32 count = rep[17];
+  pk("sizes_match", rep[10] == 4 * count && rep[14] == 4 * count && rep[18] == count);
+  pk("counts_ok", count >= 3);
+  u32 want[3] = {task, port, send_port};
+  static const char *const labels[3] = {" task_type=", " receive_type=", " send_receive_type="};
+  for (unsigned w = 0; w < 3; w++) {
+    for (unsigned i = 0; i < count; i++) {
+      if (names[i] == want[w]) { ps(labels[w]); ph(types[i]); }
+    }
+  }
+  (void)insert;
+  nl();
 }
 
 static void procinfo(void) {

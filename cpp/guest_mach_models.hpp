@@ -117,6 +117,7 @@ private:
     std::map<std::uint64_t, std::size_t> threadVoucher_;
     std::map<std::uint64_t, ThreadPolicy> threadPolicy_;
     std::map<std::uint64_t, std::vector<std::uint8_t>> threadNames_;
+    std::uint32_t processorSetName_ = 0;
 };
 
 }  // namespace arm64metal::mach_models
