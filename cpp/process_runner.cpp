@@ -12921,9 +12921,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const bool clockRemote = guestClockServiceIds.find(remote) !=
                                          guestClockServiceIds.end();
                 const bool voucherRemote = machModels.is_voucher_port(remote);
+                const bool bootstrapRemote = remote == guestMachBootstrapPort &&
+                                             messageId == 0x400000cf;
                 const bool specialRemote = remote == guestMachTaskPort ||
                                            remote == guestMachHostPort || clockRemote ||
-                                           threadRemote || voucherRemote;
+                                           threadRemote || voucherRemote || bootstrapRemote;
                 const bool knownKernelObjectShape = messageId == 200 || messageId == 3207 ||
                     messageId == 4822 || messageId == 8000 || messageId == 8001;
                 const bool kernelObjectSend = sendRequested && specialRemote &&
@@ -13014,7 +13016,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         const auto replyName = static_cast<std::uint32_t>(registers[3] >> 32);
                         const char* role = remote == guestMachTaskPort ? "guest-task"
                             : remote == guestMachHostPort ? "guest-host"
-                            : threadRemote ? "guest-thread" : "guest-clock";
+                            : threadRemote ? "guest-thread"
+                            : bootstrapRemote ? "guest-bootstrap" : "guest-clock";
                         if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0) {
                             result = machSendInvalidDestination;
                         } else if ((bits & 0x1f) != machMsgTypeCopySend ||
@@ -13109,6 +13112,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             }
                             std::uint32_t modelSendResult = 0;
                             bool modelComplex = false;
+                            bool modelRaw = false;
                             std::vector<std::uint32_t> modelRights;
                             if (!modeled) {
                                 mach_models::Request modelRequest;
@@ -13127,13 +13131,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 modelRequest.data = requestBytes.data();
                                 modelRequest.size = requestBytes.size();
                                 mach_models::Reply modelReply;
-                                if (machModels.handle(modelRequest, modelReply)) {
+                                const bool modelHandled = bootstrapRemote
+                                    ? machModels.bootstrap_request(
+                                          requestBytes.data(), requestBytes.size(),
+                                          static_cast<std::uint32_t>(::getpid()), modelReply)
+                                    : machModels.handle(modelRequest, modelReply);
+                                if (modelHandled) {
+                                    modelRaw = modelReply.raw;
                                     modeled = true;
                                     modelSendResult = modelReply.sendResult;
                                     replyCode = modelReply.code;
                                     modelComplex = modelReply.complex;
                                     modelRights = std::move(modelReply.rights);
-                                    replyExtra = modelComplex ? std::move(modelReply.body)
+                                    replyExtra = (modelComplex || modelRaw) ? std::move(modelReply.body)
                                                               : std::move(modelReply.extra);
                                 }
                             }
@@ -13151,12 +13161,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             }
                             if (modelSendResult != 0) {
                                 result = modelSendResult;
-                            } else if (replyName != 0 && modelComplex) {
+                            } else if (replyName != 0 && (modelComplex || modelRaw)) {
                                 GuestLocalMessage message{
                                     static_cast<std::uint32_t>(sizeof(mach_msg_header_t) +
                                         replyExtra.size()),
-                                    MACH_MSGH_BITS_COMPLEX, 0, 0,
-                                    static_cast<std::int32_t>(messageId + 100), {}, {},
+                                    modelComplex ? MACH_MSGH_BITS_COMPLEX : 0U, 0, 0,
+                                    bootstrapRemote ? 0x20000000
+                                        : static_cast<std::int32_t>(messageId + 100), {}, {},
                                     MACH_MSG_TYPE_MOVE_SEND_ONCE << 8};
                                 message.body = std::move(replyExtra);
                                 message.kernelRights = true;

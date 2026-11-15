@@ -3,6 +3,7 @@
 #include <mach/mach.h>
 typedef unsigned int u32;
 typedef int i32;
+typedef unsigned char u8;
 typedef unsigned long long u64;
 
 static u64 sys(long n, u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h) {
@@ -455,6 +456,86 @@ static void procinfo(void) {
   ps("proc_info call 6"); pk("r", (long)r); pk("carry", (long)carry); nl();
 }
 
+
+// bootstrap_look_up as libxpc sends it: an xpc dictionary to the bootstrap port, answered with
+// a port descriptor or an error. execcnt and pid values differ per process and are masked.
+static unsigned put_str(u8 *d, const char *k) {
+  unsigned n = 0;
+  while (k[n]) { d[n] = (u8)k[n]; n++; }
+  d[n++] = 0;
+  while (n & 3) d[n++] = 0;
+  return n;
+}
+static void bootstrap_lookup(const char *name) {
+  u32 m[128];
+  zero(m, sizeof(m));
+  u32 gr = (u32)TRAP(26, 0, 0, 0, 0);
+  m[0] = BITS_CALL; m[1] = 36; m[2] = task; m[3] = gr; m[5] = 3409; m[6] = 0; m[7] = 1; m[8] = 4;
+  sys(-47, (u64)m, OPT_SEND | OPT_RCV | OPT_KOBJ, 36ull << 32 | BITS_CALL, (u64)gr << 32 | task,
+      3409ull << 32, (u64)gr << 32, sizeof(m), 0);
+  u32 bport = m[0] >> 31 ? m[7] : 0;
+  TRAP(19, task, gr, 1, (u64)(i32)-1);
+  zero(m, sizeof(m));
+  u8 *d = (u8 *)&m[10];
+  unsigned o = 0;
+  ((u32 *)d)[0] = 0x40585043u; ((u32 *)d)[1] = 5; ((u32 *)d)[2] = 0xf000;
+  o = 20;
+  unsigned entries = 0;
+  const char *u64k[] = {"handle", "flags"};
+  for (int i = 0; i < 2; i++) { o += put_str(d + o, u64k[i]); ((u32 *)(d + o))[0] = 0x4000; o += 12; entries++; }
+  o += put_str(d + o, "instance"); ((u32 *)(d + o))[0] = 0xa000; o += 20; entries++;
+  o += put_str(d + o, "name"); ((u32 *)(d + o))[0] = 0x9000;
+  unsigned len = 0; while (name[len]) len++;
+  ((u32 *)(d + o))[1] = len + 1; o += 8;
+  for (unsigned i = 0; i <= len; i++) d[o + i] = (u8)name[i];
+  o += (len + 1 + 3) & ~3u; entries++;
+  o += put_str(d + o, "type"); ((u32 *)(d + o))[0] = 0x4000; ((u32 *)(d + o))[1] = 7; o += 12; entries++;
+  o += put_str(d + o, "targetpid"); ((u32 *)(d + o))[0] = 0x3000; o += 12; entries++;
+  o += put_str(d + o, "domain-port"); ((u32 *)(d + o))[0] = 0xd000; o += 4; entries++;
+  ((u32 *)d)[3] = o - 16;
+  ((u32 *)d)[4] = entries;
+  reply = (u32)TRAP(26, 0, 0, 0, 0);
+  m[0] = BITS_CALL | 0x80000000u;
+  m[1] = 40 + o;
+  m[2] = bport; m[3] = reply; m[5] = 0x400000cfu;
+  m[6] = 1; m[7] = bport; m[8] = 0; m[9] = 0x13u << 16;
+  u32 total = m[1];
+  u64 r = sys(-47, (u64)m, OPT_SEND | 0x400000000ull, (u64)total << 32 | m[0],
+              (u64)reply << 32 | bport, 0x400000cfull << 32, (u64)reply << 32 | 1, 0, 0);
+  if ((r & 0xffffffffu) == 0) {
+    zero(m, sizeof(m));
+    r = sys(-47, (u64)m, OPT_RCV | OPT_TIMEOUT, 0, 0, 0, (u64)reply << 32, sizeof(m), 500);
+  }
+  ps("lookup "); ps(name); pkh("r", r & 0xffffffffu);
+  if ((r & 0xffffffffu) == 0) {
+    pkh("bits", m[0]); pk("id", (i32)m[5]);
+    unsigned i = 6;
+    if (m[0] >> 31) { pk("desc", m[6]); pkh("disp", m[9]); i = 10; }
+    u8 *p = (u8 *)&m[i];
+    unsigned end = m[1] - i * 4;
+    pkh("magic", ((u32 *)p)[0]); pk("ver", ((u32 *)p)[1]); pkh("dict", ((u32 *)p)[2]);
+    pk("dsz", ((u32 *)p)[3] + 16 == end ? -1 : ((u32 *)p)[3]); pk("n", ((u32 *)p)[4]);
+    unsigned q = 20;
+    for (u32 e = 0; e < ((u32 *)p)[4] && q < end; e++) {
+      const char *key = (const char *)(p + q);
+      ps(" ["); ps(key);
+      unsigned kl = 0; while (p[q + kl]) kl++;
+      q += (kl + 1 + 3) & ~3u;
+      u32 t = ((u32 *)(p + q))[0]; q += 4;
+      ps(" "); ph(t);
+      if (t == 0x4000 || t == 0x3000) {
+        if (key[0] == 'r' && key[1] == 'e') ps(" *"); else { ps(" "); ph(((u32 *)(p + q))[0]); }
+        q += 8;
+      } else if (t == 0x9000) {
+        u32 l = ((u32 *)(p + q))[0]; q += 4; ps(" "); ps((const char *)(p + q)); q += (l + 3) & ~3u;
+      } else if (t == 0xa000) q += 16;
+    }
+    ps(" ]");
+  }
+  nl();
+  TRAP(19, task, reply, 1, (u64)(i32)-1);
+}
+
 // Mach traps with no kernel implementation raise SIGSYS; verified through the exit status of a
 // child process only natively, so here only the in-range numbers that return are checked.
 int main(int argc, char **argv) {
@@ -469,6 +550,7 @@ int main(int argc, char **argv) {
   else if (section[0] == 'h') host_rpcs();
   else if (section[0] == 'n') mach_port_names_rpc();
   else if (section[0] == 'p') procinfo();
+  else if (section[0] == 'b') { for (int i = 2; i < argc; i++) bootstrap_lookup(argv[i]); }
   else if (section[0] == 's') {  // sigsys <trap>: the trap must raise SIGSYS, killing the process
     long n = 0;
     for (const char *c = argv[2]; *c; c++) n = n * 10 + (*c - '0');

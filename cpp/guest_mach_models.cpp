@@ -4,6 +4,7 @@
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace arm64metal::mach_models {
@@ -55,6 +56,33 @@ void append_bytes_padded(std::vector<std::uint8_t>& out, const std::vector<std::
 }
 
 }  // namespace
+
+bool known_bootstrap_service(const std::string& name) {
+    static const char* const services[] = {
+        "com.apple.system.notification_center", "com.apple.windowserver.active",
+        "com.apple.cfprefsd.daemon", "com.apple.cfprefsd.agent", "com.apple.logd",
+        "com.apple.logd.events", "com.apple.system.logger",
+        "com.apple.system.opendirectoryd.libinfo", "com.apple.system.opendirectoryd.api",
+        "com.apple.distributed_notifications@Uv3", "com.apple.coreservices.launchservicesd",
+        "com.apple.lsd.mapdb", "com.apple.pasteboard.1", "com.apple.SecurityServer",
+        "com.apple.trustd", "com.apple.trustd.agent", "com.apple.xpc.smd",
+        "com.apple.diagnosticd", "com.apple.analyticsd", "com.apple.containermanagerd",
+        "com.apple.runningboard", "com.apple.fonts", "com.apple.tccd",
+        "com.apple.dnssd.service", "com.apple.nsurlsessiond",
+        "com.apple.coreservices.quarantine-resolver",
+        "com.apple.system.DirectoryService.libinfo_v1",
+        "com.apple.system.DirectoryService.membership_v1", "com.apple.bsd.dirhelper",
+        "com.apple.metadata.mds", "com.apple.audio.coreaudiod", "com.apple.cvmsServ",
+        "com.apple.CoreServices.coreservicesd", "com.apple.dock.server",
+        "com.apple.ctkd.token-client", "com.apple.usymptomsd",
+        "com.apple.CoreSimulator.CoreSimulatorService", "com.apple.PowerManagement.control",
+        "com.apple.SystemConfiguration.configd", "com.apple.SystemConfiguration.helper",
+        "com.apple.iohideventsystem", "com.apple.lskdd", "com.apple.sysmond"};
+    for (const auto* service : services) {
+        if (name == service) return true;
+    }
+    return false;
+}
 
 bool GuestMachModels::is_voucher_port(std::uint32_t name) const {
     return voucher_for(name) != 0;
@@ -675,6 +703,148 @@ void GuestMachModels::exception_ports(const Request& request, Reply& reply, bool
     for (const auto& entry : entries) append32(reply.body, entry.mask);
     for (const auto& entry : entries) append32(reply.body, entry.behavior);
     for (const auto& entry : entries) append32(reply.body, entry.flavor);
+}
+
+namespace {
+
+constexpr std::uint32_t xpcMagic = 0x40585043U;
+constexpr std::uint32_t xpcTypeDictionary = 0xf000U;
+constexpr std::uint32_t xpcTypeUint64 = 0x4000U;
+constexpr std::uint32_t xpcTypeInt64 = 0x3000U;
+constexpr std::uint32_t xpcTypeString = 0x9000U;
+constexpr std::uint32_t xpcTypeUuid = 0xa000U;
+constexpr std::uint32_t xpcTypePort = 0xd000U;
+constexpr std::uint32_t xpcTypeBool = 0x2000U;
+constexpr std::uint64_t xpcRoutineLookUp = 7;
+constexpr std::int64_t bootstrapUnknownService = 1102;
+
+void append_key(std::vector<std::uint8_t>& out, const char* key) {
+    const auto length = std::strlen(key) + 1;
+    out.insert(out.end(), key, key + length);
+    while (out.size() % 4 != 0) out.push_back(0);
+}
+
+void append_uint64(std::vector<std::uint8_t>& out, const char* key, std::uint64_t value,
+                   std::uint32_t type = xpcTypeUint64) {
+    append_key(out, key);
+    append32(out, type);
+    append32(out, static_cast<std::uint32_t>(value));
+    append32(out, static_cast<std::uint32_t>(value >> 32));
+}
+
+}  // namespace
+
+// Models the launchd end of bootstrap_look_up. The request is an xpc dictionary
+// {handle, instance, flags, name, type, targetpid, domain-port}; the reply is a
+// dictionary with the requester's pid and either a service port or an error.
+bool GuestMachModels::bootstrap_request(const std::uint8_t* data, std::size_t size,
+                                        std::uint32_t pid, Reply& reply) {
+    Request view;
+    view.data = data;
+    view.size = size;
+    if (size < 28) return false;
+    const auto descriptors = word(view, 24);
+    const auto start = 28 + 12 * static_cast<std::size_t>(descriptors);
+    if (descriptors > 8 || size < start + 20) return false;
+    std::size_t offset = start;
+    if (word(view, offset) != xpcMagic || word(view, offset + 4) != 5 ||
+        word(view, offset + 8) != xpcTypeDictionary) {
+        return false;
+    }
+    const auto dictionarySize = word(view, offset + 12);
+    if (dictionarySize < 4 || offset + 16 + dictionarySize > size + 3) return false;
+    const auto entries = word(view, offset + 16);
+    offset += 20;
+    const auto end = std::min(size, start + 16 + static_cast<std::size_t>(dictionarySize));
+    std::string name;
+    std::uint64_t type = 0;
+    bool haveName = false;
+    bool haveType = false;
+    for (std::uint32_t entry = 0; entry < entries; ++entry) {
+        std::string key;
+        while (offset < end && data[offset] != 0) key.push_back(static_cast<char>(data[offset++]));
+        if (offset >= end) return false;
+        offset = (offset + 4) & ~std::size_t{3};
+        if (offset + 4 > end) return false;
+        const auto kind = word(view, offset);
+        offset += 4;
+        switch (kind) {
+        case xpcTypeUint64:
+        case xpcTypeInt64: {
+            if (offset + 8 > end) return false;
+            std::uint64_t value = 0;
+            std::memcpy(&value, data + offset, 8);
+            offset += 8;
+            if (key == "type") { type = value; haveType = true; }
+            break;
+        }
+        case xpcTypeString: {
+            if (offset + 4 > end) return false;
+            const auto length = word(view, offset);
+            offset += 4;
+            if (length == 0 || offset + length > end) return false;
+            if (key == "name") {
+                name.assign(reinterpret_cast<const char*>(data + offset), length - 1);
+                haveName = true;
+            }
+            offset += (static_cast<std::size_t>(length) + 3) & ~std::size_t{3};
+            break;
+        }
+        case xpcTypeUuid:
+            offset += 16;
+            break;
+        case xpcTypePort:
+            break;
+        case xpcTypeBool:
+            offset += 4;
+            break;
+        default:
+            return false;
+        }
+        if (offset > end) return false;
+    }
+    if (!haveType || type != xpcRoutineLookUp || !haveName) return false;
+
+    std::vector<std::uint8_t> payload;
+    append32(payload, xpcMagic);
+    append32(payload, 5);
+    append32(payload, xpcTypeDictionary);
+    std::vector<std::uint8_t> dictionary;
+    append32(dictionary, 3);
+    append_uint64(dictionary, "rec_execcnt", 1);
+    append_uint64(dictionary, "req_pid", pid);
+    std::uint32_t port = 0;
+    if (known_bootstrap_service(name)) {
+        auto found = servicePorts_.find(name);
+        if (found == servicePorts_.end() || !env_.holdsSendRight(found->second)) {
+            const auto fresh = env_.allocateName();
+            if (fresh == 0) return false;
+            if (found == servicePorts_.end()) {
+                found = servicePorts_.emplace(name, fresh).first;
+            } else {
+                found->second = fresh;
+            }
+        }
+        port = found->second;
+        append_key(dictionary, "port");
+        append32(dictionary, xpcTypePort);
+    } else {
+        append_uint64(dictionary, "error", static_cast<std::uint64_t>(bootstrapUnknownService),
+                      xpcTypeInt64);
+    }
+    append32(payload, static_cast<std::uint32_t>(dictionary.size()));
+    payload.insert(payload.end(), dictionary.begin(), dictionary.end());
+    if (port != 0) {
+        reply.complex = true;
+        append32(reply.body, 1);
+        append32(reply.body, port);
+        append32(reply.body, 0);
+        append32(reply.body, machMsgTypeMoveSend << 16);
+        reply.rights.push_back(port);
+    }
+    reply.raw = true;
+    reply.body.insert(reply.body.end(), payload.begin(), payload.end());
+    return true;
 }
 
 // PROC_INFO_CALL_SETCONTROL against the calling process.

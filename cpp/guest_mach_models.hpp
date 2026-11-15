@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -58,12 +59,18 @@ struct Reply {
     std::vector<std::uint8_t> extra;
     // Complex reply: everything after the header, descriptors included.
     bool complex = false;
+    // Body queued verbatim, without the MIG NDR/return-code prefix.
+    bool raw = false;
     std::vector<std::uint8_t> body;
     // Names that gain one send uref when the reply is received.
     std::vector<std::uint32_t> rights;
 };
 
 enum class TrapOutcome { Unhandled, Handled, Sigsys };
+
+// Services the host launchd resolves for an ordinary user process. Anything
+// else answers BOOTSTRAP_UNKNOWN_SERVICE (1102).
+[[nodiscard]] bool known_bootstrap_service(const std::string& name);
 
 class GuestMachModels {
 public:
@@ -77,6 +84,11 @@ public:
     // Mach traps -69..-75. Arguments are read from and the result written to
     // regs[0..7].
     [[nodiscard]] TrapOutcome trap(std::int64_t number, std::uint64_t* regs);
+
+    // launchd's xpc-pipe look-up (message id 0x400000cf) sent to the bootstrap
+    // port. Returns false when the request is not a recognised look-up.
+    [[nodiscard]] bool bootstrap_request(const std::uint8_t* data, std::size_t size,
+                                         std::uint32_t pid, Reply& reply);
 
     // proc_info(PROC_INFO_CALL_SETCONTROL, ...); returns an errno.
     [[nodiscard]] std::uint32_t proc_info_setcontrol(
@@ -118,6 +130,7 @@ private:
     std::map<std::uint64_t, ThreadPolicy> threadPolicy_;
     std::map<std::uint64_t, std::vector<std::uint8_t>> threadNames_;
     std::uint32_t processorSetName_ = 0;
+    std::map<std::string, std::uint32_t> servicePorts_;
 };
 
 }  // namespace arm64metal::mach_models
