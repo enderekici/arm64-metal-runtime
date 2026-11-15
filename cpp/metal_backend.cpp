@@ -106,34 +106,11 @@ std::string osBuild() {
     return buffer;
 }
 
-#ifndef ARM64_METAL_GENERATOR_HASH
-#define ARM64_METAL_GENERATOR_HASH ""
-#endif
-
-// Identity of what determines the generated MSL and the compiled pipelines:
-// a build-time hash of the generator sources (Makefile GENERATOR_HASH), the OS
-// build and the GPU. Host-only edits (process_runner.cpp, raw_*.inc) do not
-// change it. Builds without the generator hash fall back to the runtime binary
-// path/size/mtime so a stale cache can never be read as current.
+// Identity of the compiled-pipeline archives: OS build and GPU only. Metal keys
+// archive entries by function and pipeline descriptor, so a changed source
+// simply misses; host-only edits and regenerated MSL need no new directory.
 std::string cacheIdentity(const std::string& gpuName) {
     std::uint64_t hash = 14695981039346656037ull;
-    const std::string generator = ARM64_METAL_GENERATOR_HASH;
-    if (!generator.empty()) {
-        hash = fnv1a(hash, generator.data(), generator.size());
-    } else {
-        char path[4096];
-        std::uint32_t size = sizeof(path);
-        if (_NSGetExecutablePath(path, &size) == 0) {
-            hash = fnv1a(hash, path, std::strlen(path));
-            struct stat info;
-            if (stat(path, &info) == 0) {
-                const std::int64_t fields[3] = {static_cast<std::int64_t>(info.st_size),
-                                                static_cast<std::int64_t>(info.st_mtimespec.tv_sec),
-                                                static_cast<std::int64_t>(info.st_mtimespec.tv_nsec)};
-                hash = fnv1a(hash, fields, sizeof(fields));
-            }
-        }
-    }
     const std::string os = osBuild();
     hash = fnv1a(hash, os.data(), os.size());
     hash = fnv1a(hash, gpuName.data(), gpuName.size());
@@ -246,7 +223,6 @@ struct KernelCache {
         cache->libraryDirectory = cache->directory + "/lib";
         mkdir(cache->libraryDirectory.c_str(), 0755);
         cache->libraryEnabled = std::getenv("ARM64_METAL_NO_LIBRARY_STORE") == nullptr;
-        cache->librarySalt = cache->key + "/" + osBuild();
         const std::string prefix = cache->key + ".";
         if (DIR* handle = opendir(dir)) {
             while (dirent* entry = readdir(handle)) {
@@ -318,6 +294,8 @@ struct KernelCache {
             toolsResolved = true;
             metalTool = toolPath("metal");
             metallibTool = toolPath("metallib");
+            librarySalt = osBuild() + "|" + metalTool + "|" + metallibTool +
+                          "|offline-default-std-default-fastmath";
         }
         return !metalTool.empty() && !metallibTool.empty();
     }
@@ -330,6 +308,7 @@ struct KernelCache {
     // in process.
     MTL::Library* loadStoredLibrary(const std::string& source) {
         if (!libraryEnabled) return nullptr;
+        resolveTools();
         const std::string name = sha256Hex(source, librarySalt);
         const std::string final = libraryDirectory + "/" + name + ".metallib";
         auto load = [&]() -> MTL::Library* {
