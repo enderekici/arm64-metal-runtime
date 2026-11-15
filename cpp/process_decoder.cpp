@@ -7,6 +7,8 @@
 #include "process_vector_ops.hpp"
 #include "shared_cache.hpp"
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -202,6 +204,17 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return translate_core::make_operation_instruction(
         *operation, successors, translate_core::LoweringMode::Process,
         guestCodeLimit, static_cast<std::uint64_t>(pc));
+  }
+  // SIMD&FP data processing (bits 27:25 = 111) with bit 31 set is only the
+  // 64-bit FP<->integer conversions (0x9e) and the 0xce/0xcf crypto groups.
+  // The AdvSIMD lowerers below match on bits 28:24 alone, so keep every other
+  // such word away from them instead of mis-lowering it as a vector op.
+  if ((bits & 0x8e000000) == 0x8e000000 && (bits >> 24) != 0x9e) {
+    if (auto lowered = lower_vector_crypto(bits, pc)) return *lowered;
+    std::ostringstream message;
+    message << "Unsupported ARM64 instruction 0x" << std::hex << std::setw(8)
+            << std::setfill('0') << bits << " at __text+0x" << pc;
+    throw GuestError(message.str());
   }
   auto decodedOperation = translate_core::decode_operation(bits);
   if (!decodedOperation) {
