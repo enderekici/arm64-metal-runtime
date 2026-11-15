@@ -2516,7 +2516,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::uint64_t stopPcForDiagnostic = 0;
     std::array<std::string, 32> transitionHistory;
     std::size_t transitionHistoryCount = 0;
+    static const bool traceTransitions = [] {
+        const char* value = std::getenv("ARM64_METAL_TRACE_TRANSITIONS");
+        return value != nullptr && value[0] == '1';
+    }();
     const auto recordTransition = [&](const std::string& entry) {
+        if (traceTransitions) std::cerr << "arm64-metal transition " << entry << '\n';
         transitionHistory[transitionHistoryCount++ % transitionHistory.size()] = entry;
     };
     std::function<void(std::uint64_t)> describeStopPc;
