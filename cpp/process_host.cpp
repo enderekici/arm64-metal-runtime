@@ -596,7 +596,11 @@ void GuestMemory::add_mapping(GuestMemoryMapping mapping) {
     for (const auto& existing : mappings_) {
         if (mapping.logicalBegin < existing.logicalEnd &&
             existing.logicalBegin < mapping.logicalEnd) {
-            throw std::invalid_argument("Guest memory mapping overlaps an existing mapping");
+            std::ostringstream message;
+            message << std::hex << "Guest memory mapping overlaps an existing mapping: new [0x"
+                    << mapping.logicalBegin << ",0x" << mapping.logicalEnd << ") existing [0x"
+                    << existing.logicalBegin << ",0x" << existing.logicalEnd << ")";
+            throw std::invalid_argument(message.str());
         }
     }
     mappings_.push_back(mapping);
