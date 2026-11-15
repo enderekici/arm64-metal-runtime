@@ -10,6 +10,7 @@
 #include "darwin_bridge.hpp"
 #include "guest_signal_runtime.hpp"
 #include "guest_scheduler.hpp"
+#include "guest_survey.hpp"
 #include "guest_tlv.hpp"
 #include "gpu_interpreter.hpp"
 #include "metal_backend.hpp"
@@ -10310,16 +10311,35 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 " x3=0x" + hexadecimal(registers[3]) + " x4=0x" + hexadecimal(registers[4]) +
                 " x5=0x" + hexadecimal(registers[5]));
             progressTrace.event("raw-syscall", registers[33], syscall);
+            const auto survey = [&](std::string_view kind, std::int64_t num, std::string_view sub,
+                                    std::string_view detail = {}) {
+                guest_survey::note(kind, num, sub, registers[33], registers[30],
+                                   guestScheduler.current_id(), detail);
+            };
+            if (guest_survey::boundary_enabled()) {
+                const auto signedSyscall = static_cast<std::int64_t>(syscall);
+                guest_survey::boundary(signedSyscall < 0 ? "mach_trap" : "syscall",
+                    signedSyscall < 0 ? -signedSyscall : signedSyscall,
+                    signedSyscall == -47 ? std::to_string(registers[4] >> 32) : std::string(),
+                    registers, 8, registers[33], registers[30], guestScheduler.current_id());
+            }
             // Raw BSD stubs return the error in x0 with carry set. The guest's
             // cerror path does not populate errno from it here, so also store it
             // in the current thread's errno slot as the host-service paths do.
-            const auto rawFail = [&](int error) {
+            const auto rawFailQuiet = [&](int error) {
                 const auto value = static_cast<std::uint32_t>(error);
                 std::memcpy(guestMemory.buffer(bootstrap.errnoSlot, sizeof(value), true),
                             &value, sizeof(value));
                 registers[0] = static_cast<std::uint64_t>(error);
                 registers[32] |= 8U;
                 registers[34] = 0;
+            };
+            const auto rawFail = [&](int error) {
+                if (error == ENOTSUP || error == ENOSYS) {
+                    survey("errno_stub", static_cast<std::int64_t>(syscall),
+                           error == ENOSYS ? "ENOSYS" : "ENOTSUP");
+                }
+                rawFailQuiet(error);
             };
             const auto rawOk = [&](std::uint64_t result) {
                 registers[0] = result;
@@ -10910,6 +10930,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto outputSize = static_cast<std::int32_t>(registers[5]);
                 const auto ownPid = static_cast<std::int32_t>(::getpid());
                 if (call != procInfoCallPidInfo) {
+                    survey("proc_info", 336, "call-" + std::to_string(call));
                     fail(EINVAL);
                     continue;
                 }
@@ -10924,6 +10945,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     : flavor == procPidUniqIdentifierInfo
                         ? sizeof(ProcUniqueIdentifierInfo) : 0;
                 if (requiredSize == 0) {
+                    survey("proc_info", 336, "flavor-" + std::to_string(flavor));
                     fail(EINVAL);
                     continue;
                 }
@@ -10989,6 +11011,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto mibAddress = registers[0];
                 bool mibReadable = false;
                 bool supportedMib = false;
+                std::string surveyMib;
                 if (mibAddress >= minimumGuestAddress && mibCount > 0 &&
                     mibCount <= CTL_MAXNAME) {
                     try {
@@ -10998,6 +11021,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         std::memcpy(mib.data(), bytes,
                                     static_cast<std::size_t>(mibCount) * sizeof(int));
                         mibReadable = true;
+                        if (guest_survey::enabled()) {
+                            std::string name;
+                            for (std::uint32_t index = 0; index < mibCount; ++index) {
+                                name += (index == 0 ? "" : ".") + std::to_string(mib[index]);
+                            }
+                            surveyMib = name;
+                        }
                         supportedMib = mibCount == 2 && mib[0] == CTL_KERN &&
                             (mib[1] == KERN_USRSTACK64 || mib[1] == KERN_USRSTACK32 ||
                              mib[1] == KERN_OSRELEASE);
@@ -11012,6 +11042,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else if (!mibReadable) {
                     registers[0] = EFAULT;
                 } else if (!supportedMib) {
+                    survey("sysctl", 202, surveyMib);
                     registers[0] = EINVAL;
                 } else if ((registers[3] != 0 && registers[3] < minimumGuestAddress) ||
                            (registers[3] != 0 && registers[2] != 0 &&
@@ -11271,6 +11302,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 } else if (guestSocket->second.type != SOCK_DGRAM ||
                                     target->second.type != SOCK_DGRAM) {
                                     error = ENOTSUP;
+                                    survey("enotsup", static_cast<std::int64_t>(syscall),
+                                           "unix-connect-type");
                                 } else {
                                     guestSocket->second.connectedPeer = target->first;
                                     guestSocket->second.connectedPeerClosed = false;
@@ -11303,8 +11336,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     error = ENOTSOCK;
                 } else if (socket->second.type != SOCK_DGRAM) {
                     error = ENOTSUP;
+                    survey("enotsup", static_cast<std::int64_t>(syscall), "unix-send-type");
                 } else if (registers[3] != 0) {
                     error = ENOTSUP;
+                    survey("enotsup", static_cast<std::int64_t>(syscall), "unix-send-flags");
                 } else if (sendsDatagram) {
                     const auto byteCount = registers[2];
                     std::int32_t peerDescriptor = -1;
@@ -11390,6 +11425,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     constexpr std::int32_t supportedReceiveFlags = MSG_DONTWAIT;
                     if ((flags & ~supportedReceiveFlags) != 0) {
                         error = ENOTSUP;
+                        survey("enotsup", static_cast<std::int64_t>(syscall), "unix-recv-flags");
                     } else if (socket->second.receiveQueue.empty() &&
                         (flags & MSG_DONTWAIT) != 0) {
                         error = EAGAIN;
@@ -11609,10 +11645,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 } else {
                     if (auditToken) csopsError = verifyAuditToken();
                     if (csopsError == 0) {
-                        const auto outcome = guest_csops_self(guestMemory, image.main_code_policy,
-                            csopsStatus, operation, outputAddress, outputCapacity);
-                        csopsError = outcome.error;
-                        csopsTerminate = outcome.terminate;
+                        try {
+                            const auto outcome = guest_csops_self(guestMemory,
+                                image.main_code_policy, csopsStatus, operation, outputAddress,
+                                outputCapacity);
+                            csopsError = outcome.error;
+                            csopsTerminate = outcome.terminate;
+                        } catch (const std::runtime_error&) {
+                            if (!guest_survey::enabled()) throw;
+                            survey("csops", static_cast<std::int64_t>(syscall),
+                                   std::to_string(operation));
+                            csopsError = EINVAL;
+                        }
                     }
                 }
                 if (csopsTerminate) return 128 + SIGKILL;
@@ -11721,6 +11765,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             if (quarantineSize < 0 && quarantineError == ENOATTR) {
                                 registers[0] = ENOATTR;
                                 registers[32] &= ~std::uint64_t{8};
+                            } else if (quarantineSize >= 0 && guest_survey::enabled()) {
+                                survey("getinfo_fd", static_cast<std::int64_t>(syscall),
+                                       "quarantine");
+                                registers[0] = ENOTSUP;
+                                registers[32] |= 8U;
                             } else if (quarantineSize >= 0) {
                                 throw std::runtime_error(
                                     "Unsupported guest quarantine metadata via getinfo_fd");
@@ -11734,6 +11783,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     }
                     registers[34] = 0;
+                    continue;
+                }
+                if ((registers[1] != 2 || policy != "Sandbox") && guest_survey::enabled()) {
+                    survey("mac_policy", static_cast<std::int64_t>(syscall),
+                           policy + ":" + std::to_string(registers[1]));
+                    rawFailQuiet(ENOSYS);
                     continue;
                 }
                 if (registers[1] != 2 || policy != "Sandbox") {
@@ -11768,6 +11823,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                   << " flags=" << flags << " path-null=" << (pathAddress == 0)
                                   << " operation=" << operation << " lr=0x" << std::hex
                                   << registers[30] << std::dec << '\n';
+                    }
+                    if (guest_survey::enabled()) {
+                        survey("sandbox_query", static_cast<std::int64_t>(syscall), "shape",
+                               "filter=" + std::to_string(filter));
+                        rawFailQuiet(EINVAL);
+                        continue;
                     }
                     throw std::runtime_error("Unsupported guest sandbox query shape");
                 }
@@ -11806,6 +11867,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                     } catch (const std::exception&) {
                         registers[0] = EFAULT;
+                    }
+                    if (unsupportedQuery && guest_survey::enabled()) {
+                        survey("sandbox_query", static_cast<std::int64_t>(syscall), "status");
+                        rawFailQuiet(EINVAL);
+                        continue;
                     }
                     if (unsupportedQuery) {
                         throw std::runtime_error("Unsupported guest sandbox status query shape");
@@ -11930,6 +11996,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (request.count > taskInfoMaxCount) {
                         result = KERN_INVALID_ARGUMENT;
                     } else if (request.flavor == TASK_DYLD_INFO) {
+                        survey("msgh_id", 3405,
+                               "task_info-flavor-" + std::to_string(request.flavor));
                         std::cerr << "arm64-metal mach-msg2-unhandled id=3405 dest=guest-task"
                                   << " size=40 options=0x" << hexadecimal(registers[1])
                                   << " pc=0x" << hexadecimal(registers[33])
@@ -12366,6 +12434,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         specialPortName = *guestTaskDebugControlPort;
                         specialPortIsDead = guestTaskDebugControlPortDead;
                     } else if (whichPort != static_cast<std::int32_t>(taskBootstrapPort)) {
+                        survey("msgh_id", 3409, "special-port-" + std::to_string(whichPort));
                         std::cerr << "arm64-metal mach-msg2-unhandled id=3409 dest=guest-task"
                                   << " size=" << requestSize << " options=0x"
                                   << hexadecimal(registers[1]) << " pc=0x"
@@ -12459,6 +12528,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        survey("msgh_id", messageId, "host_get_clock_service-shape");
                         std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                   << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
                                   << " size=" << (registers[2] >> 32) << " options=0x"
@@ -12592,6 +12662,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        survey("msgh_id", messageId, "clock_get_time-shape");
                         std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                   << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
                                   << " size=" << (registers[2] >> 32) << " options=0x"
@@ -12761,6 +12832,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                       << " x7=0x" << hexadecimal(registers[7]) << '\n';
                         }
                     } else if (vectorMessage && sendRequested) {
+                        survey("msgh_id", messageId, "vector-send");
                         std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                   << " dest=0x" << hexadecimal(remote) << " size="
                                   << (registers[2] >> 32) << " options=0x" << hexadecimal(options)
@@ -12869,6 +12941,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 modeled = true;
                             }
                             if (!modeled) {
+                                survey("msgh_id", messageId,
+                                       std::string(inRoutineRange ? "KERN_NOT_SUPPORTED:"
+                                                                  : "MIG_BAD_ID:") + role);
                                 std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                           << " dest=" << role << ":0x" << hexadecimal(remote) << " size=" << sendSize
                                           << " options=0x" << hexadecimal(options)
@@ -12904,6 +12979,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0 ||
                             guestReceiveRights.find(remote) == guestReceiveRights.end()) {
                             if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
+                                survey("msgh_id", messageId, "send-right-without-receive-right");
                                 std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                           << " dest=send-right-without-receive-right size="
                                           << (registers[2] >> 32) << " options=0x"
@@ -13140,6 +13216,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        survey("msgh_id", messageId, "host_info-shape");
                         std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                   << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
                                   << " size=" << (registers[2] >> 32) << " options=0x"
@@ -13267,6 +13344,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[6] > std::numeric_limits<std::uint32_t>::max() ||
                         (registers[6] >> 32) != 0 || registers[7] != 0 ||
                         guestReceiveRights.find(reply) == guestReceiveRights.end()) {
+                        survey("msgh_id", messageId, "mach_port_get_refs-shape");
                         std::cerr << "arm64-metal mach-msg2-unhandled id=" << messageId
                                   << " dest=0x" << hexadecimal(registers[3] & 0xffffffffULL)
                                   << " size=" << (registers[2] >> 32) << " options=0x"
@@ -13536,6 +13614,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         unhandledResult = (registers[1] & 2U) != 0
                             ? 0x10004002U  // MACH_RCV_INVALID_NAME
                             : 4U;          // KERN_INVALID_ARGUMENT
+                    }
+                    if (unhandledResult != 0x10004002U) {
+                        survey("msgh_id", static_cast<std::int32_t>(registers[4] >> 32),
+                               "shape:" + std::string(unhandledRole));
                     }
                     if (unhandledResult != 0x10004002U)
                     std::cerr << "arm64-metal mach-msg2-unhandled id="
@@ -13975,6 +14057,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const bool supportedFlags =
                         existingFlags || (flags & ~supportedConstructFlags) == 0;
                     if ((flags & MPO_UNUSED_BITS) != 0) {
+                        result = kernInvalidArgument;
+                    } else if (!supportedFlags && guest_survey::enabled()) {
+                        survey("flag", -static_cast<std::int64_t>(syscall),
+                               "0x" + hexadecimal(flags & ~supportedConstructFlags));
                         result = kernInvalidArgument;
                     } else if (!supportedFlags) {
                         throw std::runtime_error("Unsupported guest Mach port construction flags");
@@ -14471,6 +14557,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         error = EINVAL;
                     } else if (registers[1] != 0 || registers[2] != 1) {
                         error = ENOTSUP;
+                        survey("enotsup", static_cast<std::int64_t>(syscall), "workq-request-shape");
                     } else if (qos == 0 || qos >= 7 ||
                                (priority & ~(qosClassMask | 0xffU | overcommitFlag |
                                              requestFallbackFlag | requestDefaultQueueFlag)) != 0) {
@@ -14591,6 +14678,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                if (registers[0] != setupDispatch && guest_survey::enabled()) {
+                    survey("workq", static_cast<std::int64_t>(syscall),
+                           "0x" + hexadecimal(registers[0]));
+                    rawFailQuiet(EINVAL);
+                    continue;
+                }
                 if (registers[0] != setupDispatch) {
                     throw std::runtime_error("Unsupported guest workqueue operation 0x" +
                         hexadecimal(registers[0]) + (guestWorkqueueOpened
@@ -14600,6 +14693,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 std::uint64_t error = 0;
                 if (registers[2] != dispatchConfigSize || registers[3] != 0) {
                     error = ENOTSUP;
+                    survey("enotsup", static_cast<std::int64_t>(syscall), "workq-setup-shape");
                 } else if (registers[1] < ExecutableImage::minimum_image_address) {
                     error = EFAULT;
                 } else {
@@ -14610,6 +14704,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         std::memcpy(&config, bytes, sizeof(config));
                         if (config.version != 2 || config.flags != 0) {
                             error = ENOTSUP;
+                            survey("enotsup", static_cast<std::int64_t>(syscall),
+                                   "workq-dispatch-config");
                         } else {
                             // The kernel setup trap is repeat-tolerant. Keep
                             // only guest-supplied metadata; dispatch's callback
@@ -15091,6 +15187,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         registers[0] = machStoreGuest(registers[3], &status, sizeof(status)) &&
                                 machStoreGuest(registers[4], &used, sizeof(used))
                             ? kernSuccess : kernInvalidAddress;
+                    } else if (guest_survey::enabled()) {
+                        survey("attribute", -static_cast<std::int64_t>(syscall),
+                               std::to_string(flavor));
+                        registers[0] = kernInvalidArgument;
                     } else {
                         throw std::runtime_error(
                             "Unsupported guest mach_port_get_attributes flavor " +
@@ -15327,6 +15427,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto rawProcOutcome = dispatch_raw_proc_syscall(rawProc, syscall);
                 if (rawProcOutcome == RawProcOutcome::Exit) return rawProc.exitStatus;
                 if (rawProcOutcome == RawProcOutcome::Handled) continue;
+            }
+            if (guest_survey::enabled()) {
+                const auto signedSyscall = static_cast<std::int64_t>(syscall);
+                const auto x0 = "x0=0x" + hexadecimal(registers[0]);
+                if (signedSyscall < 0) {
+                    survey("mach_trap", -signedSyscall, "-", x0);
+                    registers[0] = 4;  // KERN_INVALID_ARGUMENT
+                    registers[34] = 0;
+                } else {
+                    survey("syscall", signedSyscall, "-", x0);
+                    rawFailQuiet(ENOSYS);
+                }
+                continue;
             }
             throw std::runtime_error("Guest reached unsupported Darwin syscall 0x" +
                 hexadecimal(registers[16]) + " at PC 0x" + hexadecimal(registers[33]) +

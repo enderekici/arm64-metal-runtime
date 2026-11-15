@@ -973,3 +973,25 @@ takes about 20 minutes per binary.
 thread ports, invalid/null/dead destinations, a receive-only on a send right, and legacy/vector sends to an own port.
 `jvm-startup-rpcs.c` runs the libsystem/CF startup calls a JVM makes. Run both natively and as guests with the
 shared-cache env vars; remaining differences are listed by the `arm64-metal mach-msg2-unhandled` stderr lines.
+
+## Boundary survey and trace
+
+`ARM64_METAL_SURVEY=1` turns unmodeled-service fatals (unknown BSD syscall or
+Mach trap, workqueue op, port-construct flags, port attribute flavor, MAC
+policy, sandbox query shape, quarantine `getinfo_fd`, raw sigaction flags) into
+a logged error return and the run continues. It also logs soft fallthroughs that
+already return an error: `mach-msg2-unhandled` ids, ENOTSUP/ENOSYS stubs, and
+unknown proc_info and sysctl selectors. One `SURVEY kind=.. num=.. sub=.. pc=..
+lr=.. thread=..` line per (kind, num, sub) is appended to `ARM64_METAL_SURVEY_LOG`
+(stderr if unset). Without the variable the fatals are unchanged.
+`errno_stub` and `enotsup` lines are hints only; some fire when the host
+itself returns ENOTSUP. `ARM64_METAL_BOUNDARY_TRACE=<path>` appends a `BOUNDARY` line for every raw
+syscall and Mach trap with x0-x7 (mach_msg2 carries msgh_id as `sub`).
+
+`survey-unhandled.c` sends msgh_id 0x7777 to the host port twice, then issues
+aio_cancel and aio_error twice each. Native output is a MIG_BAD_ID (-303) reply,
+then EBADF and EINVAL. Without the survey variable the guest prints the same
+MIG_BAD_ID replies (plus the existing `mach-msg2-unhandled` stderr lines) and then
+stops at syscall 0x13c. With it the guest continues: ENOSYS (78) for both
+syscalls, then `done`. The log gets three lines: msgh_id 30583, syscall 316 and
+syscall 317.

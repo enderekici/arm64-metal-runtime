@@ -16,6 +16,7 @@ COMPONENT_SOURCES := \
 	guest_scheduler.cpp \
 	guest_state.cpp \
 	guest_strings.cpp \
+	guest_survey.cpp \
 	guest_tlv.cpp \
 	guest_vector_crypto.cpp \
 	image_loader.cpp \
@@ -60,6 +61,7 @@ APP_SOURCES := \
 	guest_format.cpp \
 	guest_state.cpp \
 	guest_strings.cpp \
+	guest_survey.cpp \
 	guest_tlv.cpp \
 	guest_vector_crypto.cpp \
 	gpu_interpreter.cpp \

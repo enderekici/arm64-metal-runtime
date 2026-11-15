@@ -1,4 +1,7 @@
 #include "raw_proc_syscalls.hpp"
+#include "guest_survey.hpp"
+
+#include <cstdio>
 
 #include "darwin_bridge.hpp"
 #include "image_loader.hpp"
@@ -85,6 +88,9 @@ private:
         r_[34] = 0;
     }
     void fail(int error) {
+        if (error == ENOTSUP || error == ENOSYS) {
+            survey("errno_stub", error == ENOSYS ? "ENOSYS" : "ENOTSUP");
+        }
         const auto value = static_cast<std::uint32_t>(error);
         try {
             std::memcpy(c_.memory.buffer(c_.bootstrap.errnoSlot, sizeof(value), true), &value,
@@ -139,6 +145,10 @@ private:
     }
 
     void deny() { fail(EPERM); }
+    void survey(std::string_view kind, std::string_view sub) {
+        guest_survey::note(kind, static_cast<std::int64_t>(syscall_), sub, c_.registers[33],
+                           c_.registers[30], c_.scheduler.current_id());
+    }
     void unsupported() { fail(ENOTSUP); }
 
     void identity();
@@ -226,6 +236,13 @@ void Dispatcher::sigaction_call() {
         std::memcpy(&flags, bytes + 20, sizeof(flags));
         constexpr std::int32_t accepted = SA_RESTART | SA_RESETHAND | SA_NODEFER | SA_SIGINFO |
                                           SA_NOCLDSTOP | SA_NOCLDWAIT | 0x0200;
+        if ((flags & ~accepted) != 0 && guest_survey::enabled()) {
+            char sub[16];
+            std::snprintf(sub, sizeof(sub), "0x%x", static_cast<unsigned>(flags & ~accepted));
+            survey("flag", sub);
+            fail(EINVAL);
+            return;
+        }
         if ((flags & ~accepted) != 0) {
             throw std::runtime_error("Guest raw sigaction flags unsupported");
         }

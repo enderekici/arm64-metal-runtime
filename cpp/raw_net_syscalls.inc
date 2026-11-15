@@ -1564,6 +1564,7 @@
             break;
         }
         default:
+            survey("fcntl", netSyscall, std::to_string(command));
             if (::fcntl(descriptor, command, 0) < 0) rawFail(errno);
             else rawOk(0);
             break;
