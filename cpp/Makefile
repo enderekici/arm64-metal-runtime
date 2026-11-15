@@ -671,6 +671,16 @@ verify-umaxp-native: $(UMAXP_PROCESS_TEST)
 	xcrun -sdk macosx metal -c "$(BUILD_DIR)/umaxp-lowering.metal" -o "$(BUILD_DIR)/umaxp-lowering.air"
 
 
+# CPU-only opcode sweep over Mach-O files and shared-cache images (no Metal).
+SWEEP := $(BUILD_DIR)/arm64-metal-sweep
+SWEEP_SOURCES := guest_strings.cpp guest_vector_crypto.cpp macho.cpp process_decoder.cpp process_msl.cpp shared_cache.cpp translate_core.cpp
+$(SWEEP): tools/sweep.cpp $(SWEEP_SOURCES) $(APP_HEADERS)
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I. $(SWEEP_SOURCES) $< -o "$@"
+
+.PHONY: sweep
+sweep: $(SWEEP)
+
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
