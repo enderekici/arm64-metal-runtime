@@ -49,6 +49,7 @@
 #include <sys/xattr.h>
 #include "raw_fs_syscalls.hpp"
 #include "dyld_api_abi.hpp"
+#include "dyld_api_slots.hpp"
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -1184,8 +1185,10 @@ DyldApisFacade initialize_dyld_apis(
     const auto programMinOsVersionService = addSyntheticService(
         "__guest_dyld_get_program_min_os_version");
 
+    auto slots = enumerate_dyld_api_slots(*image.cache_reader, abi.vptrDiscriminator);
     constexpr std::uint64_t objectBytes = 16;
-    const std::uint64_t vtableBytes = abi.vtableBytes;
+    const std::uint64_t vtableBytes = slots.empty() ? abi.vtableBytes
+        : std::max(abi.vtableBytes, slots.back().offset + 8);
     const std::uint64_t reservation = objectBytes + vtableBytes;
     const auto object = bootstrap.heap.begin;
     if (reservation > bootstrap.heap.end - bootstrap.heap.begin ||
@@ -1264,6 +1267,18 @@ DyldApisFacade initialize_dyld_apis(
                   append_guest_pointer_token(bootstrap, stackRangeService, 0,
                       (slot & addressMask) | (abi.stackRange->discriminator << 48)));
     }
+    for (const auto& extra : kDyldApiExtraSlots) {
+        const auto slot = std::find_if(slots.begin(), slots.end(), [&](const DyldApiSlot& item) {
+            return std::find(item.exports.begin(), item.exports.end(), extra.exportSymbol) !=
+                   item.exports.end();
+        });
+        if (slot == slots.end()) continue;
+        const auto address = vtable + slot->offset;
+        store_u64(bootstrap.memory, address, append_guest_pointer_token(bootstrap,
+            addSyntheticService(extra.serviceSymbol), 0,
+            (address & addressMask) | (slot->discriminator << 48)));
+    }
+    dyld_api_slot_state().publish(vtable, vtableBytes, std::move(slots));
     bootstrap.readOnlyRanges.push_back({object, object + reservation});
     if (cellOffset) store_u64(bootstrap.memory, *cellOffset, object);
     bootstrap.heap.begin += reservation;
@@ -2097,7 +2112,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
-    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 12U : 0U;
+    const auto dyldApiTokenHeadroom = options.cachedInitializers ? 32U : 0U;
     if (image.authentication.size() >
         std::numeric_limits<std::size_t>::max() - dyldApiTokenHeadroom) {
         throw std::length_error("Initial guest authentication table size overflow");
@@ -7487,6 +7502,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::numeric_limits<std::int64_t>::max())) {
                 throw std::runtime_error("Dynamic image backing exceeds allocator range");
             }
+            dyld_api_slot_state().require_unload_without_remove_callbacks(header);
             mappingHeap.release(static_cast<std::int64_t>(record->backing_offset));
 
             for (const auto& range : record->mapped_ranges) {
@@ -8257,6 +8273,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 continue;
             }
+#include "dyld_api_services.inc"
             if (service == 217 || service == 218) {
                 if (dyldApis.object == 0 || hostRegisters[0] != dyldApis.object) {
                     throw std::runtime_error(
@@ -10500,7 +10517,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 dumpFrames(registers, 36);
             }
             throw std::runtime_error(pac_failure_message(registers,
-                stateBuffer.size() / sizeof(std::uint64_t), status));
+                stateBuffer.size() / sizeof(std::uint64_t), status) +
+                dyld_api_slot_state().describe_unmodeled_slot(registers[guestFaultAddress],
+                    registers[guestCacheFaultAddress], registers[30]));
         }
         if (status == 13) {
             const auto syscall = registers[16];
