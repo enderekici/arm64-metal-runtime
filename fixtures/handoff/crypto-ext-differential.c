@@ -52,6 +52,16 @@ OP(sha512su0, ARCH "sha512su0 v16.2d, v17.2d")
 OP(sha512su0_alias, ARCH "sha512su0 v16.2d, v16.2d")
 OP(sha512su1, ARCH "sha512su1 v16.2d, v17.2d, v18.2d")
 OP(sha512su1_alias, ARCH "sha512su1 v16.2d, v16.2d, v17.2d")
+OP(sha1c, ARCH "sha1c q16, s17, v18.4s")
+OP(sha1p, ARCH "sha1p q16, s17, v18.4s")
+OP(sha1m, ARCH "sha1m q16, s17, v18.4s")
+OP(sha1m_alias, ARCH "sha1m q16, s16, v16.4s")
+OP(sha1su0, ARCH "sha1su0 v16.4s, v17.4s, v18.4s")
+OP(sha1su0_alias, ARCH "sha1su0 v16.4s, v16.4s, v16.4s")
+OP(sha1h, ARCH "sha1h s16, s17")
+OP(sha1h_alias, ARCH "sha1h s16, s16")
+OP(sha1su1, ARCH "sha1su1 v16.4s, v17.4s")
+OP(sha1su1_alias, ARCH "sha1su1 v16.4s, v16.4s")
 
 #define ENTRY(nm) {#nm, f_##nm}
 static const struct { const char *name; Fn fn; } ops[] = {
@@ -59,6 +69,8 @@ static const struct { const char *name; Fn fn; } ops[] = {
   ENTRY(rax1_alias), ENTRY(xar0), ENTRY(xar1), ENTRY(xar8), ENTRY(xar63),
   ENTRY(sha512h), ENTRY(sha512h_alias), ENTRY(sha512h2), ENTRY(sha512h2_alias),
   ENTRY(sha512su0), ENTRY(sha512su0_alias), ENTRY(sha512su1), ENTRY(sha512su1_alias),
+  ENTRY(sha1c), ENTRY(sha1p), ENTRY(sha1m), ENTRY(sha1m_alias), ENTRY(sha1su0),
+  ENTRY(sha1su0_alias), ENTRY(sha1h), ENTRY(sha1h_alias), ENTRY(sha1su1), ENTRY(sha1su1_alias),
 };
 
 int main(void) {

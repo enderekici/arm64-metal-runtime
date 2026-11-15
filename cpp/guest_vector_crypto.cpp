@@ -170,6 +170,33 @@ ulong2 vector_sha512su1(ulong2 w, ulong2 x, ulong2 y) {
     ulong high = w[1] + (sha512_ror(x[1], 19ul) ^ sha512_ror(x[1], 61ul) ^ (x[1] >> 6)) + y[1];
     ulong low = w[0] + (sha512_ror(x[0], 19ul) ^ sha512_ror(x[0], 61ul) ^ (x[0] >> 6)) + y[0];
     return ulong2(low, high);
+}
+uint sha1_rol(uint value, uint amount) {
+    return (value << amount) | (value >> (32u - amount));
+}
+// SHA1C/SHA1P/SHA1M: kind 0 choose, 1 parity, 2 majority. x = Vd, y = Sn, w = Vm.
+ulong2 vector_sha1_hash(ulong2 x_bits, ulong y_bits, ulong2 w_bits, uint kind) {
+    uint4 x = as_type<uint4>(x_bits);
+    uint y = uint(y_bits);
+    uint4 w = as_type<uint4>(w_bits);
+    for (uint e = 0; e < 4; ++e) {
+        uint t = kind == 0u ? (((x.z ^ x.w) & x.y) ^ x.w)
+               : kind == 1u ? (x.y ^ x.z ^ x.w)
+                            : ((x.y & x.z) | ((x.y | x.z) & x.w));
+        y = y + sha1_rol(x.x, 5u) + t + w[e];
+        x.y = sha1_rol(x.y, 30u);
+        uint top = x.w;
+        x = uint4(y, x.x, x.y, x.z);
+        y = top;
+    }
+    return as_type<ulong2>(x);
+}
+ulong2 vector_sha1_su1(ulong2 d_bits, ulong2 n_bits) {
+    uint4 n = as_type<uint4>(n_bits);
+    uint4 t = as_type<uint4>(d_bits) ^ uint4(n.y, n.z, n.w, 0u);
+    uint4 result = uint4(sha1_rol(t.x, 1u), sha1_rol(t.y, 1u), sha1_rol(t.z, 1u),
+                         sha1_rol(t.w, 1u) ^ sha1_rol(t.x, 2u));
+    return as_type<ulong2>(result);
 })METAL";
 
 }  // namespace
@@ -227,6 +254,29 @@ std::optional<translate_core::Instruction> lower_vector_crypto(
         vector_value(sha_third_register) + ")";
   } else if ((bits & 0xfffffc00u) == 0x5e282800u) {
     sha256_expression = "vector_sha256_su0(" + vector_value(sha_destination_register) +
+        ", " + vector_value(sha_source_register) + ")";
+  } else if (sha256_three_register_opcode == 0x5e000000u ||
+             sha256_three_register_opcode == 0x5e001000u ||
+             sha256_three_register_opcode == 0x5e002000u) {
+    // SHA1C, SHA1P, SHA1M: Qd, Sn, Vm.4S.
+    const auto kind = std::to_string((bits >> 12) & 3u);
+    sha256_expression = "vector_sha1_hash(" + vector_value(sha_destination_register) +
+        ", x[" + std::to_string(806 + 2 * static_cast<int>(sha_source_register)) + "], " +
+        vector_value(sha_third_register) + ", " + kind + "u)";
+  } else if (sha256_three_register_opcode == 0x5e003000u) {
+    // SHA1SU0: (Vn<63:0> : Vd<127:64>) ^ Vd ^ Vm.
+    const auto d = vector_value(sha_destination_register);
+    sha256_expression = "(ulong2(" + d + "[1], " + vector_value(sha_source_register) +
+        "[0]) ^ " + d + " ^ " + vector_value(sha_third_register) + ")";
+  } else if ((bits & 0xfffffc00u) == 0x5e280800u) {
+    // SHA1H Sd, Sn: ROL(Sn, 30), upper bits zero.
+    sha256_expression = "ulong2(ulong((uint(x[" +
+        std::to_string(806 + 2 * static_cast<int>(sha_source_register)) +
+        "]) << 30u) | (uint(x[" +
+        std::to_string(806 + 2 * static_cast<int>(sha_source_register)) +
+        "]) >> 2u)), 0ul)";
+  } else if ((bits & 0xfffffc00u) == 0x5e281800u) {
+    sha256_expression = "vector_sha1_su1(" + vector_value(sha_destination_register) +
         ", " + vector_value(sha_source_register) + ")";
   }
   if (!sha256_expression.empty()) {
