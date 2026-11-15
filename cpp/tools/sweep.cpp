@@ -182,14 +182,15 @@ std::vector<std::string> disassemble(const std::vector<std::uint32_t>& words,
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string scratch = ".";
+  std::string scratch = ".", acceptedPath;
   std::vector<std::string> files, cacheSubs;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--scratch" && i + 1 < argc) scratch = argv[++i];
     else if (a == "--cache" && i + 1 < argc) cacheSubs.push_back(argv[++i]);
+    else if (a == "--accepted" && i + 1 < argc) acceptedPath = argv[++i];
     else if (a == "--help" || a == "-h") {
-      std::fprintf(stderr, "usage: arm64-metal-sweep [--scratch DIR] [--cache SUBSTRING]... [FILE...]\n");
+      std::fprintf(stderr, "usage: arm64-metal-sweep [--scratch DIR] [--accepted OUT] [--cache SUBSTRING]... [FILE...]\n");
       return 0;
     } else files.push_back(a);
   }
@@ -220,6 +221,7 @@ int main(int argc, char** argv) {
   }
 
   std::map<std::uint32_t, Hit> rejected;
+  std::map<std::uint32_t, long> accepted;  // only filled with --accepted
   long totalWords = 0, totalRejected = 0, totalDice = 0, totalBrk = 0, totalZero = 0;
   std::vector<std::string> perImage;
   for (const auto& image : images) {
@@ -241,6 +243,7 @@ int main(int argc, char** argv) {
           // Placed PC is irrelevant to which encodings decode; keep it in range.
           arm64metal::decode_process(w, static_cast<std::int64_t>(0x100000000ULL + (address & 0xffffffffULL)),
                                      {}, {}, true);
+          if (!acceptedPath.empty()) ++accepted[w];
         } catch (const std::exception& e) {
           ++bad;
           auto& hit = rejected[w];
@@ -311,6 +314,8 @@ int main(int argc, char** argv) {
   std::printf("# skipped: LC_DATA_IN_CODE ranges, BRK (SIGTRAP path), (w & 0xffe0001f)==0 (UDF/zero)\n");
   std::printf("# mnemonic: llvm-objdump --mattr=+all (Apple syntax); mask/match = bits constant across\n");
   std::printf("#   every rejected word in the group (mask) and their value (match)\n");
+  std::printf("# lists REJECTED words only: an encoding the decoder accepts but lowers wrongly is\n");
+  std::printf("#   invisible here (use --accepted to audit accepted words by mnemonic)\n");
   std::printf("# totals: images=%zu text_words=%ld rejected=%ld (%.4f%%) distinct=%zu dice_words=%ld brk=%ld zero=%ld\n",
               images.size(), totalWords, totalRejected,
               totalWords ? 100.0 * totalRejected / totalWords : 0.0, distinct.size(), totalDice,
@@ -324,6 +329,21 @@ int main(int argc, char** argv) {
     const auto mask = ~(g->andBits ^ g->orBits);
     std::printf("%ld\t%zu\t0x%08x\t0x%08x\t%s\t%s\t%s\n", g->count, g->words.size(), mask,
                 g->andBits & mask, k.c_str(), g->example.c_str(), g->message.c_str());
+  }
+  if (!acceptedPath.empty()) {
+    std::vector<std::uint32_t> words;
+    for (const auto& [w, _] : accepted) words.push_back(w);
+    std::ofstream out(acceptedPath);
+    for (std::size_t i = 0; i < words.size(); i += 20000) {
+      std::vector<std::uint32_t> chunk(words.begin() + i,
+                                       words.begin() + std::min(words.size(), i + 20000));
+      const auto part = disassemble(chunk, scratch);
+      for (std::size_t j = 0; j < chunk.size(); ++j) {
+        char head[16];
+        std::snprintf(head, sizeof head, "%08x", chunk[j]);
+        out << head << '\t' << accepted[chunk[j]] << '\t' << part[j] << '\n';
+      }
+    }
   }
   return 0;
 }
