@@ -81,7 +81,8 @@ public:
     // proc_info(PROC_INFO_CALL_SETCONTROL, ...); returns an errno.
     [[nodiscard]] std::uint32_t proc_info_setcontrol(
         std::int32_t pid, std::int32_t ownPid, std::uint32_t flavor,
-        std::uint64_t buffer, std::uint32_t size);
+        std::uint64_t buffer, std::uint32_t size,
+        std::uint64_t threadId);
 
 private:
     struct Voucher {
@@ -114,6 +115,8 @@ private:
     // Voucher index 0 is the null voucher.
     std::vector<Voucher> vouchers_ = std::vector<Voucher>(1);
     std::map<std::uint64_t, std::size_t> threadVoucher_;
+    std::map<std::uint64_t, ThreadPolicy> threadPolicy_;
+    std::map<std::uint64_t, std::vector<std::uint8_t>> threadNames_;
 };
 
 }  // namespace arm64metal::mach_models

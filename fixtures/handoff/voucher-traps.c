@@ -172,8 +172,14 @@ static void dump(const char *label) {
     unsigned n = rep[6];
     pk("desc", n);
     i = 7;
+    unsigned same = 0;
     for (unsigned d = 0; d < n; d++, i += 3) {
       if ((rep[i + 2] >> 24) == 0) {
+        if (d > 0 && (rep[i] != 0) == (rep[i - 3] != 0) && rep[i + 2] == rep[i - 1]) {
+          same++;
+          if (d + 1 == n) { ps(" x"); pd(same + 1); }
+          continue;
+        }
         ps(" p"); pd(rep[i] != 0); ps(":"); ph(rep[i + 2]);
       } else {
         ps(" ool:"); ph(rep[i + 2]); ps(","); pd(rep[i + 3]);
@@ -235,7 +241,7 @@ static void shape(const char *label, unsigned n) {
   pk("size", rep[1]);
   pk("id", (i32)rep[5]);
   ps(" w:");
-  for (unsigned k = 0; k < n; k++) { ps(" "); ph(rep[8 + k]); }
+  for (unsigned k = 0; k < n && 8 + k < rep[1] / 4; k++) { ps(" "); ph(rep[8 + k]); }
 }
 static u64 u64at(unsigned index) { return (u64)rep[index] | (u64)rep[index + 1] << 32; }
 
@@ -265,8 +271,6 @@ static void thread_rpcs(void) {
   rpc(thread, 3612, a, 4); shape("thread_info small count", 1); nl();
   a[2] = 6; a[3] = 10;
   rpc(thread, 3612, a, 4); shape("thread_info flavor 6", 1); nl();
-  a[2] = 10;
-  rpc(thread, 3612, a, 4); shape("thread_info flavor 10", 1); nl();
   static const struct { u32 flavor, count; const char *name; } gets[] = {
       {THREAD_EXTENDED_POLICY, THREAD_EXTENDED_POLICY_COUNT, "extended"},
       {THREAD_TIME_CONSTRAINT_POLICY, THREAD_TIME_CONSTRAINT_POLICY_COUNT, "time_constraint"},
@@ -282,22 +286,30 @@ static void thread_rpcs(void) {
     ps("thread_policy_get "); ps(gets[g].name);
     shape("", 2 + gets[g].count + 1); nl();
   }
+  a[2] = 6; a[3] = 16; a[4] = 0;
+  rpc(thread, 3618, a, 5); shape("thread_policy_get state big count", 1); nl();
   a[2] = THREAD_PRECEDENCE_POLICY; a[3] = 1; a[4] = 5;
   rpc(thread, 3617, a, 5); shape("thread_policy_set precedence 5", 1); nl();
   a[2] = THREAD_PRECEDENCE_POLICY; a[3] = THREAD_PRECEDENCE_POLICY_COUNT; a[4] = 0;
   rpc(thread, 3618, a, 5); shape("thread_policy_get precedence after set", 3); nl();
   a[2] = THREAD_PRECEDENCE_POLICY; a[3] = 0; a[4] = 0;
-  rpc(thread, 3617, a, 5); shape("thread_policy_set precedence count 0", 1); nl();
+  rpc(thread, 3617, a, 4); shape("thread_policy_set precedence count 0", 1); nl();
   a[2] = THREAD_EXTENDED_POLICY; a[3] = 1; a[4] = 1;
   rpc(thread, 3617, a, 5); shape("thread_policy_set extended", 1); nl();
   a[2] = THREAD_LATENCY_QOS_POLICY; a[3] = 1; a[4] = 0;
   rpc(thread, 3617, a, 5); shape("thread_policy_set latency_qos", 1); nl();
   a[2] = THREAD_AFFINITY_POLICY; a[3] = 1; a[4] = 0;
   rpc(thread, 3617, a, 5); shape("thread_policy_set affinity", 1); nl();
-  a[2] = THREAD_TIME_CONSTRAINT_POLICY; a[3] = 4; a[4] = 0;
-  rpc(thread, 3617, a, 5); shape("thread_policy_set time_constraint zeros", 1); nl();
+  a[2] = THREAD_TIME_CONSTRAINT_POLICY; a[3] = 4; a[4] = 0; a[5] = 0; a[6] = 0; a[7] = 0;
+  rpc(thread, 3617, a, 8); shape("thread_policy_set time_constraint zeros", 1); nl();
+  a[2] = THREAD_TIME_CONSTRAINT_POLICY; a[3] = 4; a[4] = 0; a[5] = 60000; a[6] = 120000; a[7] = 1;
+  rpc(thread, 3617, a, 8); shape("thread_policy_set time_constraint valid", 1); nl();
+  a[2] = THREAD_TIME_CONSTRAINT_POLICY; a[3] = THREAD_TIME_CONSTRAINT_POLICY_COUNT; a[4] = 0;
+  rpc(thread, 3618, a, 5); shape("thread_policy_get time_constraint after set", 6); nl();
   a[2] = 99; a[3] = 1; a[4] = 0;
   rpc(thread, 3617, a, 5); shape("thread_policy_set bad flavor", 1); nl();
+  a[2] = THREAD_PRECEDENCE_POLICY; a[3] = 2; a[4] = 0;
+  rpc(thread, 3617, a, 5); shape("thread_policy_set size mismatch", 1); nl();
   a[0] = 0; a[1] = 1;
   for (u32 which = 0; which <= 5; which++) {
     a[2] = which;
@@ -324,6 +336,8 @@ static void task_rpcs(void) {
   a[2] = 0xffffffffu;
   rpc(task, 3414, a, 3); dump("task_get_exception_ports bad mask");
   static const u32 flavors[] = {0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12};
+  a[2] = 4; a[3] = 16; a[4] = 0;
+  rpc(task, 3421, a, 5); shape("task_policy_get state big count", 1); nl();
   for (unsigned f = 0; f < sizeof(flavors) / sizeof(flavors[0]); f++) {
     a[2] = flavors[f]; a[3] = 4; a[4] = 0;
     rpc(task, 3421, a, 5);
@@ -333,7 +347,7 @@ static void task_rpcs(void) {
   for (unsigned f = 0; f < sizeof(flavors) / sizeof(flavors[0]); f++) {
     for (u32 c = 0; c <= 3; c += 1) {
       a[2] = flavors[f]; a[3] = c; a[4] = 0; a[5] = 0; a[6] = 0;
-      rpc(task, 3420, a, 7);
+      rpc(task, 3420, a, 4 + c);
       ps("task_policy_set flavor="); pd(flavors[f]); pk("count", c);
       shape("", 1); nl();
     }
@@ -401,10 +415,28 @@ static void procinfo(void) {
   ps("proc_info threadname long"); pk("r", (long)r); pk("carry", (long)carry); nl();
   r = bsd(336, 5, pid, 2, 0, (u64)name, 0, &carry);
   ps("proc_info threadname empty"); pk("r", (long)r); pk("carry", (long)carry); nl();
+  {
+    static const u32 sizes[] = {1, 62, 63, 64, 65};
+    char big[80];
+    for (unsigned i = 0; i < sizeof(big); i++) big[i] = 'n';
+    big[79] = 0;
+    for (unsigned i = 0; i < 5; i++) {
+      r = bsd(336, 5, pid, 2, 0, (u64)big, sizes[i], &carry);
+      ps("proc_info threadname"); pk("size", sizes[i]); pk("r", (long)r); pk("carry", (long)carry); nl();
+    }
+    r = bsd(336, 5, pid, 2, 0, 0, 4, &carry);
+    ps("proc_info threadname null buffer size 4"); pk("r", (long)r); pk("carry", (long)carry); nl();
+    r = bsd(336, 5, pid, 2, 0, 0x10, 4, &carry);
+    ps("proc_info threadname bad buffer"); pk("r", (long)r); pk("carry", (long)carry); nl();
+    for (u32 flavor = 1; flavor <= 4; flavor++) {
+      r = bsd(336, 5, pid + 1, flavor, 0, (u64)name, 4, &carry);
+      ps("proc_info setcontrol other pid"); pk("flavor", flavor); pk("r", (long)r); pk("carry", (long)carry); nl();
+      r = bsd(336, 5, 0, flavor, 0, (u64)name, 4, &carry);
+      ps("proc_info setcontrol pid 0"); pk("flavor", flavor); pk("r", (long)r); pk("carry", (long)carry); nl();
+    }
+  }
   r = bsd(336, 6, pid, 1, 0, (u64)name, 4, &carry);
   ps("proc_info call 6"); pk("r", (long)r); pk("carry", (long)carry); nl();
-  r = bsd(336, 1, pid, 1, 0, (u64)name, 4, &carry);
-  ps("proc_info call 1"); pk("r", (long)r); pk("carry", (long)carry); nl();
 }
 
 // Mach traps with no kernel implementation raise SIGSYS; verified through the exit status of a

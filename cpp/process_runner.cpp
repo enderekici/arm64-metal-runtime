@@ -3928,6 +3928,31 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return name;
         };
         environment.acquire = [&](std::uint32_t name) { (void)acquireGuestFixedSendRight(name); };
+        environment.threadName = [&](std::uint64_t threadId) -> std::uint32_t {
+            const auto existing = guestThreadPortNames.find(threadId);
+            if (existing != guestThreadPortNames.end()) return existing->second;
+            const auto name = acquireGuestThreadSendRight(threadId);
+            if (name != 0 && guestSendRightUrefs[name] != 0) --guestSendRightUrefs[name];
+            return name;
+        };
+        environment.threadState = [&](std::uint64_t threadId, std::uint64_t* state) {
+            const std::uint64_t* source = nullptr;
+            if (threadId == guestScheduler.current_id()) {
+                source = static_cast<const std::uint64_t*>(stateBuffer.data());
+            } else if (const auto* thread = guestScheduler.find(threadId);
+                       thread != nullptr && thread->registers.size() > 33) {
+                source = thread->registers.data();
+            }
+            if (source == nullptr) return false;
+            std::copy(source, source + 32, state);
+            state[32] = source[33];
+            state[33] = 0;
+            return true;
+        };
+        environment.threadHandle = [&](std::uint64_t threadId) -> std::uint64_t {
+            const auto* thread = guestScheduler.find(threadId);
+            return thread == nullptr ? 0 : static_cast<std::uint64_t>(thread->tsdAddress);
+        };
         environment.readGuest = [&](std::uint64_t address, std::size_t size)
             -> const std::uint8_t* {
             try {
@@ -10961,6 +10986,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == 336) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint32_t procInfoCallPidInfo = 2;
+                constexpr std::uint32_t procInfoCallSetControl = 5;
                 constexpr std::uint32_t procPidUniqIdentifierInfo = 17;
                 struct ProcUniqueIdentifierInfo {
                     std::uint8_t uuid[16];
@@ -10981,6 +11007,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto outputAddress = registers[4];
                 const auto outputSize = static_cast<std::int32_t>(registers[5]);
                 const auto ownPid = static_cast<std::int32_t>(::getpid());
+                if (call == procInfoCallSetControl) {
+                    std::uint32_t error = 0;
+                    try {
+                        error = machModels.proc_info_setcontrol(
+                            requestedPid, ownPid, flavor, outputAddress,
+                            static_cast<std::uint32_t>(outputSize), guestScheduler.current_id());
+                    } catch (const std::exception&) {
+                        error = EFAULT;
+                    }
+                    if (error != 0) {
+                        fail(static_cast<int>(error));
+                    } else {
+                        registers[0] = 0;
+                        registers[32] &= ~carryMask;
+                        registers[34] = 0;
+                    }
+                    continue;
+                }
                 if (call != procInfoCallPidInfo) {
                     survey("proc_info", 336, "call-" + std::to_string(call));
                     fail(EINVAL);

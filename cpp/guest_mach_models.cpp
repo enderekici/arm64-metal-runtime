@@ -1,5 +1,7 @@
 #include "guest_mach_models.hpp"
 
+#include <mach/exception_types.h>
+
 #include <cstring>
 
 namespace arm64metal::mach_models {
@@ -19,6 +21,18 @@ constexpr std::uint32_t voucherKeyUserData = 7;
 constexpr std::uint32_t voucherCommandUserDataStore = 211;
 constexpr std::size_t maxRecipeBytes = 5120;
 constexpr std::size_t recipeHeader = 16;
+constexpr std::int32_t kernProtectionFailure = 2;
+constexpr std::int32_t kernDenied = 53;
+constexpr std::int32_t migBadArguments = -304;
+constexpr std::uint32_t armThreadState64 = 6;
+constexpr std::uint32_t armThreadState64Count = 68;
+constexpr std::uint32_t threadBasicInfo = 3;
+constexpr std::uint32_t threadIdentifierInfo = 4;
+constexpr std::uint32_t threadExtendedInfo = 5;
+constexpr std::uint32_t threadBasicInfoCount = 10;
+constexpr std::uint32_t threadIdentifierInfoCount = 6;
+constexpr std::uint32_t threadExtendedInfoCount = 28;
+constexpr std::uint32_t exceptionMaskValid = 0x3ffe;
 
 std::uint32_t word(const Request& request, std::size_t offset) {
     std::uint32_t value = 0;
@@ -298,7 +312,178 @@ bool GuestMachModels::handle_voucher(const Request& request, Reply& reply) {
 }
 
 bool GuestMachModels::handle_thread(const Request& request, Reply& reply) {
+    const auto flavor = word(request, 32);
+    const auto count = word(request, 36);
+    auto& policy = threadPolicy_[request.threadId];
     switch (request.id) {
+    case 3603: {  // thread_get_state(flavor, count)
+        if (request.size != 40) return false;
+        std::uint64_t state[34] = {};
+        if (flavor != armThreadState64 || count < armThreadState64Count) {
+            reply.code = kernInvalidArgument;
+            return true;
+        }
+        if (!env_.threadState || !env_.threadState(request.threadId, state)) return false;
+        append32(reply.extra, armThreadState64Count);
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(state);
+        // x0-x28, fp, lr, sp, pc as 64-bit words, then cpsr and flags.
+        reply.extra.insert(reply.extra.end(), bytes, bytes + 33 * sizeof(std::uint64_t));
+        append32(reply.extra, static_cast<std::uint32_t>(state[33]));
+        append32(reply.extra, 0);
+        return true;
+    }
+    case 3612: {  // thread_info(flavor, count)
+        if (request.size != 40) return false;
+        std::vector<std::uint32_t> info;
+        std::uint32_t needed = 0;
+        if (flavor == threadBasicInfo) {
+            needed = threadBasicInfoCount;
+            // user_time, system_time, cpu_usage, policy TIMESHARE, state RUNNING,
+            // flags, suspend_count, sleep_time.
+            info = {0, 0, 0, 0, 0, 1, 1, 0, 0, 0};
+        } else if (flavor == threadIdentifierInfo) {
+            needed = threadIdentifierInfoCount;
+            const std::uint64_t handle = env_.threadHandle ? env_.threadHandle(request.threadId) : 0;
+            const std::uint64_t values[3] = {request.threadId, handle, handle + 0xa0};
+            for (const auto value : values) {
+                info.push_back(static_cast<std::uint32_t>(value));
+                info.push_back(static_cast<std::uint32_t>(value >> 32));
+            }
+        } else if (flavor == threadExtendedInfo) {
+            needed = threadExtendedInfoCount;
+            // user/system time, cpu_usage, policy, run_state, flags, sleep, curpri,
+            // priority, maxpriority, then the 64-byte thread name.
+            info = {0, 0, 0, 0, 0, 1, 1, 0, 0, 31, 31, 63};
+            std::vector<std::uint8_t> name(64, 0);
+            const auto held = threadNames_.find(request.threadId);
+            if (held != threadNames_.end()) {
+                std::memcpy(name.data(), held->second.data(), held->second.size());
+            }
+            for (std::size_t offset = 0; offset < name.size(); offset += 4) {
+                std::uint32_t chunk = 0;
+                std::memcpy(&chunk, name.data() + offset, 4);
+                info.push_back(chunk);
+            }
+        } else if (flavor == 6) {
+            reply.code = kernNotSupported;
+            return true;
+        } else if (flavor == 99 || flavor == 0) {
+            reply.code = kernInvalidArgument;
+            return true;
+        } else {
+            return false;
+        }
+        if (count < needed) {
+            reply.code = kernInvalidArgument;
+            return true;
+        }
+        append32(reply.extra, needed);
+        for (const auto value : info) append32(reply.extra, value);
+        return true;
+    }
+    case 3617: {  // thread_policy_set(flavor, count, info[count])
+        if (request.size < 40 || count > 16) return false;
+        if (request.size != 40 + 4 * static_cast<std::size_t>(count)) {
+            reply.code = migBadArguments;
+            return true;
+        }
+        const auto info = [&](std::size_t index) {
+            return static_cast<std::int32_t>(word(request, 40 + 4 * index));
+        };
+        switch (flavor) {
+        case 1:  // THREAD_EXTENDED_POLICY
+            break;
+        case 3:  // THREAD_PRECEDENCE_POLICY
+            if (count < 1) reply.code = kernInvalidArgument; else policy.importance = info(0);
+            break;
+        case 2:  // THREAD_TIME_CONSTRAINT_POLICY
+            if (count != 4 || info(1) == 0 || info(2) < info(1)) {
+                reply.code = kernInvalidArgument;
+            } else {
+                policy.timeConstraintSet = true;
+                for (std::size_t i = 0; i < 4; ++i) policy.timeConstraint[i] = info(i);
+            }
+            break;
+        case 7:  // THREAD_LATENCY_QOS_POLICY
+            if (count < 1) reply.code = kernInvalidArgument; else policy.latency = info(0);
+            break;
+        case 8:  // THREAD_THROUGHPUT_QOS_POLICY
+            if (count < 1) reply.code = kernInvalidArgument; else policy.throughput = info(0);
+            break;
+        case 4:  // THREAD_AFFINITY_POLICY
+            reply.code = kernNotSupported;
+            break;
+        default:
+            reply.code = kernInvalidArgument;
+            break;
+        }
+        return true;
+    }
+    case 3618: {  // thread_policy_get(flavor, count, get_default)
+        if (request.size != 44) return false;
+        const bool wantDefault = word(request, 40) != 0;
+        std::vector<std::int32_t> info;
+        bool isDefault = wantDefault;
+        switch (flavor) {
+        case 1:
+            info = {1};
+            break;
+        case 2:
+            if (policy.timeConstraintSet && !wantDefault) {
+                info.assign(policy.timeConstraint, policy.timeConstraint + 4);
+            } else {
+                info = {0, 120000, 240000, 1};
+                isDefault = true;
+            }
+            break;
+        case 3:
+            info = {wantDefault ? 0 : policy.importance};
+            break;
+        case 7:
+            info = {wantDefault ? 0 : policy.latency};
+            break;
+        case 8:
+            info = {wantDefault ? 0 : policy.throughput};
+            break;
+        case 4:
+            reply.code = kernNotSupported;
+            return true;
+        case 6:  // THREAD_POLICY_STATE is restricted; the count is checked first
+            reply.code = count < 16 ? kernInvalidArgument : kernProtectionFailure;
+            return true;
+        case 0:
+        case 5:
+        case 12:
+            reply.code = kernInvalidArgument;
+            return true;
+        default:
+            return false;
+        }
+        if (count < info.size()) {
+            reply.code = kernInvalidArgument;
+            return true;
+        }
+        append32(reply.extra, static_cast<std::uint32_t>(info.size()));
+        for (const auto value : info) append32(reply.extra, static_cast<std::uint32_t>(value));
+        append32(reply.extra, isDefault ? 1 : 0);
+        return true;
+    }
+    case 3610: {  // thread_get_special_port(which)
+        if (request.size != 36) return false;
+        const auto which = word(request, 32);
+        if (which == 1) {
+            reply.code = kernDenied;
+        } else if (which == 2 || which == 3) {
+            if (!env_.threadName) return false;
+            port_reply(reply, env_.threadName(request.threadId));
+        } else {
+            reply.code = kernInvalidArgument;
+        }
+        return true;
+    }
+    case 3614:  // thread_get_exception_ports(mask)
+        exception_ports(request, reply, false);
+        return true;
     case 3625:
     case 3626:
         thread_voucher(request, reply, request.id == 3626);
@@ -316,7 +501,41 @@ bool GuestMachModels::handle_task(const Request& request, Reply& reply) {
         reply.code = kernInvalidArgument;
         return true;
     }
-    return false;
+    const auto flavor = word(request, 32);
+    const auto count = word(request, 36);
+    switch (request.id) {
+    case 3414:  // task_get_exception_ports(mask)
+        exception_ports(request, reply, true);
+        return true;
+    case 3420:  // task_policy_set(flavor, count, info[count])
+        if (request.size < 40 || count > 16) return false;
+        if (request.size != 40 + 4 * static_cast<std::size_t>(count)) {
+            reply.code = migBadArguments;
+        } else if (flavor >= 8 && flavor <= 11 && count >= 2) {
+            reply.code = kernSuccess;
+        } else {
+            reply.code = kernInvalidArgument;
+        }
+        return true;
+    case 3421:  // task_policy_get(flavor, count, get_default)
+        if (request.size != 44) return false;
+        if (flavor == 4) {  // TASK_POLICY_STATE is restricted
+            reply.code = count < 16 ? kernInvalidArgument : kernProtectionFailure;
+        } else if (flavor == 1 || flavor == 8 || flavor == 9) {
+            if (count < 1) {
+                reply.code = kernInvalidArgument;
+                return true;
+            }
+            append32(reply.extra, count);
+            for (std::uint32_t i = 0; i < count; ++i) append32(reply.extra, 0);
+            append32(reply.extra, 0);
+        } else {
+            reply.code = kernInvalidArgument;
+        }
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool GuestMachModels::handle_host(const Request& request, Reply& reply) {
@@ -343,11 +562,83 @@ bool GuestMachModels::handle_host(const Request& request, Reply& reply) {
     return false;
 }
 
-void GuestMachModels::exception_ports(const Request&, Reply&, bool) {}
+// thread_get_exception_ports / task_get_exception_ports: no handler ports are
+// registered; the task keeps the kernel's default behaviour and flavor per
+// exception type and merges types that share them.
+void GuestMachModels::exception_ports(const Request& request, Reply& reply, bool task) {
+    const auto mask = word(request, 32);
+    if (request.size != 36 || (mask & ~exceptionMaskValid) != 0) {
+        reply.code = kernInvalidArgument;
+        return;
+    }
+    struct Entry {
+        std::uint32_t mask;
+        std::uint32_t behavior;
+        std::uint32_t flavor;
+    };
+    std::vector<Entry> entries;
+    if (task) {
+        for (std::uint32_t type = 1; type <= 13; ++type) {
+            if ((mask & (1U << type)) == 0) continue;
+            const std::uint32_t behavior = type <= 9 ? 0U : type <= 12 ? 1U : 0xa0000004U;
+            const std::uint32_t flavor = type <= 9 ? 0U : type <= 12 ? 5U : 1U;
+            bool merged = false;
+            for (auto& entry : entries) {
+                if (entry.behavior == behavior && entry.flavor == flavor) {
+                    entry.mask |= 1U << type;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged) entries.push_back({1U << type, behavior, flavor});
+        }
+    }
+    reply.complex = true;
+    append32(reply.body, 32);
+    for (int i = 0; i < 32; ++i) {
+        append32(reply.body, 0);
+        append32(reply.body, 0);
+        append32(reply.body, machMsgTypeMoveSend << 16);
+    }
+    append32(reply.body, 0);
+    append32(reply.body, 1);
+    append32(reply.body, static_cast<std::uint32_t>(entries.size()));
+    for (const auto& entry : entries) append32(reply.body, entry.mask);
+    for (const auto& entry : entries) append32(reply.body, entry.behavior);
+    for (const auto& entry : entries) append32(reply.body, entry.flavor);
+}
 
-std::uint32_t GuestMachModels::proc_info_setcontrol(std::int32_t, std::int32_t, std::uint32_t,
-                                                    std::uint64_t, std::uint32_t) {
-    return 0;
+// PROC_INFO_CALL_SETCONTROL against the calling process.
+std::uint32_t GuestMachModels::proc_info_setcontrol(
+    std::int32_t pid, std::int32_t ownPid, std::uint32_t flavor, std::uint64_t buffer,
+    std::uint32_t size, std::uint64_t threadId) {
+    constexpr std::uint32_t errnoPerm = 1;
+    constexpr std::uint32_t errnoFault = 14;
+    constexpr std::uint32_t errnoInvalid = 22;
+    constexpr std::uint32_t errnoNameTooLong = 63;
+    constexpr std::uint32_t errnoNotSupported = 45;
+    constexpr std::uint32_t maxThreadNameSize = 64;
+    if (pid != ownPid) return errnoInvalid;
+    switch (flavor) {
+    case 1:  // PROC_SELFSET_PCONTROL
+    case 4:  // PROC_SELFSET_DELAYIDLESLEEP
+        return 0;
+    case 3:  // PROC_SELFSET_VMRSRCOWNER needs an entitlement
+        return errnoPerm;
+    case 2: {  // PROC_SELFSET_THREADNAME
+        if (size >= maxThreadNameSize) return errnoNameTooLong;
+        std::vector<std::uint8_t> name;
+        if (size != 0) {
+            const auto* bytes = env_.readGuest(buffer, size);
+            if (bytes == nullptr) return errnoFault;
+            for (std::uint32_t i = 0; i < size && bytes[i] != 0; ++i) name.push_back(bytes[i]);
+        }
+        threadNames_[threadId] = std::move(name);
+        return 0;
+    }
+    default:
+        return errnoNotSupported;
+    }
 }
 
 }  // namespace arm64metal::mach_models
