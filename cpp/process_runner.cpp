@@ -2,6 +2,7 @@
 #include "guest_dlopen.hpp"
 #include "host_service_registry.hpp"
 #include "guest_exit.hpp"
+#include "guest_mach_models.hpp"
 #include "process_runner.hpp"
 
 #include "image_loader.hpp"
@@ -3577,6 +3578,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::uint8_t> body;
         std::vector<GuestLocalPortRightTransfer> transferredSendRights;
         std::uint32_t receivedBits = MACH_MSG_TYPE_MOVE_SEND << 8;
+        bool kernelRights = false;
     };
     std::map<std::uint32_t, std::deque<GuestLocalMessage>> guestMachMessageQueues;
     const auto kernelObjectRoutineExists = [](std::int32_t id) {
@@ -3709,6 +3711,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         guestUnixReceiveWaiters.erase(waiters);
     };
     const auto restoreGuestTransferredSendRight = [&](const GuestLocalMessage& message) {
+        if (message.kernelRights) {
+            for (const auto& transfer : message.transferredSendRights) {
+                auto& references = guestSendRightUrefs[transfer.name];
+                if (references < maxGuestPortUrefs) ++references;
+            }
+            return true;
+        }
         for (const auto& transfer : message.transferredSendRights) {
             if (guestReceiveRights.find(transfer.name) == guestReceiveRights.end() ||
                 guestSendRightUrefs.find(transfer.name) == guestSendRightUrefs.end()) {
@@ -3898,6 +3907,49 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         return name;
     };
+    mach_models::GuestMachModels machModels([&] {
+        mach_models::Environment environment;
+        environment.hostName = static_cast<std::uint32_t>(guestMachHostPort);
+        environment.taskName = static_cast<std::uint32_t>(guestMachTaskPort);
+        environment.holdsSendRight = [&](std::uint32_t name) {
+            const auto right = guestSendRightUrefs.find(name);
+            return right != guestSendRightUrefs.end() && right->second != 0;
+        };
+        environment.allocateName = [&]() -> std::uint32_t {
+            while (nextGuestReceiveName < std::numeric_limits<std::uint32_t>::max() - 4 &&
+                   (guestReceiveRights.count(nextGuestReceiveName) != 0 ||
+                    guestSendRightUrefs.count(nextGuestReceiveName) != 0)) {
+                nextGuestReceiveName += 4;
+            }
+            if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) return 0;
+            const auto name = nextGuestReceiveName;
+            nextGuestReceiveName += 4;
+            guestSendRightUrefs.emplace(name, 0U);
+            return name;
+        };
+        environment.acquire = [&](std::uint32_t name) { (void)acquireGuestFixedSendRight(name); };
+        environment.readGuest = [&](std::uint64_t address, std::size_t size)
+            -> const std::uint8_t* {
+            try {
+                if (!guestMemory.is_guest_readable(address, size)) return nullptr;
+                return guestMemory.buffer(address, size);
+            } catch (const std::exception&) {
+                return nullptr;
+            }
+        };
+        environment.writeGuest = [&](std::uint64_t address, std::size_t size) -> std::uint8_t* {
+            try {
+                if (!guestMemory.is_guest_readable(address, size) ||
+                    guestMemory.is_readonly(address, size)) {
+                    return nullptr;
+                }
+                return guestMemory.buffer(address, size, true);
+            } catch (const std::exception&) {
+                return nullptr;
+            }
+        };
+        return environment;
+    }());
     struct GuestWorkqueueDispatchConfig {
         std::uint32_t version;
         std::uint32_t flags;
@@ -12754,9 +12806,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     [remote](const auto& entry) { return entry.second == remote; });
                 const bool clockRemote = guestClockServiceIds.find(remote) !=
                                          guestClockServiceIds.end();
+                const bool voucherRemote = machModels.is_voucher_port(remote);
                 const bool specialRemote = remote == guestMachTaskPort ||
                                            remote == guestMachHostPort || clockRemote ||
-                                           threadRemote;
+                                           threadRemote || voucherRemote;
                 const bool knownKernelObjectShape = messageId == 200 || messageId == 3207 ||
                     messageId == 4822 || messageId == 8000 || messageId == 8001;
                 const bool kernelObjectSend = sendRequested && specialRemote &&
@@ -12940,6 +12993,36 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 }
                                 modeled = true;
                             }
+                            std::uint32_t modelSendResult = 0;
+                            bool modelComplex = false;
+                            std::vector<std::uint32_t> modelRights;
+                            if (!modeled) {
+                                mach_models::Request modelRequest;
+                                modelRequest.object = remote == guestMachTaskPort
+                                    ? mach_models::Object::Task
+                                    : remote == guestMachHostPort ? mach_models::Object::Host
+                                    : threadRemote ? mach_models::Object::Thread
+                                    : voucherRemote ? mach_models::Object::Voucher
+                                    : mach_models::Object::Clock;
+                                modelRequest.remote = remote;
+                                modelRequest.id = static_cast<std::int32_t>(messageId);
+                                modelRequest.currentThreadId = guestScheduler.current_id();
+                                for (const auto& entry : guestThreadPortNames) {
+                                    if (entry.second == remote) modelRequest.threadId = entry.first;
+                                }
+                                modelRequest.data = requestBytes.data();
+                                modelRequest.size = requestBytes.size();
+                                mach_models::Reply modelReply;
+                                if (machModels.handle(modelRequest, modelReply)) {
+                                    modeled = true;
+                                    modelSendResult = modelReply.sendResult;
+                                    replyCode = modelReply.code;
+                                    modelComplex = modelReply.complex;
+                                    modelRights = std::move(modelReply.rights);
+                                    replyExtra = modelComplex ? std::move(modelReply.body)
+                                                              : std::move(modelReply.extra);
+                                }
+                            }
                             if (!modeled) {
                                 survey("msgh_id", messageId,
                                        std::string(inRoutineRange ? "KERN_NOT_SUPPORTED:"
@@ -12952,7 +13035,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                                                           : "MIG_BAD_ID")
                                           << '\n';
                             }
-                            if (replyName != 0) {
+                            if (modelSendResult != 0) {
+                                result = modelSendResult;
+                            } else if (replyName != 0 && modelComplex) {
+                                GuestLocalMessage message{
+                                    static_cast<std::uint32_t>(sizeof(mach_msg_header_t) +
+                                        replyExtra.size()),
+                                    MACH_MSGH_BITS_COMPLEX, 0, 0,
+                                    static_cast<std::int32_t>(messageId + 100), {}, {},
+                                    MACH_MSG_TYPE_MOVE_SEND_ONCE << 8};
+                                message.body = std::move(replyExtra);
+                                message.kernelRights = true;
+                                for (const auto name : modelRights) {
+                                    message.transferredSendRights.push_back(
+                                        {name, MACH_MSG_TYPE_MOVE_SEND});
+                                }
+                                guestMachMessageQueues[replyName].push_back(std::move(message));
+                                deliverGuestMachMessage(replyName);
+                            } else if (replyName != 0) {
                                 struct KernelObjectErrorBody {
                                     NDR_record_t ndr;
                                     std::int32_t returnCode;
@@ -15389,9 +15489,31 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[0] = result;
                     break;
                 }
-                default:
+                default: {
+                    const auto outcome = machModels.trap(machTrapNumber, registers);
+                    if (outcome == mach_models::TrapOutcome::Handled) break;
+                    if (outcome == mach_models::TrapOutcome::Sigsys) {
+                        std::vector<std::uint64_t> live(
+                            registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                        const GuestSynchronousFault fault{SIGSYS, 0, registers[33], registers[33]};
+                        const auto delivery = signalRuntime.deliver_synchronous(
+                            hostServiceState.signals, hostServiceState.threadSignalMask,
+                            live, guestMemory, fault, live[37],
+                            static_cast<std::uint64_t>(activeEntry),
+                            guestScheduler.current_id());
+                        if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
+                            return delivery.exitStatus;
+                        }
+                        if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
+                            std::memcpy(stateBuffer.data(), live.data(),
+                                        live.size() * sizeof(std::uint64_t));
+                            selectKernel(static_cast<std::int64_t>(delivery.handler));
+                            continue;
+                        }
+                    }
                     machTrapHandled = false;
                     break;
+                }
                 }
                 if (machTrapHandled) {
                     registers[34] = 0;

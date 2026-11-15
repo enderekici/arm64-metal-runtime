@@ -12,6 +12,7 @@ COMPONENT_SOURCES := \
 	function_runner.cpp \
 	guest_code_policy.cpp \
 	guest_format.cpp \
+	guest_mach_models.cpp \
 	guest_signal_runtime.cpp \
 	guest_scheduler.cpp \
 	guest_state.cpp \
@@ -59,6 +60,7 @@ APP_SOURCES := \
 	guest_scheduler.cpp \
 	guest_code_policy.cpp \
 	guest_format.cpp \
+	guest_mach_models.cpp \
 	guest_state.cpp \
 	guest_strings.cpp \
 	guest_survey.cpp \
