@@ -137,6 +137,39 @@ ulong2 vector_sha256_su1(ulong2 destination_bits, ulong2 source1_bits,
     result.z = destination.z + schedule.z + sha256_small_sigma1(result.x);
     result.w = destination.w + schedule.w + sha256_small_sigma1(result.y);
     return as_type<ulong2>(result);
+}
+ulong sha512_ror(ulong value, ulong amount) {
+    return (value >> amount) | (value << (64ul - amount));
+}
+ulong sha512_upper_sigma1(ulong value) {
+    return sha512_ror(value, 14ul) ^ sha512_ror(value, 18ul) ^ sha512_ror(value, 41ul);
+}
+ulong sha512_upper_sigma0(ulong value) {
+    return sha512_ror(value, 28ul) ^ sha512_ror(value, 34ul) ^ sha512_ror(value, 39ul);
+}
+// Operands follow the ARM pseudocode: w = Vd, x = Vn, y = Vm; [0] is bits 63:0.
+ulong2 vector_sha512h(ulong2 w, ulong2 x, ulong2 y) {
+    ulong high = ((y[1] & x[0]) ^ (~y[1] & x[1])) + sha512_upper_sigma1(y[1]) + w[1];
+    ulong t = high + y[0];
+    ulong low = ((t & y[1]) ^ (~t & x[0])) + sha512_upper_sigma1(t) + w[0];
+    return ulong2(low, high);
+}
+ulong2 vector_sha512h2(ulong2 w, ulong2 x, ulong2 y) {
+    ulong high = ((x[0] & y[1]) ^ (x[0] & y[0]) ^ (y[1] & y[0])) +
+                 sha512_upper_sigma0(y[0]) + w[1];
+    ulong low = ((high & y[0]) ^ (high & y[1]) ^ (y[1] & y[0])) +
+                sha512_upper_sigma0(high) + w[0];
+    return ulong2(low, high);
+}
+ulong2 vector_sha512su0(ulong2 w, ulong2 x) {
+    ulong low = w[0] + (sha512_ror(w[1], 1ul) ^ sha512_ror(w[1], 8ul) ^ (w[1] >> 7));
+    ulong high = w[1] + (sha512_ror(x[0], 1ul) ^ sha512_ror(x[0], 8ul) ^ (x[0] >> 7));
+    return ulong2(low, high);
+}
+ulong2 vector_sha512su1(ulong2 w, ulong2 x, ulong2 y) {
+    ulong high = w[1] + (sha512_ror(x[1], 19ul) ^ sha512_ror(x[1], 61ul) ^ (x[1] >> 6)) + y[1];
+    ulong low = w[0] + (sha512_ror(x[0], 19ul) ^ sha512_ror(x[0], 61ul) ^ (x[0] >> 6)) + y[0];
+    return ulong2(low, high);
 })METAL";
 
 }  // namespace
@@ -204,7 +237,8 @@ std::optional<translate_core::Instruction> lower_vector_crypto(
                        {pc + 4}};
   }
 
-  // FEAT_SHA3: EOR3, BCAX (four-register), RAX1, XAR (64-bit lanes).
+  // FEAT_SHA3: EOR3, BCAX (four-register), RAX1, XAR; FEAT_SHA512: SHA512H,
+  // SHA512H2, SHA512SU0, SHA512SU1. All operate on 64-bit lanes.
   {
     const auto d = sha_destination_register, n = sha_source_register,
                m = sha_third_register, a = (bits >> 10) & 0x1fu;
@@ -215,6 +249,17 @@ std::optional<translate_core::Instruction> lower_vector_crypto(
       expression = vector_value(n) + " ^ (" + vector_value(m) + " & ~" + vector_value(a) + ")";
     } else if ((bits & 0xffe0fc00u) == 0xce608c00u) {
       expression =vector_value(n) + " ^ rotate(" + vector_value(m) + ", ulong2(1ul))";
+    } else if ((bits & 0xffe0fc00u) == 0xce608000u) {
+      expression = "vector_sha512h(" + vector_value(d) + ", " + vector_value(n) + ", " +
+                   vector_value(m) + ")";
+    } else if ((bits & 0xffe0fc00u) == 0xce608400u) {
+      expression = "vector_sha512h2(" + vector_value(d) + ", " + vector_value(n) + ", " +
+                   vector_value(m) + ")";
+    } else if ((bits & 0xffe0fc00u) == 0xce608800u) {
+      expression = "vector_sha512su1(" + vector_value(d) + ", " + vector_value(n) + ", " +
+                   vector_value(m) + ")";
+    } else if ((bits & 0xfffffc00u) == 0xcec08000u) {
+      expression = "vector_sha512su0(" + vector_value(d) + ", " + vector_value(n) + ")";
     } else if ((bits & 0xffe00000u) == 0xce800000u) {
       const auto shift = std::to_string((bits >> 10) & 0x3fu);
       expression = "rotate(" + vector_value(n) + " ^ " + vector_value(m) + ", ulong2((64ul - " +
