@@ -2033,8 +2033,9 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return make_instruction(code + Strings{(std::string("}"))}, PCs{next});
   }
   auto vectorPair = bits & 0x3fc00000;
-  if ((contains({0x2d000000, 0x2d400000, 0x2d800000, 0x2dc00000, 0x2c800000,
-                 0x2cc00000},
+  // Mode (bits 24:23): 0 non-temporal (LDNP/STNP), 1 post-, 2 offset, 3 pre-index.
+  if ((contains({0x2c000000, 0x2c400000, 0x2d000000, 0x2d400000, 0x2d800000,
+                 0x2dc00000, 0x2c800000, 0x2cc00000},
                 vectorPair)) &&
       (field(30, 2) < 3)) {
     auto width = 4 << field(30, 2);
@@ -2079,7 +2080,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(outside((std::string("address")), 2 * width, load)) +
                  ") { x[33] = " + str(pc) + "ul; x[34] = 2; return; }")} +
             transfer(rd, 0) + transfer(second, width) +
-            Strings{mode == 2 ? (std::string(""))
+            Strings{(mode == 0 || mode == 2) ? (std::string(""))
                               : (std::string(str(base)) + " += ulong(" +
                                  str(offset) + ");"),
                     (std::string("}"))},
@@ -2250,8 +2251,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   auto pair = bits & 0xffc00000;
   auto pairEncoding = pair & 0x7fffffff;
   const bool signedPair = contains({0x69400000, 0x69c00000, 0x68c00000}, pair);
-  if (signedPair || (contains({0x29000000, 0x29400000, 0x29800000, 0x29c00000,
-                               0x28800000, 0x28c00000},
+  if (signedPair || (contains({0x28000000, 0x28400000, 0x29000000, 0x29400000,
+                               0x29800000, 0x29c00000, 0x28800000, 0x28c00000},
                               pairEncoding) &&
                      field(30, 1) == 0)) {
     auto wide = field(31, 1) == 1;
@@ -2262,7 +2263,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto load = field(22, 1) == 1;
     auto mode = field(23, 2);
     if (!((!load || rd != second) &&
-          (rn == 31 || mode == 2 || (rn != rd && rn != second)))) {
+          (rn == 31 || mode == 0 || mode == 2 || (rn != rd && rn != second)))) {
       throw GuestError((std::string("Unpredictable pair register overlap")));
     }
     auto offset = sign_extend(field(15, 7), 7) * width;
@@ -2295,7 +2296,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto secondAccess = transfer(second, width);
     return emit((std::string("{ ulong address = ") + str(address) + ";"),
                 bounds, firstAccess, secondAccess,
-                mode == 2 ? (std::string(""))
+                (mode == 0 || mode == 2) ? (std::string(""))
                           : (std::string(str(base)) + " += ulong(" +
                              str(offset) + ");"),
                 (std::string("}")));

@@ -704,6 +704,17 @@ verify-dit: $(DIT_NATIVE) $(APP)
 	"$(APP)" launch "$(DIT_NATIVE)" >"$(BUILD_DIR)/dit.gpu.out"
 	cmp "$(BUILD_DIR)/dit.native.out" "$(BUILD_DIR)/dit.gpu.out"
 
+LDNP_STNP_NATIVE := $(BUILD_DIR)/ldnp-stnp-differential
+$(LDNP_STNP_NATIVE): ../fixtures/handoff/ldnp-stnp-differential.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O1 -fno-stack-protector "$<" -o "$@"
+
+.PHONY: verify-ldnp-stnp
+verify-ldnp-stnp: $(LDNP_STNP_NATIVE) $(APP)
+	"$(LDNP_STNP_NATIVE)" >"$(BUILD_DIR)/ldnp-stnp.native.out"
+	"$(APP)" launch "$(LDNP_STNP_NATIVE)" >"$(BUILD_DIR)/ldnp-stnp.gpu.out"
+	cmp "$(BUILD_DIR)/ldnp-stnp.native.out" "$(BUILD_DIR)/ldnp-stnp.gpu.out"
+
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"
