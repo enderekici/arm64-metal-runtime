@@ -51,6 +51,7 @@
 #include "raw_fs_syscalls.hpp"
 #include "dyld_api_abi.hpp"
 #include "dyld_api_slots.hpp"
+#include "objc_load_images.hpp"
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -2178,6 +2179,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         image, bootstrap, guestTlvRuntime, std::move(occupiedTlvKeys));
 
     std::vector<std::uint64_t> startup;
+    // Image header owning each startup entry (0: libSystem/objc bootstrap).
+    std::vector<std::uint64_t> startupImageHeaders;
     std::size_t writableTproStartupTargets = 0;
     const bool cacheBootstrap = options.cacheBootstrap || options.cachedInitializers ||
         (std::getenv("ARM64_METAL_CACHE_BOOTSTRAP") != nullptr &&
@@ -2206,9 +2209,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         for (std::size_t index = 0; index < image.startup_initializer_images.size(); ++index) {
             const auto& initializerImage = image.startup_initializer_images[index];
+            startupImageHeaders.resize(startup.size(), 0);
             if (!initializerImage.from_shared_cache) {
                 startup.insert(startup.end(), initializerImage.local_targets.begin(),
                                initializerImage.local_targets.end());
+                startupImageHeaders.resize(startup.size(), initializerImage.header);
                 continue;
             }
             for (const auto& initializer : initializerImage.cached_targets) {
@@ -2226,11 +2231,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 startup.push_back(initializer.target_address);
             }
+            startupImageHeaders.resize(startup.size(), initializerImage.header);
         }
     } else {
         startup.insert(startup.end(), image.initializers.begin(), image.initializers.end());
     }
+    startupImageHeaders.resize(startup.size(), 0);
     startup.push_back(image.entry);
+    startupImageHeaders.push_back(0);
     auto processRegisters = bootstrap.registers;
     enter_startup_frame(processRegisters, bootstrap, startup.front());
     processRegisters[guestThreadPointer] = bootstrap.mainThreadSpecificData;
@@ -4123,6 +4131,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint64_t exitThread = 0;
     };
     std::unordered_map<std::uint64_t, std::vector<GuestCallbackFrame>> callbackFramesByThread;
+    ObjCLoadImagesState objcLoadImages;
     GuestExitRegistry exitRegistry;
     std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> dynamicImageGroups;
     std::unordered_map<std::uint64_t, std::size_t> dynamicImageOwners;
@@ -4901,6 +4910,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             startup[startupIndex], startupIndex);
         std::memcpy(stateBuffer.data(), processRegisters.data(),
                     processRegisters.size() * sizeof(std::uint64_t));
+        const bool mainEntry = startupIndex + 1 == startup.size();
+        const auto owner = startupImageHeaders[startupIndex];
+        const auto pendingLoads = mainEntry || owner != 0
+            ? objcLoadImages.take_through(image.startup_image_order, owner, mainEntry)
+            : std::vector<std::uint64_t>{};
+        if (!pendingLoads.empty()) {
+            // Deliver objc load_images (+load) before this image's initializers;
+            // the frame then resumes at the startup entry entered above.
+            auto* words = static_cast<std::uint64_t*>(stateBuffer.data());
+            GuestCallbackFrame frame;
+            frame.savedRegisters.assign(words, words + 36);
+            frame.savedVectorAndAuth.assign(words + 806, words + guestTokenCount);
+            frame.authenticationDepth = words[37];
+            frame.callback = objcLoadImages.callback;
+            for (const auto record : pendingLoads) frame.arguments.push_back({record, 0, 0, 0});
+            frame.nextArgument = 1;
+            callbackFramesByThread[guestScheduler.current_id()].push_back(std::move(frame));
+            words[0] = pendingLoads.front();
+            words[1] = 0;
+            words[2] = 0;
+            words[3] = 0;
+            words[30] = guestReturnSentinel;
+            words[33] = objcLoadImages.callback;
+            selectKernel(static_cast<std::int64_t>(objcLoadImages.callback));
+            lastKernelSelectionPath = "objc-load-images";
+            return true;
+        }
         selectKernel(static_cast<std::int64_t>(startup[startupIndex]));
         lastKernelSelectionPath = "startup-advance";
         return true;
@@ -9827,6 +9863,27 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     !image.is_code(static_cast<std::int64_t>(callback))) {
                     throw std::runtime_error("Objective-C callback target is outside guest text");
                 }
+                {
+                    // v4 table: version, mapped, init (load_images), unmapped, patch.
+                    std::uint64_t signedInit = 0;
+                    std::memcpy(&signedInit, table + 16, sizeof(signedInit));
+                    const auto initModifier = ((tableAddress + 16) & 0x0000ffffffffffffULL) |
+                                              0x4b12000000000000ULL;
+                    const auto initIndex = static_cast<std::size_t>(
+                        (signedInit & 0xffffffffULL) >> 3U);
+                    if ((signedInit & 0xffff000000000000ULL) == 0xa64e000000000000ULL &&
+                        initIndex != 0 && initIndex <= live[guestTokenCount]) {
+                        const auto slot = guestTokenStart + 3 * (initIndex - 1);
+                        if (signedInit == encode_guest_pointer(live[slot], live[slot + 2],
+                                                               initIndex - 1) &&
+                            live[slot + 1] == initModifier && live[slot + 2] == 1 &&
+                            live[slot] <= static_cast<std::uint64_t>(
+                                std::numeric_limits<std::int64_t>::max()) &&
+                            image.is_code(static_cast<std::int64_t>(live[slot]))) {
+                            objcLoadImages.callback = live[slot];
+                        }
+                    }
+                }
                 std::vector<std::pair<std::uint64_t, std::string>> objcImages;
                 for (const auto& [header, path] : image.image_paths) {
                     const auto info = image.lookup_guest_section(
@@ -9892,6 +9949,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::memcpy(batchData + record + 8, &pathAddress, sizeof(pathAddress));
                     std::memcpy(batchData + record + 16, &third, sizeof(third));
                     std::memcpy(batchData + record + 24, &flags, sizeof(flags));
+                    objcLoadImages.records[header] = *batch + record;
                     const auto& path = objcImages[index].second;
                     std::memcpy(batchData + pathOffset, path.c_str(), path.size() + 1);
                     pathOffset += path.size() + 1;

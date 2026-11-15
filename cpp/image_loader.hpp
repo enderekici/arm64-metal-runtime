@@ -282,6 +282,9 @@ struct ExecutableImage {
   // Alternative ordered plan for an explicit consumer. Do not concatenate this
   // with `initializers`: local constructors are represented in both sequences.
   std::vector<StartupInitializerImage> startup_initializer_images;
+  // Every eager startup image header in dyld initializer order, including
+  // images without initializers (objc +load notifications follow this order).
+  std::vector<std::uint64_t> startup_image_order;
   std::vector<SharedCache::Initializer> startup_libsystem_initializers;
   bool startup_initializer_metadata_collected = false;
   bool startup_initializer_upward_links_supported = false;

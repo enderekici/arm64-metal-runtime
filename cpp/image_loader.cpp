@@ -1229,6 +1229,7 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
         }
       }
       if (eager.find(header) == eager.end()) return;
+      startup_image_order.push_back(header);
       StartupInitializerImage record;
       record.header = header;
       if (const auto local = localByHeader.find(header); local != localByHeader.end()) {
