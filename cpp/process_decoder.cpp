@@ -1352,7 +1352,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                             str(lane) + ", " + str(width) + ") ^ " + str(sign) +
                             "ul) - " + str(sign) + "ul);"));
   }
-  if ((bits & 0xbf20fc00) == 0x0e003c00) {
+  if ((bits & 0xbfe0fc00) == 0x0e003c00) {
     auto immediate = field(16, 5);
     if (!immediate || ctz(immediate) >= 4)
       throw GuestError("Invalid UMOV lane encoding");
