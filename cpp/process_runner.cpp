@@ -10207,8 +10207,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t*>(stateBuffer.data()));
                 continue;
             }
-            const auto result = dispatch_guest_host_service(hostRegisters, guestMemory, bootstrap,
-                                                            hostServiceState, service);
+            HostServiceResult result;
+            try {
+                result = dispatch_guest_host_service(hostRegisters, guestMemory, bootstrap,
+                                                     hostServiceState, service);
+            } catch (const std::exception& error) {
+                dumpTransitions();
+                throw std::runtime_error(std::string(error.what()) + " (host service " +
+                                         std::to_string(service) + " " + lastHostTransition + ")");
+            }
             std::copy_n(hostRegisters.begin(), 36,
                         static_cast<std::uint64_t*>(stateBuffer.data()));
             if (result.exited) return result.exitStatus;
