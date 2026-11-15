@@ -12,6 +12,7 @@
 #include "guest_signal_runtime.hpp"
 #include "guest_scheduler.hpp"
 #include "guest_survey.hpp"
+#include "cache_local_symbols.hpp"
 #include "guest_tlv.hpp"
 #include "gpu_interpreter.hpp"
 #include "metal_backend.hpp"
@@ -3428,9 +3429,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (references < maxGuestPortUrefs) ++references;
         return threadPort->second;
     };
+    std::function<bool(std::uint64_t)> beginThreadTsdCleanup;
     const auto finishGuestThread = [&](std::uint64_t result,
                                        std::vector<std::uint64_t>& live) {
         const auto completedId = guestScheduler.current_id();
+        if (beginThreadTsdCleanup && beginThreadTsdCleanup(result)) return false;
         if (guestWorkqueueThreadIds.erase(completedId) != 0) {
             const auto port = guestThreadPortNames.find(completedId);
             if (port != guestThreadPortNames.end()) {
@@ -7705,6 +7708,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         unloadDynamicImages(frame.drainedExitImages);
         return false;
     };
+#include "thread_tsd_cleanup.inc"
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;

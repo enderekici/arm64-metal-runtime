@@ -76,6 +76,7 @@ APP_SOURCES := \
 	process_msl.cpp \
 	process_runner.cpp \
 	raw_proc_syscalls.cpp \
+	cache_local_symbols.cpp \
 	shared_cache.cpp \
 	translate_core.cpp \
 	function_runner.cpp \
