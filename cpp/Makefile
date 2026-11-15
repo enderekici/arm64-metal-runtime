@@ -78,6 +78,14 @@ APP_SOURCES := \
 	main.cpp
 APP_HEADERS := $(wildcard *.h *.hpp *.inc)
 APP := $(BUILD_DIR)/arm64-metal
+# Inputs that determine the generated MSL; keys the on-disk kernel cache.
+GENERATOR_FILES := translate_core.cpp translate_core.hpp process_msl.cpp process_msl.hpp \
+	process_decoder.cpp process_decoder.hpp integer_ops_shared.h guest_neon.hpp \
+	guest_memory_msl.hpp process_vector_ops_msl.hpp process_vector_ops.hpp \
+	guest_vector_crypto.cpp guest_vector_crypto.hpp process_host.hpp host_service_registry.hpp \
+	guest_state.hpp guest_strings.hpp shared_cache.hpp gpu_interpreter.cpp gpu_interpreter.metal \
+	generate_interpreter_msl.cpp
+GENERATOR_HASH := $(shell cat $(GENERATOR_FILES) | shasum -a 256 | cut -c1-32)
 OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
 OPEN_APPEND_NATIVE := $(BUILD_DIR)/open-append-native
 PROC_INFO_NATIVE := $(BUILD_DIR)/proc-info-self
@@ -375,7 +383,7 @@ verify-dyld-platform-apis-native: $(DYLD_PLATFORM_APIS)
 $(APP): $(APP_SOURCES) $(APP_HEADERS)
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }
 	@mkdir -p "$(BUILD_DIR)"
-	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks $(APP_SOURCES) \
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks -DARM64_METAL_GENERATOR_HASH='"$(GENERATOR_HASH)"' $(APP_SOURCES) \
 		-framework Foundation -framework Metal -framework Security -o "$@"
 
 clean:

@@ -5,12 +5,19 @@
 
 #include "metal_backend.hpp"
 
+#include <CommonCrypto/CommonDigest.h>
+#include <crt_externs.h>
+#include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -69,25 +76,116 @@ std::uint64_t fnv1a(std::uint64_t hash, const void* data, std::size_t length) {
     return hash;
 }
 
-// Identity of the running runtime binary (path, size, mtime). Part of every
-// cache file name, so a rebuilt runtime never reads archives of another build.
-std::string runtimeIdentity() {
-    char path[4096];
-    std::uint32_t size = sizeof(path);
-    std::uint64_t hash = 14695981039346656037ull;
-    if (_NSGetExecutablePath(path, &size) == 0) {
-        hash = fnv1a(hash, path, std::strlen(path));
-        struct stat info;
-        if (stat(path, &info) == 0) {
-            const std::int64_t fields[3] = {static_cast<std::int64_t>(info.st_size),
-                                            static_cast<std::int64_t>(info.st_mtimespec.tv_sec),
-                                            static_cast<std::int64_t>(info.st_mtimespec.tv_nsec)};
-            hash = fnv1a(hash, fields, sizeof(fields));
-        }
-    }
+std::string hex16(std::uint64_t hash) {
     char text[32];
     std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
     return text;
+}
+
+std::string sha256Hex(const std::string& data, const std::string& salt) {
+    CC_SHA256_CTX context;
+    CC_SHA256_Init(&context);
+    CC_SHA256_Update(&context, salt.data(), static_cast<CC_LONG>(salt.size()));
+    CC_SHA256_Update(&context, "\0", 1);
+    CC_SHA256_Update(&context, data.data(), static_cast<CC_LONG>(data.size()));
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(digest, &context);
+    std::string text;
+    char byte[3];
+    for (unsigned char value : digest) {
+        std::snprintf(byte, sizeof(byte), "%02x", value);
+        text += byte;
+    }
+    return text;
+}
+
+std::string osBuild() {
+    char buffer[128] = {0};
+    std::size_t size = sizeof(buffer) - 1;
+    if (sysctlbyname("kern.osversion", buffer, &size, nullptr, 0) != 0) return "unknown";
+    return buffer;
+}
+
+#ifndef ARM64_METAL_GENERATOR_HASH
+#define ARM64_METAL_GENERATOR_HASH ""
+#endif
+
+// Identity of what determines the generated MSL and the compiled pipelines:
+// a build-time hash of the generator sources (Makefile GENERATOR_HASH), the OS
+// build and the GPU. Host-only edits (process_runner.cpp, raw_*.inc) do not
+// change it. Builds without the generator hash fall back to the runtime binary
+// path/size/mtime so a stale cache can never be read as current.
+std::string cacheIdentity(const std::string& gpuName) {
+    std::uint64_t hash = 14695981039346656037ull;
+    const std::string generator = ARM64_METAL_GENERATOR_HASH;
+    if (!generator.empty()) {
+        hash = fnv1a(hash, generator.data(), generator.size());
+    } else {
+        char path[4096];
+        std::uint32_t size = sizeof(path);
+        if (_NSGetExecutablePath(path, &size) == 0) {
+            hash = fnv1a(hash, path, std::strlen(path));
+            struct stat info;
+            if (stat(path, &info) == 0) {
+                const std::int64_t fields[3] = {static_cast<std::int64_t>(info.st_size),
+                                                static_cast<std::int64_t>(info.st_mtimespec.tv_sec),
+                                                static_cast<std::int64_t>(info.st_mtimespec.tv_nsec)};
+                hash = fnv1a(hash, fields, sizeof(fields));
+            }
+        }
+    }
+    const std::string os = osBuild();
+    hash = fnv1a(hash, os.data(), os.size());
+    hash = fnv1a(hash, gpuName.data(), gpuName.size());
+    return hex16(hash);
+}
+
+std::string toolPath(const char* tool) {
+    FILE* pipe = nullptr;
+    std::string command = std::string("/usr/bin/xcrun -sdk macosx -f ") + tool + " 2>/dev/null";
+    pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) return "";
+    char line[4096] = {0};
+    std::string path;
+    if (std::fgets(line, sizeof(line), pipe) != nullptr) path = line;
+    pclose(pipe);
+    while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) path.pop_back();
+    if (access(path.c_str(), X_OK) != 0) return "";
+    return path;
+}
+
+bool runTool(const std::vector<std::string>& args, const std::string& logPath) {
+    std::vector<char*> argv;
+    for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 1, logPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&actions, 1, 2);
+    pid_t pid = 0;
+    const int rc = posix_spawn(&pid, args[0].c_str(), &actions, nullptr, argv.data(), *_NSGetEnviron());
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) return false;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+// ARM64_METAL_DUMP_MSL=<dir> writes every compiled source to <dir>/<pid>-<seq>.metal.
+void dumpSource(const std::string& source) {
+    static const char* directory = std::getenv("ARM64_METAL_DUMP_MSL");
+    static std::atomic<unsigned> sequence{0};
+    if (directory == nullptr || directory[0] == '\0') return;
+    mkdir(directory, 0755);
+    char name[64];
+    std::snprintf(name, sizeof(name), "/%d-%04u.metal", getpid(), sequence.fetch_add(1));
+    if (FILE* out = std::fopen((std::string(directory) + name).c_str(), "wb")) {
+        std::fwrite(source.data(), 1, source.size(), out);
+        std::fclose(out);
+    }
 }
 
 constexpr unsigned flushEveryNewEntries = 32;
@@ -115,6 +213,17 @@ struct KernelCache {
     unsigned dirty = 0;
     std::uint64_t hits = 0;
     std::uint64_t misses = 0;
+    std::string libraryDirectory;
+    std::string librarySalt;
+    bool libraryEnabled = false;
+    std::atomic<std::uint64_t> libraryHits{0};
+    std::atomic<std::uint64_t> libraryMisses{0};
+    std::atomic<std::uint64_t> libraryFallbacks{0};
+    std::atomic<std::uint64_t> libraryCounter{0};
+    std::mutex toolMutex;
+    bool toolsResolved = false;
+    std::string metalTool;
+    std::string metallibTool;
 
     static NS::String* nsString(const std::string& text) {
         return NS::String::string(text.c_str(), NS::UTF8StringEncoding);
@@ -129,7 +238,15 @@ struct KernelCache {
         mkdir(dir, 0755);
         struct stat info;
         if (stat(dir, &info) != 0 || !S_ISDIR(info.st_mode)) return nullptr;
-        cache->key = runtimeIdentity();
+        {
+            NS::String* gpu = device->name();
+            cache->key = cacheIdentity(gpu != nullptr && gpu->utf8String() != nullptr
+                                           ? gpu->utf8String() : "");
+        }
+        cache->libraryDirectory = cache->directory + "/lib";
+        mkdir(cache->libraryDirectory.c_str(), 0755);
+        cache->libraryEnabled = std::getenv("ARM64_METAL_NO_LIBRARY_STORE") == nullptr;
+        cache->librarySalt = cache->key + "/" + osBuild();
         const std::string prefix = cache->key + ".";
         if (DIR* handle = opendir(dir)) {
             while (dirent* entry = readdir(handle)) {
@@ -195,6 +312,68 @@ struct KernelCache {
         flushLocked();
     }
 
+    bool resolveTools() {
+        std::lock_guard<std::mutex> lock(toolMutex);
+        if (!toolsResolved) {
+            toolsResolved = true;
+            metalTool = toolPath("metal");
+            metallibTool = toolPath("metallib");
+        }
+        return !metalTool.empty() && !metallibTool.empty();
+    }
+
+    // Content-addressed library store: <dir>/lib/<sha256(source)>.metallib. A hit
+    // loads the stored library and skips the Metal front end. A miss compiles the
+    // source offline (metal -c, metallib), publishes with tmp+rename so concurrent
+    // readers see either nothing or a complete file, and loads that. Returns
+    // nullptr when the store cannot serve the source; the caller then compiles
+    // in process.
+    MTL::Library* loadStoredLibrary(const std::string& source) {
+        if (!libraryEnabled) return nullptr;
+        const std::string name = sha256Hex(source, librarySalt);
+        const std::string final = libraryDirectory + "/" + name + ".metallib";
+        auto load = [&]() -> MTL::Library* {
+            struct stat info;
+            if (stat(final.c_str(), &info) != 0 || info.st_size == 0) return nullptr;
+            NS::Error* error = nullptr;
+            return device->newLibrary(NS::URL::fileURLWithPath(nsString(final)), &error);
+        };
+        if (MTL::Library* library = load()) {
+            ++libraryHits;
+            return library;
+        }
+        if (!resolveTools()) {
+            ++libraryFallbacks;
+            return nullptr;
+        }
+        const std::string stem = libraryDirectory + "/" + name + "." + std::to_string(getpid()) +
+                                 "." + std::to_string(libraryCounter.fetch_add(1));
+        const std::string metalFile = stem + ".metal";
+        const std::string airFile = stem + ".air";
+        const std::string tempLibrary = stem + ".metallib";
+        const std::string logFile = stem + ".log";
+        bool ok = false;
+        if (FILE* out = std::fopen(metalFile.c_str(), "wb")) {
+            ok = std::fwrite(source.data(), 1, source.size(), out) == source.size();
+            ok = (std::fclose(out) == 0) && ok;
+        }
+        ok = ok && runTool({metalTool, "-c", metalFile, "-o", airFile}, logFile) &&
+             runTool({metallibTool, airFile, "-o", tempLibrary}, logFile) &&
+             std::rename(tempLibrary.c_str(), final.c_str()) == 0;
+        std::remove(metalFile.c_str());
+        std::remove(airFile.c_str());
+        std::remove(tempLibrary.c_str());
+        if (ok) std::remove(logFile.c_str());
+        if (ok) {
+            if (MTL::Library* library = load()) {
+                ++libraryMisses;
+                return library;
+            }
+        }
+        ++libraryFallbacks;
+        return nullptr;
+    }
+
     NS::Array* archiveArray() {
         std::vector<NS::Object*> all(readers.begin(), readers.end());
         all.push_back(writer);
@@ -252,11 +431,15 @@ struct Backend::Impl {
             if (perf != nullptr && std::strcmp(perf, "1") == 0) {
                 std::fprintf(stderr,
                              "arm64-metal kernel-cache hits=%llu misses=%llu readers=%zu "
+                             "library_hits=%llu library_misses=%llu library_fallbacks=%llu "
                              "library_s=%.3f pipeline_s=%.3f\n",
                              static_cast<unsigned long long>(kernelCache->hits),
                              static_cast<unsigned long long>(kernelCache->misses),
-                             kernelCache->readers.size(), libraryMicros.load() / 1e6,
-                             pipelineMicros.load() / 1e6);
+                             kernelCache->readers.size(),
+                             static_cast<unsigned long long>(kernelCache->libraryHits.load()),
+                             static_cast<unsigned long long>(kernelCache->libraryMisses.load()),
+                             static_cast<unsigned long long>(kernelCache->libraryFallbacks.load()),
+                             libraryMicros.load() / 1e6, pipelineMicros.load() / 1e6);
             }
             kernelCache.reset();
         }
@@ -352,7 +535,10 @@ ComputeKernel Backend::compileCompute(std::string_view source,
     NS::String* msl = NS::String::string(sourceString.c_str(), NS::UTF8StringEncoding);
     impl_->sourceLibraryCompiles.fetch_add(1, std::memory_order_relaxed);
     const auto libraryStarted = std::chrono::steady_clock::now();
-    MTL::Library* library = impl_->device->newLibrary(msl, nullptr, &error);
+    dumpSource(sourceString);
+    MTL::Library* library = impl_->kernelCache != nullptr
+                                ? impl_->kernelCache->loadStoredLibrary(sourceString) : nullptr;
+    if (library == nullptr) library = impl_->device->newLibrary(msl, nullptr, &error);
     impl_->libraryMicros.fetch_add(static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - libraryStarted).count()), std::memory_order_relaxed);
