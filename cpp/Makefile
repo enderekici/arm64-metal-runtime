@@ -693,6 +693,17 @@ verify-crypto-ext: $(CRYPTO_EXT_NATIVE) $(APP)
 	"$(APP)" launch "$(CRYPTO_EXT_NATIVE)" >"$(BUILD_DIR)/crypto-ext.gpu.out"
 	cmp "$(BUILD_DIR)/crypto-ext.native.out" "$(BUILD_DIR)/crypto-ext.gpu.out"
 
+DIT_NATIVE := $(BUILD_DIR)/dit-differential
+$(DIT_NATIVE): ../fixtures/handoff/dit-differential.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O1 -fno-stack-protector "$<" -o "$@"
+
+.PHONY: verify-dit
+verify-dit: $(DIT_NATIVE) $(APP)
+	"$(DIT_NATIVE)" >"$(BUILD_DIR)/dit.native.out"
+	"$(APP)" launch "$(DIT_NATIVE)" >"$(BUILD_DIR)/dit.gpu.out"
+	cmp "$(BUILD_DIR)/dit.native.out" "$(BUILD_DIR)/dit.gpu.out"
+
 $(INTERPRETER_MOVE_WIDE_NATIVE): ../fixtures/handoff/typed-move-wide.s ../fixtures/handoff/typed-move-wide-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror $^ -o "$@"

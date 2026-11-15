@@ -1402,7 +1402,19 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return assignVector((std::string("vector_dup(") + str(reg(rn)) + ", " +
                          str(width) + ", " + str(vectorBits) + ")"));
   }
+  // PSTATE.DIT has no spare per-thread slot, so it lives in FPSR bit 24 (RES0
+  // in FPSR). MRS/MSR FPSR below hide and preserve that bit. AArch64 FPSR keeps
+  // only QC (27) and the cumulative flags; NZCV (31:28) read as zero natively.
+  if ((bits & 0xfffffeff) == 0xd503405f) {
+    return emit("x[" + str(guestFPSR) + "] = (x[" + str(guestFPSR) +
+                "] & ~(1ul << 24)) | " + (field(8, 1) ? "(1ul << 24)" : "0ul") + ";");
+  }
   switch (bits & 0xffffffe0) {
+  case 0xd53b42a0:
+    return emit(rd == 31 ? "" : reg(rd) + " = x[" + str(guestFPSR) + "] & (1ul << 24);");
+  case 0xd51b42a0:
+    return emit("x[" + str(guestFPSR) + "] = (x[" + str(guestFPSR) + "] & ~(1ul << 24)) | (" +
+                reg(rd) + " & (1ul << 24));");
   case 0xd53b4200:
     return emit(rd == 31 ? "" : reg(rd) + " = (ulong(n) << 31) | (ulong(z) << 30) | (ulong(c) << 29) | (ulong(v) << 28);");
   case 0xd51b4200:
@@ -1413,13 +1425,17 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   case 0xd53b4400:
   case 0xd53b4420: {
     auto slot = (bits & 32) == 0 ? guestFPCR : guestFPSR;
-    return emit(rd == 31 ? "" : reg(rd) + " = x[" + str(slot) + "];");
+    return emit(rd == 31 ? "" : reg(rd) + " = x[" + str(slot) + "]" +
+                ((bits & 32) == 0 ? "" : " & 0x0800009ful") + ";");
   }
   case 0xd51b4400:
   case 0xd51b4420: {
     bool fpcr = (bits & 32) == 0;
-    return emit("x[" + str(fpcr ? guestFPCR : guestFPSR) + "] = " + reg(rd) +
-                " & " + (fpcr ? "0x03c00000ul" : "0xf800009ful") + ";");
+    if (fpcr) {
+      return emit("x[" + str(guestFPCR) + "] = " + reg(rd) + " & 0x03c00000ul;");
+    }
+    return emit("x[" + str(guestFPSR) + "] = (" + reg(rd) + " & 0x0800009ful) | (x[" +
+                str(guestFPSR) + "] & (1ul << 24));");
   }
   default:
     break;
