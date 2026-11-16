@@ -9,6 +9,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
 static int stage;
 static _Atomic unsigned counter;
+static _Atomic int sleep_interrupted;
 static sigset_t blocked;
 static volatile sig_atomic_t delivered;
 static uintptr_t main_tsd;
@@ -26,9 +27,11 @@ static int valid_tsd(uintptr_t pointer) {
 }
 
 static void handler(int signal) {
+    const int saved_errno = errno;
     delivered = signal;
     const struct timespec pause = {0, 1000000};
     (void)nanosleep(&pause, 0);
+    errno = saved_errno;
 }
 
 static void *worker(void *argument) {
@@ -42,7 +45,13 @@ static void *worker(void *argument) {
     sigset_t blocked_signal;
     sigemptyset(&blocked_signal);
     sigaddset(&blocked_signal, SIGUSR2);
-    if (pthread_sigmask(SIG_BLOCK, &blocked_signal, 0) || kill(getpid(), SIGUSR2)) return (void *)7;
+    if (pthread_sigmask(SIG_BLOCK, &blocked_signal, 0)) return (void *)7;
+    const struct timespec retry = {0, 1000000};
+    for (int attempt = 0; attempt < 5000 && !atomic_load(&sleep_interrupted); ++attempt) {
+        if (kill(getpid(), SIGUSR2)) return (void *)7;
+        (void)nanosleep(&retry, 0);
+    }
+    if (!atomic_load(&sleep_interrupted)) return (void *)24;
     if (atomic_fetch_add(&counter, 2) != 11) return (void *)6;
     errno = 19;
     stage = 1;
@@ -74,10 +83,14 @@ int main(void) {
     errno = 11;
     if (pthread_mutex_lock(&lock) || pthread_create(&thread, 0, worker, (void *)42)) return 1;
     struct timespec pause = {1, 0}, remaining = {0, 0};
-    if (pthread_mutex_unlock(&lock) || nanosleep(&pause, &remaining) != -1 || errno != EINTR
-        || remaining.tv_sec < 0 || remaining.tv_sec >= pause.tv_sec
-        || (remaining.tv_sec == 0 && remaining.tv_nsec == 0) || pthread_mutex_lock(&lock) || stage != 1
-        || delivered != SIGUSR2) return 13;
+    if (pthread_mutex_unlock(&lock)) return 13;
+    const int sleep_status = nanosleep(&pause, &remaining);
+    const int sleep_error = errno;
+    if (sleep_status != -1 || sleep_error != EINTR || remaining.tv_sec < 0
+        || remaining.tv_sec >= pause.tv_sec
+        || (remaining.tv_sec == 0 && remaining.tv_nsec == 0) || delivered != SIGUSR2) return 13;
+    atomic_store(&sleep_interrupted, 1);
+    if (pthread_mutex_lock(&lock) || stage != 1 || delivered != SIGUSR2) return 13;
     errno = 11;
     while (stage != 1) if (pthread_cond_wait(&condition, &lock)) return 2;
     if (errno != 11 || pthread_equal(thread, pthread_self())) return 3;
