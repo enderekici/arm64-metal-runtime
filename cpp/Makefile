@@ -858,10 +858,10 @@ verify-interpreter-vector-memory: $(APP) $(INTERPRETER_VECTOR_MEMORY_MAIN) $(INT
 			END { exit !(load == 16 && store == 20 && entry_dispatch > 0 && fallback_done > entry_dispatch && fallback_compile > fallback_done && first_compile == fallback_compile) }' \
 			"$$run_dir/interpreter.err"; then \
 		set +e; \
-		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
-			"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/unmapped.out" 2>"$$run_dir/unmapped.err"; unmapped_rc=$$?; \
+		(ulimit -c 0; ARM64_METAL_TRACE_FATAL_SIGNAL=1 ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+			"$(APP)" launch "$(INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/unmapped.out" 2>"$$run_dir/unmapped.err"); unmapped_rc=$$?; \
 		set -e; \
-		if test "$$unmapped_rc" -ne 0 && \
+		if test "$$unmapped_rc" -eq 139 && \
 			grep -q "interpreter-dispatch.*pc=$$unmapped_guest_entry" "$$run_dir/unmapped.err" && \
 			grep -q "interpreter-packet pc=$$unmapped_guest_load detail=43" "$$run_dir/unmapped.err" && \
 			grep -q 'Guest process memory access fault at 0x0' "$$run_dir/unmapped.err"; then \
@@ -1762,10 +1762,10 @@ verify-interpreter: $(APP) $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_MOVE_WIDE_N
 		grep -q 'interpreter-block-ready.*detail=6' "$$run_dir/typed-memory.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=6' "$$run_dir/typed-memory.interpreter.err" || exit 1; \
 		set +e; \
-		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_RO_MAIN)" >"$$run_dir/typed-memory-ro.interpreter.out" 2>"$$run_dir/typed-memory-ro.interpreter.err"; memory_ro_rc=$$?; \
-		ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/typed-memory-unmapped.interpreter.out" 2>"$$run_dir/typed-memory-unmapped.interpreter.err"; memory_unmapped_rc=$$?; \
+		(ulimit -c 0; ARM64_METAL_TRACE_FATAL_SIGNAL=1 ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_RO_MAIN)" >"$$run_dir/typed-memory-ro.interpreter.out" 2>"$$run_dir/typed-memory-ro.interpreter.err"); memory_ro_rc=$$?; \
+		(ulimit -c 0; ARM64_METAL_TRACE_FATAL_SIGNAL=1 ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_TYPED_MEMORY_UNMAPPED_MAIN)" >"$$run_dir/typed-memory-unmapped.interpreter.out" 2>"$$run_dir/typed-memory-unmapped.interpreter.err"); memory_unmapped_rc=$$?; \
 		set -e; \
-		test "$$memory_ro_rc" -ne 0 && test "$$memory_unmapped_rc" -ne 0 && \
+		test "$$memory_ro_rc" -eq 139 && test "$$memory_unmapped_rc" -eq 139 && \
 		grep -q 'interpreter-block-ready.*detail=4' "$$run_dir/typed-memory-ro.interpreter.err" && \
 		grep -q 'interpreter-dispatch.*detail=4' "$$run_dir/typed-memory-ro.interpreter.err" && \
 		grep -q 'Guest process memory access fault at 0x42d8' "$$run_dir/typed-memory-ro.interpreter.err" && \
