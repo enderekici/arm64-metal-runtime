@@ -72,15 +72,16 @@ COMPONENT_RESULTS ?= $(BUILD)/component-conformance
 COMPONENT_CASES ?= all
 COMPONENT_JOBS ?= 2
 COMPONENT_GPU_SLOTS ?= 4
-COMPONENT_GPULOCK ?= /Users/ender/code/evamcep/arm64-metal-work/bin/gpulock
+COMPONENT_GPULOCK ?= $(ARM64_METAL_GPULOCK)
 .PHONY: verify-components
 verify-components:
 	@test -x "$(COMPONENT_RUNTIME)" || { echo "Set COMPONENT_RUNTIME to the frozen C++ launcher" >&2; exit 2; }
 	@set -eu; selected='$(COMPONENT_CASES)'; set --; \
 	  for case_id in $$selected; do [ "$$case_id" = all ] || set -- "$$@" --case "$$case_id"; done; \
+	  lock='$(COMPONENT_GPULOCK)'; if [ -n "$$lock" ]; then set -- "$$@" --gpulock "$$lock"; fi; \
 	  exec python3 tools/verify-components.py --runtime "$(COMPONENT_RUNTIME)" \
 	    --results "$(COMPONENT_RESULTS)" --jobs "$(COMPONENT_JOBS)" \
-	    --gpu-slots "$(COMPONENT_GPU_SLOTS)" --gpulock "$(COMPONENT_GPULOCK)" "$$@"
+	    --gpu-slots "$(COMPONENT_GPU_SLOTS)" "$$@"
 
 THREAD_SERVICES_RUNTIME ?= $(APP_VERIFY_RUNTIME)
 THREAD_SERVICES_CASES ?= pthread8 condvar tsd async group timer mainq

@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -43,7 +44,8 @@ def normalized_status(returncode):
     return returncode if returncode >= 0 else 128 - returncode
 
 
-def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path, cwd):
+def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path, cwd,
+                start_marker=None):
     started = time.monotonic()
     status = "NOT_STARTED"
     try:
@@ -71,11 +73,11 @@ def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path,
                     except ProcessLookupError:
                         pass
                     process.wait()
-                status = "TIMEOUT"
+                status = "GPU_LOCK_WAIT_TIMEOUT" if start_marker and not pathlib.Path(start_marker).exists() else "OUTER_TIMEOUT"
     except OSError as error:
         pathlib.Path(stderr_path).write_text(f"{error}\n")
         status = "LAUNCH_ERROR"
-    pathlib.Path(str(stdout_path) + ".status").write_text(f"{status}\n")
+    pathlib.Path(stdout_path).with_suffix(".status").write_text(f"{status}\n")
     return {"status": status, "duration_seconds": round(time.monotonic() - started, 3)}
 
 
@@ -94,7 +96,10 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
     executable = case_dir / source.stem
     replacements = {"repo": str(repo), "source": str(source), "executable": str(executable), "case_dir": str(case_dir)}
     compile_command = substitute(case["compile"], replacements)
-    base_environment = os.environ.copy()
+    base_environment = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("ARM64_METAL_") or key == "ARM64_METAL_KERNEL_CACHE"
+    }
 
     compile_result = run_bounded(
         compile_command, base_environment, case.get("compile_timeout_seconds", 120),
@@ -116,7 +121,13 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
         "negative_control": case["negative_control"],
         "evidence_level": case["evidence_level"],
         "required_launch_flags": case["required_launch_flags"],
+        "effective_guest_environment": {
+            **({"ARM64_METAL_KERNEL_CACHE": base_environment["ARM64_METAL_KERNEL_CACHE"]}
+               if "ARM64_METAL_KERNEL_CACHE" in base_environment else {}),
+            **case["required_launch_flags"],
+        },
         "evidence": "not_observed",
+        "not_run": True,
         "outcome": "failed",
     }
     if compile_result["status"] != 0:
@@ -127,11 +138,7 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
     native_args = substitute(case.get("native_args", []), replacements)
     guest_args = substitute(case.get("guest_args", []), replacements)
     native_command = [str(executable), *native_args]
-    guest_command = [str(gpulock), "env", *[
-        f"{key}={value}" for key, value in case["required_launch_flags"].items()
-    ], str(runtime), "launch", str(executable), *guest_args]
     result["native_command"] = native_command
-    result["guest_command"] = guest_command
 
     native_result = run_bounded(
         native_command, base_environment, case["timeout_seconds"],
@@ -141,30 +148,73 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
     if native_result["status"] != case["expected_status"]:
         result["failure"] = "native positive control did not match manifest status"
         result["evidence"] = "native_control_failed; guest_not_run"
+        result["guest"] = {"status": "NOT_RUN_NATIVE_CONTROL_FAILED"}
+        result["not_run"] = True
         (case_dir / "case.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
 
     guest_environment = base_environment.copy()
     guest_environment["GPULOCK_SLOTS"] = str(root["gpu_slots"])
+    start_marker = case_dir / "guest-slot-acquired"
+    guest_invocation = ["env", *[
+        f"{key}={value}" for key, value in case["required_launch_flags"].items()
+    ], str(runtime), "launch", str(executable), *guest_args]
+    if gpulock:
+        guest_command = [
+            str(gpulock), "sh", "-c",
+            'printf acquired > "$1"; shift; exec "$@"',
+            "component-run", str(start_marker), *guest_invocation,
+        ]
+    else:
+        guest_command = guest_invocation
+        start_marker = None
+    result["guest_command"] = guest_command
+    result["not_run"] = False
+    guest_bound = case["timeout_seconds"] + root["gpu_lock_wait_seconds"] if gpulock else case["timeout_seconds"]
     guest_result = run_bounded(
-        guest_command, guest_environment, case["timeout_seconds"] + root["gpu_lock_wait_seconds"],
-        case_dir / "guest.stdout", case_dir / "guest.stderr", repo,
+        guest_command, guest_environment, guest_bound,
+        case_dir / "guest.stdout", case_dir / "guest.stderr", repo, start_marker if gpulock else None,
     )
+    if guest_result["status"] in ("GPU_LOCK_WAIT_TIMEOUT", "OUTER_TIMEOUT"):
+        if guest_result["status"] == "OUTER_TIMEOUT" and (not gpulock or pathlib.Path(start_marker).exists()):
+            guest_result["status"] = "GPU_TIMEOUT"
+        result["failure"] = "guest run exceeded its execution bound" if guest_result["status"] == "GPU_TIMEOUT" else "shared GPU lock wait exceeded its bound"
+        result["evidence"] = "native_control_passed;guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "native_control_passed;guest_not_started"
+        result["guest_outcome"] = "guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "gpu_lock_wait_timeout"
+        pathlib.Path(case_dir / "guest.status").write_text(f"{guest_result['status']}\n")
+        result["guest"] = guest_result
+        (case_dir / "case.json").write_text(json.dumps(result, indent=2) + "\n")
+        return result
     result["guest"] = guest_result
     stdout_equal = same_files(case_dir / "native.stdout", case_dir / "guest.stdout")
     stderr_equal = same_files(case_dir / "native.stderr", case_dir / "guest.stderr")
+    stderr_policy_satisfied = stderr_equal
+    if "guest_stderr_regex" in case:
+        native_stderr = (case_dir / "native.stderr").read_text()
+        guest_stderr = (case_dir / "guest.stderr").read_text()
+        stderr_policy_satisfied = (
+            native_stderr == case.get("native_stderr_exact", "")
+            and re.fullmatch(case["guest_stderr_regex"], guest_stderr) is not None
+        )
     status_equal = native_result["status"] == guest_result["status"]
     result["comparison"] = {
         "stdout_equal": stdout_equal,
         "stderr_equal": stderr_equal,
+        "stderr_policy_satisfied": stderr_policy_satisfied,
         "status_equal": status_equal,
+        "stderr_policy": "exact" if stderr_equal else "manifest guest diagnostic accepted",
     }
-    if not (stdout_equal and stderr_equal and status_equal and guest_result["status"] == case["expected_status"]):
+    if not (stdout_equal and stderr_policy_satisfied and status_equal and guest_result["status"] == case["expected_status"]):
         result["failure"] = "native/guest result mismatch or unexpected guest status"
-        result["evidence"] = "native_positive_control_passed;_guest_mismatch"
+        result["evidence"] = "native_positive_control_passed;guest_mismatch"
+        result["guest_outcome"] = "guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "abi_mismatch"
     else:
-        result["outcome"] = "passed"
-        result["evidence"] = case["evidence_level"]
+        if stderr_equal:
+            result["outcome"] = "passed"
+            result["evidence"] = case["evidence_level"]
+        else:
+            result["outcome"] = "passed_with_diagnostic"
+            result["evidence"] = "stdout and status match; launcher diagnostic accepted by manifest"
     (case_dir / "case.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -178,8 +228,8 @@ def main():
     parser.add_argument("--jobs", type=int, default=2, help="bounded concurrent GPU test lanes (1-4)")
     parser.add_argument("--gpu-slots", type=int, default=4, help="shared gpulock slot count")
     parser.add_argument("--gpulock", type=pathlib.Path,
-                        default=pathlib.Path(os.environ.get("ARM64_METAL_GPULOCK", "/Users/ender/code/evamcep/arm64-metal-work/bin/gpulock")))
-    parser.add_argument("--gpu-lock-wait", type=int, default=1800)
+        default=pathlib.Path(os.environ["ARM64_METAL_GPULOCK"]) if os.environ.get("ARM64_METAL_GPULOCK") else None)
+    parser.add_argument("--gpu-lock-wait", type=int, default=300)
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 
@@ -197,10 +247,10 @@ def main():
         parser.error("jobs and gpu-slots must be 1..4, with jobs <= gpu-slots")
 
     runtime = args.runtime.resolve()
-    gpulock = args.gpulock.resolve()
+    gpulock = args.gpulock.resolve() if args.gpulock else None
     if not runtime.is_file() or not os.access(runtime, os.X_OK):
         parser.error(f"runtime is not executable: {runtime}")
-    if not gpulock.is_file() or not os.access(gpulock, os.X_OK):
+    if gpulock and (not gpulock.is_file() or not os.access(gpulock, os.X_OK)):
         parser.error(f"shared GPU lock wrapper is unavailable: {gpulock}")
 
     wanted = set(args.cases or [case["id"] for case in available])
@@ -228,7 +278,7 @@ def main():
         "host": host_info(),
         "jobs": args.jobs,
         "gpu_slots": args.gpu_slots,
-        "gpulock": str(gpulock),
+        "gpulock": str(gpulock) if gpulock else None,
         "selected_case_ids": [case["id"] for case in selected],
     }
     run_file = run_dir / "run.json"
@@ -259,11 +309,12 @@ def main():
     runtime_hash_after = sha256(runtime)
     counts = {
         "selected": len(selected),
-        "passed": sum(result["outcome"] == "passed" for result in results),
-        "failed": sum(result["outcome"] != "passed" for result in results),
+        "passed_exact": sum(result["outcome"] == "passed" for result in results),
+        "passed_with_diagnostic": sum(result["outcome"] == "passed_with_diagnostic" for result in results),
+        "failed": sum(result["outcome"] == "failed" for result in results),
         "passed_positive": sum(result["outcome"] == "passed" and not result["polarity"].startswith("negative") for result in results),
         "passed_expected_negative": sum(result["outcome"] == "passed" and result["polarity"].startswith("negative") for result in results),
-        "not_run": sum(result.get("evidence") == "not_observed" for result in results),
+        "not_run": sum(bool(result.get("not_run")) for result in results),
     }
     summary = {
         "finished_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -273,6 +324,7 @@ def main():
         "runtime_immutable_during_run": runtime_hash == runtime_hash_after,
         "case_outcomes": [{"id": result["id"], "outcome": result["outcome"], "evidence": result.get("evidence")} for result in results],
         "supported_claims": [result["id"] for result in results if result["outcome"] == "passed"],
+        "diagnosed_matches": [result["id"] for result in results if result["outcome"] == "passed_with_diagnostic"],
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print("counts=" + json.dumps(counts, sort_keys=True))
