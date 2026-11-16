@@ -37,7 +37,8 @@
             std::cerr << '\n';
         }
     };
-    const auto spawnKeventWorker = [&](const std::vector<std::uint8_t>& events, int count) {
+    spawnKeventWorker = [&](const std::vector<std::uint8_t>& events, int count,
+                            std::uint64_t workerFlags, std::uint64_t* workerIdOut) {
         if (!guestBsdthreadRegistration || !guestWorkqueueDispatchConfig) return false;
         const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
         const auto workerEntry = decode_guest_ia0_callback(
@@ -103,8 +104,9 @@
             thread.registers[1] = threadPort;
             thread.registers[2] = stackBottom;
             thread.registers[3] = listAddress;
-            thread.registers[4] = flagNewSpi | flagKevent | flagTsdBaseSet |
-                (manager ? flagManager : (flagPrioQos | qosClass));
+            thread.registers[4] = workerFlags != 0 ? workerFlags
+                : flagNewSpi | flagKevent | flagTsdBaseSet |
+                    (manager ? flagManager : (flagPrioQos | qosClass));
             thread.registers[5] = static_cast<std::uint64_t>(count);
             guestWorkqueueThreadIds.insert(threadId);
             guestThreadPortNames.emplace(threadId, threadPort);
@@ -113,7 +115,8 @@
             if (guestScheduler.add_thread(std::move(thread)) != threadId) {
                 throw std::logic_error("Unexpected guest workqueue thread id");
             }
-            guestWorkqKeventWorker = threadId;
+            if (workerIdOut != nullptr) *workerIdOut = threadId;
+            if (workerFlags == 0) guestWorkqKeventWorker = threadId;
             return true;
         } catch (...) {
             guestWorkqueueThreadIds.erase(threadId);
@@ -148,7 +151,7 @@
             }
         }
         if (ready > 0) {
-            const bool spawned = spawnKeventWorker(events, ready);
+            const bool spawned = spawnKeventWorker(events, ready, 0, nullptr);
             if (std::getenv("ARM64_METAL_TRACE_WORKQ"))
                 std::cerr << "workq-kevent-deliver events=" << ready << " spawned=" << spawned;
             if (std::getenv("ARM64_METAL_TRACE_WORKQ")) {

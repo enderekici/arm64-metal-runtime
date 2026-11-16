@@ -3506,6 +3506,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     int guestWorkqHostKq = -1;
     std::map<std::pair<std::int16_t, std::uint64_t>, std::uint32_t> guestWorkqKeventQos;
     std::uint64_t guestWorkqKeventWorker = 0;
+    std::function<bool(const std::vector<std::uint8_t>&, int, std::uint64_t,
+                       std::uint64_t*)> spawnKeventWorker;
     std::function<int()> workqHostKqueue;
     std::function<void(std::uint64_t, std::uint64_t)> workqApplyChanges;
     const auto finishGuestThread = [&](std::uint64_t result,
@@ -3513,6 +3515,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const auto completedId = guestScheduler.current_id();
         if (beginThreadTsdCleanup && beginThreadTsdCleanup(result)) return false;
         if (completedId == guestWorkqKeventWorker) guestWorkqKeventWorker = 0;
+        for (auto& workloop : guestDynamicWorkloops) {
+            if (workloop.second.ownerThread == completedId) {
+                if (std::getenv("ARM64_METAL_TRACE_WORKQ"))
+                    std::cerr << "workloop-worker-return id=0x" << std::hex
+                              << workloop.first << " thread=" << completedId
+                              << std::dec << '\n';
+                workloop.second.ownerThread = 0;
+                for (auto& note : workloop.second.knotes) {
+                    if ((note.second.fflags & 0x0fU) == 0x1U) note.second.active = false;
+                }
+            }
+        }
         if (guestWorkqueueThreadIds.erase(completedId) != 0) {
             const auto port = guestThreadPortNames.find(completedId);
             if (port != guestThreadPortNames.end()) {

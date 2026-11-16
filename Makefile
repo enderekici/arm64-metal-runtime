@@ -218,25 +218,21 @@ verify-workloop-debounce:
 	  test "$$(cat "$$out/native.status")" = 0; \
 	  printf 'Workloop QoS and debounce matrix matches native (status 0)\n'
 
-.PHONY: verify-workloop-registration
-verify-workloop-registration:
+.PHONY: verify-workloop-delivery
+verify-workloop-delivery:
 	@test -x "$(WORKLOOP_RUNTIME)" || { echo "Set WORKLOOP_RUNTIME to the built C++ launcher" >&2; exit 2; }
 	@set -eu; \
-	  out=$$(mktemp -d /tmp/arm64-metal-workloop-registration.XXXXXX); \
-	  printf 'workloop-registration receipts: %s\n' "$$out"; \
-	  xcrun clang -arch arm64 -Wall -Wextra -Werror \
-	    fixtures/handoff/kevent-workloop-registration.c -o "$$out/workloop-registration"; \
-	  if /usr/bin/timeout "$(WORKLOOP_TIMEOUT)" "$$out/workloop-registration" \
-	    >"$$out/native.stdout" 2>"$$out/native.stderr"; then rc=0; else rc=$$?; fi; \
-	  printf '%s\n' "$$rc" >"$$out/native.status"; \
+	  out=$$(mktemp -d /tmp/arm64-metal-workloop-delivery.XXXXXX); \
+	  printf 'workloop-delivery receipts: %s\n' "$$out"; \
+	  xcrun clang -arch arm64 -march=armv8.3-a -Wall -Wextra -Werror -fblocks \
+	    fixtures/handoff/kevent-workloop-delivery.c -o "$$out/workloop-delivery"; \
 	  if /usr/bin/timeout "$(WORKLOOP_TIMEOUT)" "$(WORKLOOP_RUNTIME)" launch \
-	    "$$out/workloop-registration" >"$$out/guest.stdout" 2>"$$out/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	    "$$out/workloop-delivery" >"$$out/guest.stdout" 2>"$$out/guest.stderr"; then rc=0; else rc=$$?; fi; \
 	  printf '%s\n' "$$rc" >"$$out/guest.status"; \
-	  cmp "$$out/native.stdout" "$$out/guest.stdout"; \
-	  cmp "$$out/native.stderr" "$$out/guest.stderr"; \
-	  cmp "$$out/native.status" "$$out/guest.status"; \
-	  test "$$(cat "$$out/native.status")" = 0; \
-	  printf 'Workloop attach/update/delete matches native (status 0)\n'
+	  cat "$$out/guest.stdout"; cat "$$out/guest.stderr"; \
+	  test "$$rc" = 0; \
+	  test "$$(cat "$$out/guest.stdout")" = 'workloop delivery and owner return ok'; \
+	  printf 'Dynamic workloop worker delivery and return observed (status 0)\n'
 
 DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
 DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib

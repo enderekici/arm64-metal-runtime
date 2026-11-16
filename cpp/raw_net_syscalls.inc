@@ -366,6 +366,10 @@
         constexpr std::uint32_t qosClassMask = 0x00003f00U;
         constexpr std::uint32_t schedPriorityFlag = 0x20000000U;
         constexpr std::uint32_t eventManagerFlag = 0x02000000U;
+        constexpr std::uint16_t evAdd = 0x0001U;
+        constexpr std::uint16_t evDelete = 0x0002U;
+        constexpr std::uint16_t evEnable = 0x0004U;
+        constexpr std::uint16_t evClear = 0x0020U;
         constexpr std::size_t eventStride = netKeventQosStride;
         const auto workloopId = registers[0];
         const auto changesAddress = registers[1];
@@ -385,7 +389,7 @@
             rawFail(EINVAL);
             continue;
         }
-        if (changeCount != 1 || eventCount != 0) {
+        if (changeCount != 1) {
             rawFail(ENOTSUP);
             continue;
         }
@@ -406,8 +410,8 @@
         std::memcpy(&qos, change + 12, sizeof(qos));
         std::memcpy(&fflags, change + 24, sizeof(fflags));
         if (filter != -17 || ident != workloopId ||
-            (changeFlags == 0x5U ? (fflags != 0x111U && fflags != 0x11U)
-                                 : (changeFlags != 0x2U || fflags != 0x121U))) {
+            (changeFlags == (evAdd | evEnable) ? (fflags != 0x111U && fflags != 0x11U)
+             : (changeFlags != evDelete || fflags != 0x121U))) {
             rawFail(ENOTSUP);
             continue;
         }
@@ -442,6 +446,44 @@
         }
         const auto key = std::make_pair(ident, filter);
         auto workloop = guestDynamicWorkloops.find(workloopId);
+        std::uint64_t ownerThread = 0;
+        if (changeFlags == (evAdd | evEnable)) {
+            // Native XNU fires a thread request at successful attach. This lane
+            // supports the measured timer QoS and its worker upcall ABI only.
+            constexpr std::uint32_t observedTimerQos = 0x800008ffU;
+            constexpr std::uint64_t observedTimerWorkerFlags = 0x004f4004U;
+            if (priority != observedTimerQos || !guestBsdthreadRegistration ||
+                !guestWorkqueueDispatchConfig) {
+                rawFail(ENOTSUP);
+                continue;
+            }
+            if (workloop != guestDynamicWorkloops.end() &&
+                workloop->second.ownerThread != 0) {
+                rawFail(EALREADY);
+                continue;
+            }
+            if (workloop != guestDynamicWorkloops.end() &&
+                std::any_of(workloop->second.knotes.begin(), workloop->second.knotes.end(),
+                    [&](const auto& entry) {
+                        return entry.first != key && entry.second.active &&
+                               (entry.second.fflags & 0x0fU) == 0x1U;
+                    })) {
+                rawFail(EALREADY);
+                continue;
+            }
+            auto delivered = changes;
+            const auto deliveredWorkloopFlags = static_cast<std::uint16_t>(
+                changeFlags | evClear);
+            std::memcpy(delivered.data() + 10, &deliveredWorkloopFlags,
+                        sizeof(deliveredWorkloopFlags));
+            if (!spawnKeventWorker(delivered, 1, observedTimerWorkerFlags, &ownerThread)) {
+                rawFail(EAGAIN);
+                continue;
+            }
+            if (std::getenv("ARM64_METAL_TRACE_WORKQ"))
+                std::cerr << "workloop-worker-spawn id=0x" << std::hex << workloopId
+                          << " thread=" << ownerThread << std::dec << '\n';
+        }
         if (changeFlags == 0x2U) {
             if (workloop == guestDynamicWorkloops.end()) {
                 rawFail(ENOENT);
@@ -467,7 +509,9 @@
         auto note = workloop->second.knotes.find(key);
         if (note == workloop->second.knotes.end()) {
             if (std::any_of(workloop->second.knotes.begin(), workloop->second.knotes.end(),
-                    [](const auto& entry) { return (entry.second.fflags & 0x0fU) == 0x1U; })) {
+                    [](const auto& entry) {
+                        return entry.second.active && (entry.second.fflags & 0x0fU) == 0x1U;
+                    })) {
                 rawFail(EALREADY);
                 continue;
             }
@@ -485,6 +529,7 @@
         std::memcpy(registration.ext.data(), change + 40, sizeof(registration.ext));
         if (debounceAddress != 0) registration.ext[3] = expected;
         registration.active = true;
+        if (ownerThread != 0) workloop->second.ownerThread = ownerThread;
         rawOk(0);
         continue;
     }
