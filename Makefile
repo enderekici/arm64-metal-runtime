@@ -65,6 +65,34 @@ verify-apps:
 	@test -x "$(APP_VERIFY_RUNTIME)" || { echo "Build the C++ runtime first with make -C cpp app" >&2; exit 2; }
 	./verify-apps.sh "$(APP_VERIFY_RUNTIME)" "$(APP_VERIFY_RESULTS)" $(APP_VERIFY_CASES)
 
+THREAD_SERVICES_RUNTIME ?= $(APP_VERIFY_RUNTIME)
+THREAD_SERVICES_CASES ?= pthread8 condvar tsd async group timer mainq
+THREAD_SERVICES_TIMEOUT ?= 1200
+.PHONY: verify-thread-services
+verify-thread-services:
+	@test -x "$(THREAD_SERVICES_RUNTIME)" || { echo "Set THREAD_SERVICES_RUNTIME to the built C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  out=$$(mktemp -d /tmp/arm64-metal-thread-services.XXXXXX); \
+	  printf 'thread-services receipts: %s\n' "$$out"; \
+	  xcrun clang -arch arm64 -Wall -Wextra -Werror -fblocks \
+	    fixtures/handoff/thread-services.c -o "$$out/thread-services"; \
+	  for mode in $(THREAD_SERVICES_CASES); do \
+	    if /usr/bin/timeout "$(THREAD_SERVICES_TIMEOUT)" "$$out/thread-services" "$$mode" \
+	      >"$$out/$$mode.native.stdout" 2>"$$out/$$mode.native.stderr"; then rc=0; else rc=$$?; fi; \
+	    printf '%s\n' "$$rc" >"$$out/$$mode.native.status"; \
+	    if /usr/bin/timeout "$(THREAD_SERVICES_TIMEOUT)" env \
+	      ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+	      ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+	      "$(THREAD_SERVICES_RUNTIME)" launch "$$out/thread-services" "$$mode" \
+	      >"$$out/$$mode.guest.stdout" 2>"$$out/$$mode.guest.stderr"; then rc=0; else rc=$$?; fi; \
+	    printf '%s\n' "$$rc" >"$$out/$$mode.guest.status"; \
+	    cmp "$$out/$$mode.native.stdout" "$$out/$$mode.guest.stdout"; \
+	    cmp "$$out/$$mode.native.stderr" "$$out/$$mode.guest.stderr"; \
+	    cmp "$$out/$$mode.native.status" "$$out/$$mode.guest.status"; \
+	    test "$$(cat "$$out/$$mode.native.status")" = 0; \
+	    printf '%s matches native (status 0)\n' "$$mode"; \
+	  done
+
 DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
 DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib
 DYLD_IMAGE_ROOT := $(BUILD)/libdyld-image-root.dylib
