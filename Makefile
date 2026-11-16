@@ -28,9 +28,11 @@ all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED
 
 verify: all
 	sh verify-launch.sh $(RUNTIME) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(LINKED) $(REGION) $(PIPE) $(BUILD) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
-	@! $(RUNTIME) launch $(UNSIGNED_CALL) >"$(BUILD)/auth.out" 2>"$(BUILD)/auth.log"
+	@if $(RUNTIME) launch $(UNSIGNED_CALL) >"$(BUILD)/auth.out" 2>"$(BUILD)/auth.log"; then \
+		echo 'Unsigned BLRAAZ target was accepted' >&2; exit 1; else status=$$?; fi; \
+	@test "$$status" -eq 1
 	@test ! -s "$(BUILD)/auth.out"
-	@grep 'Guest branch authentication failed' "$(BUILD)/auth.log"
+	@grep -Eq '^arm64-metal: Guest branch authentication failed at 0x[0-9a-f]+$$' "$(BUILD)/auth.log"
 	@$(DATA_AUTH)
 	@$(RUNTIME) launch $(DATA_AUTH)
 	@ulimit -c 0; for args in "modifier" "wrong key"; do \
@@ -275,7 +277,7 @@ $(DATA_AUTH): data-auth.s | $(BUILD)
 	xcrun clang -arch arm64e "$<" -o "$@"
 
 $(UNSIGNED_CALL): unsigned-call.s | $(BUILD)
-	xcrun clang -arch arm64 "$<" -o "$@"
+	xcrun clang -arch arm64e "$<" -o "$@"
 
 $(SUPPORT): linked-support.c | $(BUILD)
 	xcrun clang -arch arm64 -O2 -dynamiclib "$<" -Wl,-install_name,@loader_path/libsupport.dylib -o "$@"
