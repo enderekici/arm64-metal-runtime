@@ -7,7 +7,7 @@
     beginThreadTsdCleanup = [&, tsdCleanupEntry, tsdCleanupResolved,
                              tsdCleanedThreads](std::uint64_t result) mutable {
         const auto threadId = guestScheduler.current_id();
-        if (threadId == 1 || guestWorkqueueThreadIds.count(threadId) != 0) return false;
+        if (guestWorkqueueThreadIds.count(threadId) != 0) return false;
         if (!tsdCleanupResolved) {
             tsdCleanupResolved = true;
             if (image.cache_reader) {
@@ -20,7 +20,7 @@
         if (!tsdCleanedThreads.insert(threadId).second) return false;
         const auto tsd = guestScheduler.current().tsdAddress;
         if (tsd <= 0) return false;
-        // Host-created threads keep their TSD array at the pthread_t + 0xe0 layout.
+        // Guest threads keep their TSD array at the pthread_t + 0xe0 layout.
         constexpr std::uint64_t tsdOffsetInPthread = 0xe0;
         const auto self = static_cast<std::uint64_t>(tsd) - tsdOffsetInPthread;
         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
