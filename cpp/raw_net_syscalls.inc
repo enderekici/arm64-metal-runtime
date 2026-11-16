@@ -546,12 +546,22 @@
             rawFail(errno);
             continue;
         }
-        if (!netWriteGuest(registers[3], pair, sizeof(pair))) {
+        if (registers[3] < ExecutableImage::minimum_image_address) {
             ::close(pair[0]);
             ::close(pair[1]);
             rawFail(EFAULT);
             continue;
         }
+        std::uint8_t* guestPair = nullptr;
+        try {
+            guestPair = guestMemory.buffer(registers[3], sizeof(int) * 2, true);
+        } catch (const std::out_of_range&) {
+            ::close(pair[0]);
+            ::close(pair[1]);
+            rawFail(EFAULT);
+            continue;
+        }
+        std::memcpy(guestPair, pair, sizeof(pair));
         for (const auto descriptor : pair) {
             hostServiceState.openDescriptors.insert(descriptor);
             hostServiceState.socketDescriptors.insert(descriptor);
