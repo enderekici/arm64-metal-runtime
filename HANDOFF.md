@@ -378,3 +378,17 @@ General macOS compatibility now proceeds through reusable contract-differential
 lanes; full applications are occasional holdouts, not the repeated test loop.
 These results qualify only the recorded artifacts, fixtures, flags, and OS
 build; full Azul/JNI startup and broad macOS compatibility remain open.
+
+## Component-led candidate checkpoint: `2164127`
+
+Runtime SHA-256 `19ac4947698a32c80096bbd49f6220e559775061cf3a3c134854c3170f609b00`
+passed the build, `make verify` (42 launch and 2,048 function matches),
+demand-cache gate, and extracted-package AOT CSEL status-42 smoke. Seventeen
+component contracts are exact across the original run and corrected BRK rerun;
+receipts are in `/tmp/metal-component-candidate.HTPlqw/components/`. The full
+interpreter rerun is still in flight. The archive remains a staged candidate at
+`/tmp/metal-component-candidate.HTPlqw/source/.build/arm64-metal-cpp-macos.tar.gz`
+(SHA-256 `13b7ee3be5dfc5556bfd50ea93519c80b93f9c6ed03f66bcfa27df3d22cba8a9`),
+not the promoted `.build` archive. Azul/plutil and other full-app reruns were
+not performed; this is not a general drop-in compatibility claim. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for the component contract map.
