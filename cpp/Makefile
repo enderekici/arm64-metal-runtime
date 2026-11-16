@@ -225,6 +225,7 @@ MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
 MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
 GUEST_HEAP_ALLOCATE_AT_TEST := $(BUILD_DIR)/guest-heap-allocate-at-test
 CACHE_BACKING_LEASES_TEST := $(BUILD_DIR)/cache-backing-leases-test
+VM_BACKING_LEASE_TEST := $(BUILD_DIR)/vm-backing-lease-test
 SHA256_NATIVE := $(BUILD_DIR)/sha256-instructions-native
 VECTOR_CRYPTO_LOWER_TEST := $(BUILD_DIR)/vector-crypto-lowering-test
 VECTOR_CRYPTO_MSL := $(BUILD_DIR)/vector-crypto.metal
@@ -1326,6 +1327,14 @@ $(GUEST_HEAP_ALLOCATE_AT_TEST): ../fixtures/handoff/guest-heap-allocate-at.cpp g
 $(CACHE_BACKING_LEASES_TEST): ../fixtures/handoff/cache-backing-leases.cpp cache_backing_leases.hpp guest_state.cpp guest_state.hpp
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG "$<" guest_state.cpp -o "$@"
+
+$(VM_BACKING_LEASE_TEST): vm_backing_lease_test.cpp vm_backing_lease.hpp guest_state.cpp guest_state.hpp
+	@mkdir -p "$(BUILD_DIR)"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I. "$<" guest_state.cpp -o "$@"
+
+.PHONY: verify-vm-backing-lease
+verify-vm-backing-lease: $(VM_BACKING_LEASE_TEST)
+	"$(VM_BACKING_LEASE_TEST)"
 
 verify-mach-vm-overwrite-native: $(MACH_VM_OVERWRITE_NATIVE)
 	"$(MACH_VM_OVERWRITE_NATIVE)" >"$(BUILD_DIR)/mach-vm-map-overwrite.native.out"

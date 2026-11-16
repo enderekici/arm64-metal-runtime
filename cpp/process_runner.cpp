@@ -8,6 +8,7 @@
 #include "image_loader.hpp"
 #include "cache_residency.hpp"
 #include "cache_backing_leases.hpp"
+#include "vm_backing_lease.hpp"
 #include "darwin_bridge.hpp"
 #include "guest_signal_runtime.hpp"
 #include "guest_scheduler.hpp"
@@ -3553,9 +3554,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::uint32_t tag = 0;
         bool tpro = false;
     };
-    struct VmBackingLease {
-        std::int64_t backing;
-        std::uint64_t size;
+    using VmBackingLease = arm64metal::VmBackingLease;
+    const auto makeVmBackingLease = [&](std::int64_t backing, std::uint64_t size) {
+        try {
+            return VmBackingLease{backing, size, [&mappingHeap, backing] {
+                mappingHeap.release(backing);
+            }};
+        } catch (...) {
+            mappingHeap.release(backing);
+            throw;
+        }
     };
     struct VmAllocation {
         std::uint64_t begin;
@@ -5954,12 +5962,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 inheritance, tag};
             std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
                         static_cast<std::size_t>(size));
+            const auto backingLease = makeVmBackingLease(*allocated, size);
             try {
                 auto stagedAllocations = vmAllocations;
                 auto owner = stagedAllocations.find(address);
                 if (owner == stagedAllocations.end()) {
                     stagedAllocations.emplace(address, VmAllocation{address, end, backing,
-                        {region}, !linear, {{*allocated, size}}});
+                        {region}, !linear, {backingLease}});
                 } else {
                     owner->second.begin = std::min(owner->second.begin, address);
                     owner->second.end = std::max(owner->second.end, end);
@@ -5969,7 +5978,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         [](const VmRegion& left, const VmRegion& right) {
                             return left.begin < right.begin;
                         });
-                    owner->second.ownedBackings.push_back({*allocated, size});
+                    owner->second.ownedBackings.push_back(backingLease);
                 }
                 auto stagedResident = resident;
                 appendVmRegionToResident(stagedResident, region);
@@ -5980,7 +5989,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 resident.swap(stagedResident);
                 commitDynamicCodeRegions(std::move(stagedCodeRegions));
             } catch (...) {
-                mappingHeap.release(*allocated);
                 return kernNoSpace;
             }
             syncResidentTable();
@@ -6120,12 +6128,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (currentProtection & 2U) != 0,
                         (currentProtection & 4U) != 0,
                         maximumProtection, jitMapping, inheritance, tag};
+        const auto backingLease = makeVmBackingLease(*allocated, size);
         try {
             auto stagedAllocations = vmAllocations;
             auto owner = stagedAllocations.find(address);
             if (owner == stagedAllocations.end()) {
                 stagedAllocations.emplace(address, VmAllocation{address, address + size,
-                    backing, {region}, false, {{*allocated, size}}});
+                    backing, {region}, false, {backingLease}});
             } else {
                 owner->second.begin = std::min(owner->second.begin, address);
                 owner->second.end = std::max(owner->second.end, address + size);
@@ -6134,7 +6143,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     [](const VmRegion& left, const VmRegion& right) {
                         return left.begin < right.begin;
                     });
-                owner->second.ownedBackings.push_back({*allocated, size});
+                owner->second.ownedBackings.push_back(backingLease);
             }
             auto stagedResident = resident;
             appendVmRegionToResident(stagedResident, region);
@@ -6145,7 +6154,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             resident.swap(stagedResident);
             commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
-            mappingHeap.release(*allocated);
             throw;
         }
         syncResidentTable();
@@ -6217,6 +6225,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     mappingHeap.release(*allocated);
                     return kernNoSpace;
                 }
+                const auto backingLease = makeVmBackingLease(*allocated, end - begin);
                 std::vector<VmBackingLease> retiredBackings;
                 try {
                     auto replacement = sparseAllocation->second.regions;
@@ -6256,8 +6265,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     auto stagedAllocations = vmAllocations;
                     auto stagedAllocation = stagedAllocations.find(sparseAllocation->first);
                     stagedAllocation->second.regions = carved;
-                    stagedAllocation->second.ownedBackings.push_back(
-                        {*allocated, end - begin});
+                    stagedAllocation->second.ownedBackings.push_back(backingLease);
                     auto& leases = stagedAllocation->second.ownedBackings;
                     leases.erase(std::remove_if(leases.begin(), leases.end(),
                         [&](const VmBackingLease& lease) {
@@ -6291,13 +6299,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     resident.swap(stagedResident);
                     commitDynamicCodeRegions(std::move(stagedCodeRegions));
                 } catch (...) {
-                    mappingHeap.release(*allocated);
                     return kernNoSpace;
                 }
                 std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
                             static_cast<std::size_t>(end - begin));
                 syncResidentTable();
-                for (const auto& lease : retiredBackings) mappingHeap.release(lease.backing);
+                retiredBackings.clear();
                 guestAddress = begin;
                 return kernSuccess;
             }
@@ -6314,6 +6321,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     (void)unused;
                     if (!allocation.sparseAddressSpace) continue;
                     const auto collectReclaimable = [&](const VmBackingLease& lease) {
+                        if (lease.reference_count() > 1) return;
                         const auto leaseBegin = static_cast<std::uint64_t>(lease.backing);
                         const auto leaseEnd = leaseBegin + lease.size;
                         bool referenced = false;
@@ -6337,18 +6345,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             reclaimedBackings.push_back(lease);
                         }
                     };
-                    if (allocation.ownedBackings.empty()) {
-                        collectReclaimable({static_cast<std::int64_t>(allocation.backing),
-                                            allocation.end - allocation.begin});
-                    } else {
-                        for (const auto& lease : allocation.ownedBackings) {
-                            collectReclaimable(lease);
-                        }
+                    for (const auto& lease : allocation.ownedBackings) {
+                        collectReclaimable(lease);
                     }
                 }
                 progressTrace.event("vm-overwrite-reclaim-count", begin,
                                     reclaimedBackings.size());
-                for (const auto& lease : reclaimedBackings) mappingHeap.release(lease.backing);
+                for (const auto& lease : reclaimedBackings) lease.release_now();
                 struct ReclaimedBackingRollback {
                     GuestHeap& heap;
                     const std::vector<VmBackingLease>& leases;
@@ -6358,7 +6361,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         if (committed) return;
                         for (const auto& lease : leases) {
                             try {
-                                (void)heap.allocate_at(lease.backing, lease.size, alignment);
+                                if (!heap.allocate_at(lease.backing, lease.size, alignment)) {
+                                    std::terminate();
+                                }
+                                auto* backingHeap = &heap;
+                                lease.rearm_release([backingHeap, backing = lease.backing] {
+                                    backingHeap->release(backing);
+                                });
                             } catch (...) {
                                 std::terminate();
                             }
@@ -6383,6 +6392,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     mappingHeap.release(*allocated);
                     return kernNoSpace;
                 }
+                const auto backingLease = makeVmBackingLease(*allocated, end - begin);
                 const VmRegion newRegion{begin, end, backing,
                     (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
                     (currentProtection & 4U) != 0, maximumProtection, false,
@@ -6412,6 +6422,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     std::vector<GuestMemoryMapping> addedMappings;
                     std::vector<VmRegion> codeRegions;
                     std::vector<VmBackingLease> retiredBackings;
+                    std::vector<std::int64_t> retiredLegacyBackings;
                     bool overlapsManagedMapping = false;
                     for (auto allocation = vmAllocations.begin();
                          allocation != vmAllocations.end(); ++allocation) {
@@ -6430,7 +6441,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 continue;
                             }
                             if (region.jit || region.executable) {
-                                mappingHeap.release(*allocated);
                                 return kernInvalidAddress;
                             }
                             if (region.begin < begin) {
@@ -6459,9 +6469,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                         if (replacement.empty()) {
                             if (original.ownedBackings.empty()) {
-                                retiredBackings.push_back({
-                                    static_cast<std::int64_t>(original.backing),
-                                    original.end - original.begin});
+                                retiredLegacyBackings.push_back(
+                                    static_cast<std::int64_t>(original.backing));
                             } else {
                                 retiredBackings.insert(retiredBackings.end(),
                                     original.ownedBackings.begin(), original.ownedBackings.end());
@@ -6500,13 +6509,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     });
                             });
                         if (!owned) {
-                            mappingHeap.release(*allocated);
                             return kernInvalidAddress;
                         }
                     }
                     if (stagedResident[0] >= residentCapacity) {
                         progressTrace.event("vm-overwrite-resident-full", begin, stagedResident[0]);
-                        mappingHeap.release(*allocated);
                         return kernNoSpace;
                     }
                     appendVmRegionToResident(stagedResident, newRegion);
@@ -6524,10 +6531,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             [](const VmRegion& left, const VmRegion& right) {
                                 return left.begin < right.begin;
                             });
-                        owner.ownedBackings.push_back({*allocated, end - begin});
+                        owner.ownedBackings.push_back(backingLease);
                     } else {
                         stagedAllocations.emplace(begin, VmAllocation{begin, end, backing,
-                            {newRegion}, true, {{*allocated, end - begin}}});
+                            {newRegion}, true, {backingLease}});
                     }
                     const auto dynamicBegin = std::min(begin, [&]() {
                         auto result = begin;
@@ -6567,13 +6574,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     return lease.backing == reclaimed.backing;
                                 });
                         }), retiredBackings.end());
-                    for (const auto& lease : retiredBackings) mappingHeap.release(lease.backing);
+                    retiredBackings.clear();
+                    for (const auto backing : retiredLegacyBackings) {
+                        mappingHeap.release(backing);
+                    }
                     (void)overlapsManagedMapping;
                     guestAddress = begin;
                     return kernSuccess;
                 } catch (...) {
                     progressTrace.event("vm-overwrite-stage-exception", begin, end - begin);
-                    mappingHeap.release(*allocated);
                     return kernNoSpace;
                 }
             };
@@ -6648,6 +6657,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
 
         std::optional<std::int64_t> reservedBacking;
+        std::optional<VmBackingLease> reservedLease;
         if (newAllocation) {
             if (pageSize > static_cast<std::uint64_t>(
                     std::numeric_limits<std::int64_t>::max())) return kernNoSpace;
@@ -6661,13 +6671,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 mappingHeap.release(*reservedBacking);
                 return kernNoSpace;
             }
+            reservedLease = makeVmBackingLease(*reservedBacking, end - begin);
         }
         try {
             auto stagedAllocations = vmAllocations;
             if (newAllocation) {
                 auto [unused, inserted] = stagedAllocations.emplace(
                     begin, VmAllocation{begin, end, backing, replacement, false,
-                        {{*reservedBacking, end - begin}}});
+                        {*reservedLease}});
                 (void)unused;
                 if (!inserted) throw std::runtime_error("Duplicate guest VM allocation address");
             } else {
@@ -6698,7 +6709,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             resident.swap(stagedResident);
             commitDynamicCodeRegions(std::move(stagedCodeRegions));
         } catch (...) {
-            if (reservedBacking) mappingHeap.release(*reservedBacking);
             return kernNoSpace;
         }
         std::memset(static_cast<std::uint8_t*>(memoryBuffer.data()) + backing, 0,
@@ -6749,7 +6759,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::uint64_t> stagedResident;
         std::vector<std::uint64_t> removedBegins;
         std::vector<GuestMemoryMapping> addedMappings;
-        std::vector<std::int64_t> releasedBackings;
+        std::vector<VmBackingLease> releasedBackings;
+        std::vector<std::int64_t> releasedLegacyBackings;
         std::vector<VmRegion> stagedCodeRegionsInput;
         auto dynamicBegin = std::numeric_limits<std::uint64_t>::max();
         std::uint64_t dynamicEnd = 0;
@@ -6813,11 +6824,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 auto stagedAllocation = stagedAllocations.find(allocationBegin);
                 if (replacement.empty()) {
                     if (allocation.ownedBackings.empty()) {
-                        releasedBackings.push_back(
+                        releasedLegacyBackings.push_back(
                             static_cast<std::int64_t>(allocation.backing));
                     } else {
                         for (const auto& lease : allocation.ownedBackings) {
-                            releasedBackings.push_back(lease.backing);
+                            releasedBackings.push_back(lease);
                         }
                     }
                     stagedAllocations.erase(stagedAllocation);
@@ -6836,7 +6847,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                         static_cast<std::size_t>(region.end - region.begin);
                                     return region.backing < leaseEnd && leaseBegin < regionEnd;
                                 });
-                            if (!referenced) releasedBackings.push_back(lease.backing);
+                            if (!referenced) releasedBackings.push_back(lease);
                             return !referenced;
                         }), leases.end());
                 }
@@ -6855,7 +6866,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         } catch (...) {
             return kernNoSpace;
         }
-        for (const auto backing : releasedBackings) mappingHeap.release(backing);
+        releasedBackings.clear();
+        for (const auto backing : releasedLegacyBackings) mappingHeap.release(backing);
         syncResidentTable();
         return kernSuccess;
     };
@@ -6998,12 +7010,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         (current & 2U) != 0, (current & 4U) != 0,
                         reservation.maximumProtection, reservation.jit,
                         reservation.inheritance, reservation.tag};
-                    committedRegions.push_back({region, {*backing, length}});
+                    committedRegions.push_back(
+                        {region, makeVmBackingLease(*backing, length)});
                 }
             } catch (...) {
                 for (const auto& [unused, lease] : committedRegions) {
                     (void)unused;
-                    mappingHeap.release(lease.backing);
+                    lease.release_now();
                 }
                 return kernNoSpace;
             }
@@ -7129,7 +7142,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             } catch (...) {
                 for (const auto& [unused, lease] : committedRegions) {
                     (void)unused;
-                    mappingHeap.release(lease.backing);
+                    lease.release_now();
                 }
                 return kernNoSpace;
             }
