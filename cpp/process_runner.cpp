@@ -2348,8 +2348,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             throw std::runtime_error("Guest commpage backing or resident capacity exceeded");
         }
         auto* memory = static_cast<std::uint8_t*>(memoryBuffer.data());
-        for (std::size_t byte = 0; byte < width; ++byte) {
-            memory[backing + byte] = static_cast<std::uint8_t>(value >> (byte * 8U));
+        if (value == 0) {
+            std::memset(memory + backing, 0, width);
+        } else {
+            if (width > sizeof(value)) {
+                throw std::runtime_error("Nonzero guest commpage value exceeds encoded width");
+            }
+            for (std::size_t byte = 0; byte < width; ++byte) {
+                memory[backing + byte] = static_cast<std::uint8_t>(value >> (byte * 8U));
+            }
         }
         const auto row = 1 + 4 * static_cast<std::size_t>(resident[0]);
         resident[row] = address;
@@ -2365,8 +2372,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     publishCommpage(0xfffffc180ULL, quiescentBacking, 0, 8);
     // Continuous-time base relative to mach_absolute_time (zero on this host).
     publishCommpage(0xfffffc098ULL, quiescentBacking + 40, 0, 8);
-    // A zero sequence sends libsystem_kernel gettimeofday through its Mach fallback.
-    publishCommpage(0xfffffc120ULL, quiescentBacking + 72, 0, 8);
+    // libsystem_kernel reads all five words before checking the sequence and falling back.
+    publishCommpage(0xfffffc120ULL, quiescentBacking + 80, 0, 40);
     publishCommpage(0xfffffc010ULL, quiescentBacking + 16, capabilities, 8);
     publishCommpage(0xfffffc10cULL, quiescentBacking + 32, 0, 1);
     std::uint64_t capabilities64 = 0;
@@ -3088,8 +3095,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     if (image.mapping_backing_end() > guestMappingLimit - guestMappingBase) {
         throw std::runtime_error("Guest mapping arena exceeds the allocator address limit");
     }
-    // The first 80 bytes past the cache backing hold the commpage fields published above.
-    GuestHeap mappingHeap({static_cast<std::int64_t>(image.cache_backing_end() + 80),
+    // The first 120 bytes past the cache backing hold the commpage fields published above.
+    GuestHeap mappingHeap({static_cast<std::int64_t>(image.cache_backing_end() + 120),
                            static_cast<std::int64_t>(image.mapping_backing_end())});
     std::uint64_t namedImagePlacementCursor = std::uint64_t{1} << 46U;
     const auto monotonicNanoseconds = []() -> std::uint64_t {
