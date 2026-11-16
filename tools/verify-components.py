@@ -10,6 +10,7 @@ import os
 import pathlib
 import platform
 import re
+import resource
 import signal
 import subprocess
 import sys
@@ -45,9 +46,10 @@ def normalized_status(returncode):
 
 
 def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path, cwd,
-                start_marker=None):
+                start_marker=None, lock_wait_seconds=None):
     started = time.monotonic()
     status = "NOT_STARTED"
+    raw_returncode = None
     try:
         with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
             process = subprocess.Popen(
@@ -58,9 +60,30 @@ def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path,
                 stderr=stderr,
                 start_new_session=True,
             )
-            try:
-                status = normalized_status(process.wait(timeout=timeout_seconds))
-            except subprocess.TimeoutExpired:
+            execution_started = started if start_marker is None else None
+            while True:
+                raw_returncode = process.poll()
+                if raw_returncode is not None:
+                    status = normalized_status(raw_returncode)
+                    break
+                now = time.monotonic()
+                if start_marker is not None and pathlib.Path(start_marker).exists():
+                    if execution_started is None:
+                        execution_started = now
+                if execution_started is not None:
+                    timed_out = now - execution_started >= timeout_seconds
+                else:
+                    timed_out = now - started >= (
+                        lock_wait_seconds if lock_wait_seconds is not None else timeout_seconds
+                    )
+                if timed_out:
+                    status = "GPU_TIMEOUT" if execution_started is not None and start_marker else (
+                        "GPU_LOCK_WAIT_TIMEOUT" if start_marker else "TIMEOUT"
+                    )
+                    raw_returncode = None
+                    break
+                time.sleep(0.02)
+            if raw_returncode is None:
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -73,12 +96,18 @@ def run_bounded(command, environment, timeout_seconds, stdout_path, stderr_path,
                     except ProcessLookupError:
                         pass
                     process.wait()
-                status = "GPU_LOCK_WAIT_TIMEOUT" if start_marker and not pathlib.Path(start_marker).exists() else "OUTER_TIMEOUT"
     except OSError as error:
         pathlib.Path(stderr_path).write_text(f"{error}\n")
         status = "LAUNCH_ERROR"
     pathlib.Path(stdout_path).with_suffix(".status").write_text(f"{status}\n")
-    return {"status": status, "duration_seconds": round(time.monotonic() - started, 3)}
+    pathlib.Path(stdout_path).with_suffix(".returncode").write_text(
+        f"{raw_returncode if raw_returncode is not None else status}\n"
+    )
+    return {
+        "status": status,
+        "returncode": raw_returncode,
+        "duration_seconds": round(time.monotonic() - started, 3),
+    }
 
 
 def substitute(values, replacements):
@@ -96,6 +125,14 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
     executable = case_dir / source.stem
     replacements = {"repo": str(repo), "source": str(source), "executable": str(executable), "case_dir": str(case_dir)}
     compile_command = substitute(case["compile"], replacements)
+    input_artifacts = []
+    for input_path in case.get("input_files", []):
+        resolved_input = pathlib.Path(input_path.format_map(replacements)).resolve()
+        input_artifacts.append({
+            "path": str(resolved_input),
+            "size_bytes": resolved_input.stat().st_size,
+            "sha256": sha256(resolved_input),
+        })
     base_environment = {
         key: value for key, value in os.environ.items()
         if not key.startswith("ARM64_METAL_") or key == "ARM64_METAL_KERNEL_CACHE"
@@ -110,6 +147,7 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
         "domain": case["domain"],
         "fixture": case["fixture"],
         "fixture_sha256": sha256(source),
+        "input_artifacts": input_artifacts,
         "compiled_executable": str(executable),
         "compiled_executable_sha256": sha256(executable) if executable.exists() else None,
         "compile_command": compile_command,
@@ -145,7 +183,13 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
         case_dir / "native.stdout", case_dir / "native.stderr", repo,
     )
     result["native"] = native_result
-    if native_result["status"] != case["expected_status"]:
+    expected_returncode = case.get("expected_returncode")
+    native_stdout_lines = (case_dir / "native.stdout").read_bytes().count(b"\n")
+    result["native_stdout_lines"] = native_stdout_lines
+    if (native_result["status"] != case["expected_status"]
+            or (expected_returncode is not None and native_result["returncode"] != expected_returncode)
+            or ("expected_stdout_lines" in case
+                and native_stdout_lines != case["expected_stdout_lines"])):
         result["failure"] = "native positive control did not match manifest status"
         result["evidence"] = "native_control_failed; guest_not_run"
         result["guest"] = {"status": "NOT_RUN_NATIVE_CONTROL_FAILED"}
@@ -170,17 +214,18 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
         start_marker = None
     result["guest_command"] = guest_command
     result["not_run"] = False
-    guest_bound = case["timeout_seconds"] + root["gpu_lock_wait_seconds"] if gpulock else case["timeout_seconds"]
     guest_result = run_bounded(
-        guest_command, guest_environment, guest_bound,
-        case_dir / "guest.stdout", case_dir / "guest.stderr", repo, start_marker if gpulock else None,
+        guest_command, guest_environment, case["timeout_seconds"],
+        case_dir / "guest.stdout", case_dir / "guest.stderr", repo,
+        start_marker if gpulock else None,
+        root["gpu_lock_wait_seconds"] if gpulock else None,
     )
-    if guest_result["status"] in ("GPU_LOCK_WAIT_TIMEOUT", "OUTER_TIMEOUT"):
-        if guest_result["status"] == "OUTER_TIMEOUT" and (not gpulock or pathlib.Path(start_marker).exists()):
-            guest_result["status"] = "GPU_TIMEOUT"
-        result["failure"] = "guest run exceeded its execution bound" if guest_result["status"] == "GPU_TIMEOUT" else "shared GPU lock wait exceeded its bound"
-        result["evidence"] = "native_control_passed;guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "native_control_passed;guest_not_started"
-        result["guest_outcome"] = "guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "gpu_lock_wait_timeout"
+    if guest_result["status"] in ("GPU_LOCK_WAIT_TIMEOUT", "GPU_TIMEOUT", "TIMEOUT"):
+        execution_timeout = guest_result["status"] in ("GPU_TIMEOUT", "TIMEOUT")
+        result["not_run"] = not execution_timeout
+        result["failure"] = "guest run exceeded its execution bound" if execution_timeout else "shared GPU lock wait exceeded its bound"
+        result["evidence"] = "native_control_passed;guest_timeout" if execution_timeout else "native_control_passed;guest_not_started"
+        result["guest_outcome"] = "guest_timeout" if execution_timeout else "gpu_lock_wait_timeout"
         pathlib.Path(case_dir / "guest.status").write_text(f"{guest_result['status']}\n")
         result["guest"] = guest_result
         (case_dir / "case.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -197,16 +242,28 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
             and re.fullmatch(case["guest_stderr_regex"], guest_stderr) is not None
         )
     status_equal = native_result["status"] == guest_result["status"]
+    returncode_equal = native_result["returncode"] == guest_result["returncode"]
+    guest_stdout_lines = (case_dir / "guest.stdout").read_bytes().count(b"\n")
+    stdout_line_count_match = (
+        "expected_stdout_lines" not in case
+        or (native_stdout_lines == case["expected_stdout_lines"]
+            and guest_stdout_lines == case["expected_stdout_lines"])
+    )
+    result["guest_stdout_lines"] = guest_stdout_lines
     result["comparison"] = {
         "stdout_equal": stdout_equal,
         "stderr_equal": stderr_equal,
         "stderr_policy_satisfied": stderr_policy_satisfied,
         "status_equal": status_equal,
+        "returncode_equal": returncode_equal,
+        "stdout_line_count_match": stdout_line_count_match,
         "stderr_policy": "exact" if stderr_equal else "manifest guest diagnostic accepted",
     }
-    if not (stdout_equal and stderr_policy_satisfied and status_equal and guest_result["status"] == case["expected_status"]):
+    if not (stdout_equal and stdout_line_count_match and stderr_policy_satisfied and status_equal and returncode_equal
+            and guest_result["status"] == case["expected_status"]
+            and (expected_returncode is None or guest_result["returncode"] == expected_returncode)):
         result["failure"] = "native/guest result mismatch or unexpected guest status"
-        result["evidence"] = "native_positive_control_passed;guest_mismatch"
+        result["evidence"] = "native_control_passed;guest_mismatch"
         result["guest_outcome"] = "guest_timeout" if guest_result["status"] == "GPU_TIMEOUT" else "abi_mismatch"
     else:
         if stderr_equal:
@@ -214,12 +271,13 @@ def execute_case(case, root, runtime, gpulock, results_dir, repo):
             result["evidence"] = case["evidence_level"]
         else:
             result["outcome"] = "passed_with_diagnostic"
-            result["evidence"] = "stdout and status match; launcher diagnostic accepted by manifest"
+            result["evidence"] = "stdout, normalized status, and raw returncode match; launcher diagnostic accepted by manifest"
     (case_dir / "case.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
 
 def main():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", type=pathlib.Path)
     parser.add_argument("--results", default=pathlib.Path(".build/component-conformance"), type=pathlib.Path)
@@ -245,6 +303,8 @@ def main():
         parser.error("--runtime is required unless --list is used")
     if args.jobs < 1 or args.jobs > 4 or args.gpu_slots < 1 or args.gpu_slots > 4 or args.jobs > args.gpu_slots:
         parser.error("jobs and gpu-slots must be 1..4, with jobs <= gpu-slots")
+    if args.gpu_lock_wait < 1:
+        parser.error("gpu-lock-wait must be at least one second")
 
     runtime = args.runtime.resolve()
     gpulock = args.gpulock.resolve() if args.gpulock else None
@@ -278,6 +338,7 @@ def main():
         "host": host_info(),
         "jobs": args.jobs,
         "gpu_slots": args.gpu_slots,
+        "core_dump_limit": list(resource.getrlimit(resource.RLIMIT_CORE)),
         "gpulock": str(gpulock) if gpulock else None,
         "selected_case_ids": [case["id"] for case in selected],
     }
@@ -300,7 +361,15 @@ def main():
             try:
                 result = future.result()
             except Exception as error:
-                result = {"id": case["id"], "domain": case["domain"], "outcome": "failed", "failure": repr(error), "evidence": "not_observed"}
+                result = {
+                    "id": case["id"],
+                    "domain": case["domain"],
+                    "polarity": case["polarity"],
+                    "outcome": "failed",
+                    "failure": repr(error),
+                    "evidence": "not_observed",
+                    "not_run": True,
+                }
                 (run_dir / case["id"]).mkdir(exist_ok=True)
                 (run_dir / case["id"] / "case.json").write_text(json.dumps(result, indent=2) + "\n")
             results.append(result)
