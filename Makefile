@@ -139,7 +139,7 @@ verify-workloop-debounce:
 	  cmp "$$out/native.stderr" "$$out/guest.stderr"; \
 	  cmp "$$out/native.status" "$$out/guest.status"; \
 	  test "$$(cat "$$out/native.status")" = 0; \
-	  printf 'Ignored stale workloop registration matches native (status 0)\n'
+	  printf 'Workloop QoS and debounce matrix matches native (status 0)\n'
 
 DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
 DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib

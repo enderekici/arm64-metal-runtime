@@ -363,7 +363,9 @@
     if (netSyscall == 375) {  // kevent_id
         constexpr std::uint32_t workloopFlag = 0x400U;
         constexpr std::uint32_t ignoreStale = 0x100U;
-        constexpr std::uint32_t threadRequest = 0x1U;
+        constexpr std::uint32_t qosClassMask = 0x00003f00U;
+        constexpr std::uint32_t schedPriorityFlag = 0x20000000U;
+        constexpr std::uint32_t eventManagerFlag = 0x02000000U;
         constexpr std::size_t eventStride = netKeventQosStride;
         const auto workloopId = registers[0];
         const auto changesAddress = registers[1];
@@ -404,9 +406,14 @@
         std::memcpy(&qos, change + 12, sizeof(qos));
         std::memcpy(&fflags, change + 24, sizeof(fflags));
         if (filter != -17 || ident != workloopId ||
-            (fflags & 0x8000000fU) != threadRequest ||
-            changeFlags != 0x5U || qos != 0x080008ff) {
+            (fflags != 0x111U && fflags != 0x11U) || changeFlags != 0x5U) {
             rawFail(ENOTSUP);
+            continue;
+        }
+        const auto priority = static_cast<std::uint32_t>(qos);
+        if ((priority & qosClassMask) == 0 ||
+            (priority & (schedPriorityFlag | eventManagerFlag)) != 0) {
+            rawFail(ERANGE);
             continue;
         }
         std::uint64_t debounceAddress = 0;
@@ -425,6 +432,10 @@
                 (fflags & ignoreStale) != 0) {
                 // XNU masks ESTALE and performs no attach/update when requested.
                 rawOk(0);
+                continue;
+            }
+            if ((observed & mask) != (expected & mask)) {
+                rawFail(ESTALE);
                 continue;
             }
         }
