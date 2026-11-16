@@ -14,6 +14,7 @@ constexpr std::int32_t kernSuccess = 0;
 constexpr std::int32_t kernNoSpace = 3;
 constexpr std::int32_t kernInvalidArgument = 4;
 constexpr std::int32_t kernFailure = 5;
+constexpr std::int32_t kernNoAccess = 8;
 constexpr std::int32_t kernInvalidCapability = 20;
 constexpr std::int32_t kernNotSupported = 46;
 constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
@@ -22,6 +23,8 @@ constexpr std::uint32_t kernMemoryError = 10U;
 constexpr std::uint32_t machMsgTypeMoveSend = 0x11U;
 constexpr std::uint32_t voucherKeyUserData = 7;
 constexpr std::uint32_t voucherCommandUserDataStore = 211;
+constexpr std::uint32_t machMsgTypeCopySend = 19;
+constexpr std::uint32_t machPortDescriptorType = 0;
 constexpr std::size_t maxRecipeBytes = 5120;
 constexpr std::size_t recipeHeader = 16;
 constexpr std::int32_t kernProtectionFailure = 2;
@@ -36,6 +39,12 @@ constexpr std::uint32_t threadBasicInfoCount = 10;
 constexpr std::uint32_t threadIdentifierInfoCount = 6;
 constexpr std::uint32_t threadExtendedInfoCount = 28;
 constexpr std::uint32_t exceptionMaskValid = 0x3ffe;
+constexpr std::uint32_t exceptionBehaviorMask = 0x7fffffff;
+constexpr std::uint32_t exceptionDefault = 1;
+constexpr std::uint32_t exceptionState = 2;
+constexpr std::uint32_t exceptionStateIdentity = 3;
+constexpr std::uint32_t exceptionStateIdentityProtected = 5;
+constexpr std::uint32_t threadStateNone = 0;
 
 std::uint32_t word(const Request& request, std::size_t offset) {
     std::uint32_t value = 0;
@@ -534,6 +543,43 @@ bool GuestMachModels::handle_task(const Request& request, Reply& reply) {
     const auto flavor = word(request, 32);
     const auto count = word(request, 36);
     switch (request.id) {
+    case 3413: {  // task_set_exception_ports(mask, null port, behavior, flavor)
+        if (request.size != 60) return false;
+        const auto descriptor = word(request, 36);
+        const auto disposition = (descriptor >> 16) & 0xffU;
+        if (word(request, 24) != 1 || word(request, 32) != 0 ||
+            (descriptor & 0xffffU) != 0 ||
+            ((descriptor >> 24) & 0xffU) != machPortDescriptorType ||
+            (disposition != machMsgTypeMoveSend && disposition != machMsgTypeCopySend)) {
+            reply.code = migBadArguments;
+            return true;
+        }
+        const auto handler = word(request, 28);
+        if (handler != 0 && !env_.holdsSendRight(handler)) {
+            reply.sendResult = machSendInvalidRight;
+            return true;
+        }
+        if (handler != 0) {
+            reply.code = kernNotSupported;
+            return true;
+        }
+        const auto mask = word(request, 48);
+        const auto behavior = word(request, 52);
+        const auto flavor = word(request, 56);
+        if ((mask & ~exceptionMaskValid) != 0) {
+            reply.code = kernInvalidArgument;
+        } else {
+            const auto baseBehavior = behavior & exceptionBehaviorMask;
+            if (baseBehavior != exceptionDefault && baseBehavior != exceptionState &&
+                baseBehavior != exceptionStateIdentity &&
+                baseBehavior != exceptionStateIdentityProtected) {
+                reply.code = kernNoAccess;
+            } else if (flavor != threadStateNone && flavor != armThreadState64) {
+                reply.code = kernInvalidArgument;
+            }
+        }
+        return true;
+    }
     case 3414:  // task_get_exception_ports(mask)
         exception_ports(request, reply, true);
         return true;

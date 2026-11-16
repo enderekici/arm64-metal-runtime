@@ -324,8 +324,46 @@ static void thread_rpcs(void) {
   rpc(thread, 3614, a, 3); dump("thread_get_exception_ports bad mask");
 }
 
+static void task_set_exception_rpcs(void) {
+  u32 set[9] = {1, 0, 0, (0u << 24) | (19u << 16), 0, 1,
+                EXC_MASK_BAD_ACCESS, 1, 6};
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports null"); pkh("r", last_r);
+  pk("kr", (i32)rep[8]); nl();
+  set[6] = 0xffffffffu;
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad mask"); pkh("r", last_r);
+  pk("kr", (i32)rep[8]); nl();
+  set[6] = EXC_MASK_BAD_ACCESS;
+  set[7] = 0xffffffffu;
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad behavior"); pkh("r", last_r);
+  pk("kr", (i32)rep[8]); nl();
+  set[7] = 1;
+  set[8] = 0xffffffffu;
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad flavor"); pkh("r", last_r);
+  pk("kr", (i32)rep[8]); nl();
+  set[8] = 6;
+  rpcx(0x1234, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad task"); pkh("r", last_r); nl();
+  set[3] |= 1u << 24;
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad descriptor type"); pkh("r", last_r);
+  if (last_r == 0) pk("kr", (i32)rep[8]);
+  nl();
+  set[3] &= ~(1u << 24);
+  set[6] = EXC_MASK_BAD_ACCESS;
+  set[1] = 0x1234;
+  rpcx(task, 3413, set, 9, 1);
+  ps("task_set_exception_ports bad right"); pkh("r", last_r);
+  if (last_r == 0) pk("kr", (i32)rep[8]);
+  nl();
+}
+
 static void task_rpcs(void) {
   u32 a[16];
+  task_set_exception_rpcs();
   a[0] = 0; a[1] = 1; a[2] = EXC_MASK_ALL;
   rpc(task, 3414, a, 3); dump("task_get_exception_ports all");
   a[2] = EXC_MASK_BAD_ACCESS;
@@ -366,6 +404,18 @@ static void task_rpcs(void) {
 
 static void host_rpcs(void) {
   u32 a[16];
+  {
+    // mach_host_self() is a host send right, not host_priv_t. Native
+    // host_get_special_port therefore rejects every selector with KERN_INVALID_ARGUMENT.
+    static const u32 selectors[] = {1, 2, 3, 0, 123456};
+    for (unsigned i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+      u32 special[4] = {0, 1, (u32)-1, selectors[i]};
+      rpc(host, 412, special, 4);
+      ps("host_get_special_port"); pk("selector", selectors[i]);
+      pk("kr", rep[1] >= 36 ? (i32)rep[8] : -999);
+      pk("descriptor", !!(rep[0] & 0x80000000u)); nl();
+    }
+  }
   a[0] = 0; a[1] = 1;
   rpc(host, 213, a, 0); dump("processor_set_default");
   a[2] = HOST_VM_INFO; a[3] = HOST_VM_INFO_COUNT;
@@ -546,6 +596,7 @@ int main(int argc, char **argv) {
   const char *section = argc > 1 ? argv[1] : "traps";
   if (section[0] == 't' && section[1] == 'r') { voucher_traps(); vouchers(); }
   else if (section[0] == 't' && section[1] == 'h') thread_rpcs();
+  else if (section[0] == 'e') task_set_exception_rpcs();
   else if (section[0] == 't') task_rpcs();
   else if (section[0] == 'h') host_rpcs();
   else if (section[0] == 'n') mach_port_names_rpc();
