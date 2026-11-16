@@ -17,6 +17,7 @@
 #include <string_view>
 #include <vector>
 #include <mach-o/dyld.h>
+#include <signal.h>
 
 namespace {
 
@@ -131,6 +132,19 @@ std::filesystem::path host_executable_path() {
   auto resolved = std::filesystem::weakly_canonical(path.data(), error);
   if (error) throw std::runtime_error("Unable to canonicalize arm64-metal executable path");
   return resolved;
+}
+
+int re_terminate_with_guest_signal(std::int32_t signal, std::int32_t fallbackStatus) {
+  struct sigaction action {};
+  action.sa_handler = SIG_DFL;
+  sigemptyset(&action.sa_mask);
+  if (::sigaction(signal, &action, nullptr) != 0 && signal != SIGKILL) return fallbackStatus;
+  sigset_t unblocked;
+  sigemptyset(&unblocked);
+  sigaddset(&unblocked, signal);
+  if (::sigprocmask(SIG_UNBLOCK, &unblocked, nullptr) != 0) return fallbackStatus;
+  ::raise(signal);
+  return fallbackStatus;
 }
 
 void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& options,
@@ -560,7 +574,11 @@ int run_command(const std::vector<std::string>& args,
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
     configure_interpreter_assets(options, executablePath);
-    return arm64metal::process_runner::launch_executable(args[1], arguments, options);
+    std::int32_t terminatingSignal = 0;
+    const auto status = arm64metal::process_runner::launch_executable(
+        args[1], arguments, options, &terminatingSignal);
+    if (terminatingSignal != 0) return re_terminate_with_guest_signal(terminatingSignal, status);
+    return status;
   }
 
   if (args[0] == "inspect-cache" && args.size() == 3) {

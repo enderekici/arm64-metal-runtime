@@ -27,10 +27,13 @@ struct LaunchOptions {
 
 // Launch `executable` with arguments following argv[0]. The host environment
 // is captured by default. Returns the guest process exit status; malformed
-// images, unsupported imports, and unimplemented cache faults throw.
+// images, unsupported imports, and unimplemented cache faults throw. If
+// `terminatingSignal` is non-null, it receives the default guest termination
+// signal, or zero for a normal exit; signal propagation remains a CLI choice.
 [[nodiscard]] std::int32_t launch_executable(
     const std::filesystem::path& executable,
     const std::vector<std::string>& arguments = {},
-    const LaunchOptions& options = {});
+    const LaunchOptions& options = {},
+    std::int32_t* terminatingSignal = nullptr);
 
 }  // namespace arm64metal::process_runner

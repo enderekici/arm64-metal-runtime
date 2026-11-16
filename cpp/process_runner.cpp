@@ -2040,7 +2040,13 @@ std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
 
 std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
-                               const LaunchOptions& options) {
+                               const LaunchOptions& options,
+                               std::int32_t* terminatingSignal) {
+    if (terminatingSignal != nullptr) *terminatingSignal = 0;
+    const auto signalExitStatus = [terminatingSignal](const GuestSignalDelivery& delivery) {
+        if (terminatingSignal != nullptr) *terminatingSignal = delivery.signal;
+        return delivery.exitStatus;
+    };
     ScopedProcessUmask guestUmask;
     RawProcState rawProcState;
     ProcessPerformanceSummary performanceSummary;
@@ -7412,7 +7418,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             signalRegisterSnapshot, signalRegisterSnapshot[37],
             static_cast<std::uint64_t>(activeEntry),
             guestScheduler.current_id(), &guestMemory);
-        if (delivery.outcome == GuestSignalOutcome::ProcessExit) return delivery.exitStatus;
+        if (delivery.outcome == GuestSignalOutcome::ProcessExit) return signalExitStatus(delivery);
         if (delivery.outcome == GuestSignalOutcome::UnsupportedStop) {
             throw std::runtime_error("Guest stop and continue signals are unsupported");
         }
@@ -8153,7 +8159,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     static_cast<std::uint64_t>(activeEntry),
                     guestScheduler.current_id());
                 if (delivery.outcome == GuestSignalOutcome::ProcessExit)
-                    return delivery.exitStatus;
+                    return signalExitStatus(delivery);
                 if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                     std::memcpy(stateBuffer.data(), hostRegisters.data(),
                                 hostRegisters.size() * sizeof(std::uint64_t));
@@ -10521,7 +10527,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live, guestMemory, fault, live[37],
                 static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                if (hostServiceState.signals.action(fault.signal).handler == 0) {
+                if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr &&
+                    hostServiceState.signals.action(fault.signal).handler == 0) {
                     std::cerr << "arm64-metal: Guest process memory access fault at 0x"
                               << hexadecimal(address) << " at PC 0x"
                               << hexadecimal(registers[33]) << " width "
@@ -10547,7 +10554,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         dumpTransitions();
                     }
                 }
-                return delivery.exitStatus;
+                return signalExitStatus(delivery);
             }
             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                 std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
@@ -10574,10 +10581,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live, guestMemory, fault, live[37],
                 static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                if (status == 3 &&
+                if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr && status == 3 &&
                     hostServiceState.signals.action(fault.signal).handler == 0) {
                     std::cerr << "arm64-metal: Guest process reached an invalid code address\n";
-                } else if (status != 3) {
+                } else if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr &&
+                           status != 3) {
                     std::cerr << "arm64-metal: Guest process terminated by "
                               << (status == 14 ? "SIGILL" : "SIGTRAP") << " at PC 0x"
                               << hexadecimal(registers[33]) << " LR 0x"
@@ -10605,7 +10613,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                       << '\n';
                     }
                 }
-                return delivery.exitStatus;
+                return signalExitStatus(delivery);
             }
             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                 std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
@@ -10634,7 +10642,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live, guestMemory, fault, live[37],
                 static_cast<std::uint64_t>(activeEntry), guestScheduler.current_id());
             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                return delivery.exitStatus;
+                return signalExitStatus(delivery);
             }
             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                 std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
@@ -14644,7 +14652,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t>(activeEntry),
                             guestScheduler.current_id());
                         if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                            return delivery.exitStatus;
+                            return signalExitStatus(delivery);
                         }
                         if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                             std::memcpy(stateBuffer.data(), live.data(),
@@ -14766,7 +14774,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 static_cast<std::uint64_t>(activeEntry),
                                 guestScheduler.current_id());
                             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                                return delivery.exitStatus;
+                                return signalExitStatus(delivery);
                             }
                             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                                 std::memcpy(stateBuffer.data(), live.data(),
@@ -15676,7 +15684,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 static_cast<std::uint64_t>(activeEntry),
                                 guestScheduler.current_id());
                             if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                                return delivery.exitStatus;
+                                return signalExitStatus(delivery);
                             }
                             if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                                 std::memcpy(stateBuffer.data(), live.data(),
@@ -15839,7 +15847,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             static_cast<std::uint64_t>(activeEntry),
                             guestScheduler.current_id());
                         if (delivery.outcome == GuestSignalOutcome::ProcessExit) {
-                            return delivery.exitStatus;
+                            return signalExitStatus(delivery);
                         }
                         if (delivery.outcome == GuestSignalOutcome::HandlerEntered) {
                             std::memcpy(stateBuffer.data(), live.data(),
