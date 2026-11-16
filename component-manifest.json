@@ -140,6 +140,36 @@
       "negative_control": "None; exercises positive/negative saturation, extreme shift counts, and pre-seeded FPSR QC state.",
       "evidence_level": "native-and-guest stdout/stderr/status exact match",
       "coverage_boundary": "Process-level translated output only; custom AOT SIMD fallback means this does not prove typed GPU-interpreter packet coverage."
+    },
+    {
+      "id": "kevent-workloop-debounce",
+      "test_target": "verify-workloop-debounce; native and runtime launch of the raw kevent_qos workloop debounce fixture",
+      "domain": "Darwin workloop QoS event delivery",
+      "fixture": "fixtures/handoff/kevent-workloop-debounce.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 20,
+      "expected_status": 0,
+      "polarity": "positive-workloop-debounce-qos-matrix",
+      "negative_control": "Fixture checks valid priority encodings and expected EINVAL behavior for invalid QoS/fflags combinations.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match"
+    },
+    {
+      "id": "task-exception-port-clear",
+      "test_target": "voucher-traps executable with argument e; task_set_exception_ports null-clear validation only",
+      "domain": "Mach task exception ports",
+      "fixture": "fixtures/handoff/voucher-traps.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "native_args": ["e"],
+      "guest_args": ["e"],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-with-invalid-clear-controls",
+      "negative_control": "Compares null-port clear and invalid mask, behavior, flavor, task, descriptor type, and right results; does not cover installing or delivering a valid exception handler.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match"
     }
   ]
 }
