@@ -2363,6 +2363,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     const auto quiescentBacking = image.cache_backing_end();
     const std::uint64_t capabilities = (1ULL << 16) | (1ULL << 15) | (1ULL << 7) | (1ULL << 26);
     publishCommpage(0xfffffc180ULL, quiescentBacking, 0, 8);
+    // Time-base update sequence word: libsystem_kernel gettimeofday rereads it; the host reads 0.
+    publishCommpage(0xfffffc098ULL, quiescentBacking, 0, 8);
     publishCommpage(0xfffffc010ULL, quiescentBacking + 16, capabilities, 8);
     publishCommpage(0xfffffc10cULL, quiescentBacking + 32, 0, 1);
     std::uint64_t capabilities64 = 0;
