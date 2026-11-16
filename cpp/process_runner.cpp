@@ -12097,7 +12097,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 bool failed = false;
                 try {
                     (void)dispatch_guest_host_service(openRegisters, guestMemory, bootstrap,
-                                                      hostServiceState, 21);
+                                                      hostServiceState, 247);
                     if (openRegisters[0] == std::numeric_limits<std::uint64_t>::max()) {
                         std::memcpy(&error, errnoBytes, sizeof(error));
                         if (error == 0) error = EIO;

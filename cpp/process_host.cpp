@@ -3123,7 +3123,8 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 21: {  // open guest-owned files
+        case 21:  // open's variadic mode is stack-passed by the Apple ARM64 ABI
+        case 247: {  // raw open_nocancel's mode is in x2
             const auto path = string_at(registers[0]);
             const auto flags = static_cast<std::int32_t>(registers[1]);
             constexpr std::int32_t allowed = O_ACCMODE | O_APPEND | O_CREAT | O_TRUNC |
@@ -3135,7 +3136,20 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             const auto needsMode = (flags & O_CREAT) != 0;
-            const auto mode = static_cast<mode_t>(registers[2]);
+            mode_t mode = 0;
+            if (needsMode) {
+                try {
+                    if (service == 21 && registers[31] == 0) {
+                        throw std::out_of_range("Guest stack pointer is null");
+                    }
+                    mode = static_cast<mode_t>(service == 21
+                        ? load_u64(registers[31]) : registers[2]);
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = failure;
+                    break;
+                }
+            }
             const auto descriptor = needsMode
                 ? ::open(path.c_str(), flags | O_CLOEXEC, mode)
                 : ::open(path.c_str(), flags | O_CLOEXEC);
