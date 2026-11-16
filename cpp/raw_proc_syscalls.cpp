@@ -392,13 +392,24 @@ void Dispatcher::sigsuspend_call() {
     const auto old = state.threadSignalMask;
     state.signals.set_mask_value(static_cast<std::uint32_t>(arg(0)));
     state.threadSignalMask = state.signals.mask();
-    wait_for_signal(
-        [](Dispatcher& self, void*) {
-            return self.c_.state.signals.has_unblocked_pending(
-                self.c_.state.threadPendingSignals);
-        },
-        nullptr);
-    c_.proc.sigsuspendRestore = {c_.scheduler.current_id(), old};
+    if (state.signals.has_unblocked_pending(state.threadPendingSignals)) {
+        c_.proc.sigsuspendRestore[c_.scheduler.current_id()] = old;
+    } else if (c_.scheduler.thread_count() > 1 && c_.yieldCurrentThread) {
+        const auto thread = c_.scheduler.current_id();
+        c_.proc.sigsuspendRestore[thread] = old;
+        c_.scheduler.current().wait = GuestSignalSuspendWait{};
+        fail(EINTR);
+        c_.yieldCurrentThread();
+        return;
+    } else {
+        wait_for_signal(
+            [](Dispatcher& self, void*) {
+                return self.c_.state.signals.has_unblocked_pending(
+                    self.c_.state.threadPendingSignals);
+            },
+            nullptr);
+        c_.proc.sigsuspendRestore[c_.scheduler.current_id()] = old;
+    }
     fail(EINTR);
 }
 

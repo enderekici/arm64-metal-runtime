@@ -24,7 +24,7 @@ struct RawProcState {
     std::set<std::uint64_t> cancelPending;
     std::set<std::uint64_t> cancelDisabled;
     // Mask to reinstate once sigsuspend's signal handler returns.
-    std::optional<std::pair<std::uint64_t, std::uint32_t>> sigsuspendRestore;
+    std::map<std::uint64_t, std::uint32_t> sigsuspendRestore;
 };
 
 struct RawProcContext {
@@ -45,6 +45,7 @@ struct RawProcContext {
     const ProcessBootstrapResult& bootstrap;
     std::function<std::optional<std::uint64_t>(std::uint32_t port)> threadForPort;
     std::function<std::uint32_t()> acquireTaskPort;
+    std::function<void()> yieldCurrentThread;
     std::int32_t exitStatus = 0;
 };
 

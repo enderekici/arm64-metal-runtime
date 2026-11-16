@@ -3248,6 +3248,32 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     constexpr std::uint64_t guestDispatchTimeSlice = 32;
     std::uint64_t dispatchesInTimeSlice = 0;
     std::uint64_t timeSliceThread = guestScheduler.current_id();
+    const auto wakeSigsuspendedThreads = [&]() {
+        const auto activeMask = hostServiceState.threadSignalMask;
+        for (const auto& entry : rawProcState.sigsuspendRestore) {
+            auto* thread = guestScheduler.find(entry.first);
+            if (thread == nullptr || !thread->wait ||
+                !std::holds_alternative<GuestSignalSuspendWait>(*thread->wait)) continue;
+            hostServiceState.signals.set_mask_value(thread->signalMask);
+            const auto threadReady = thread->pendingSignals & ~hostServiceState.signals.mask();
+            bool claimedProcessSignal = false;
+            if (hostServiceState.signals.has_unblocked_pending(0)) {
+                if (const auto signal = hostServiceState.signals.claim_process_pending()) {
+                    const auto bit = GuestSignals::bit(*signal);
+                    thread->pendingSignals |= bit;
+                    hostServiceState.queuedProcessSignals &= ~bit;
+                    if (entry.first == guestScheduler.current_id()) {
+                        hostServiceState.threadPendingSignals |= bit;
+                    }
+                    claimedProcessSignal = true;
+                }
+            }
+            if (threadReady != 0 || claimedProcessSignal) {
+                guestScheduler.wake(entry.first, EINTR);
+            }
+        }
+        hostServiceState.signals.set_mask_value(activeMask);
+    };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
         std::vector<std::uint64_t> globalTail;
         if (live.size() >= guestTokenCount) {
@@ -3269,6 +3295,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 live = activeAfterExpiry->registers;
             }
         }
+        hostServiceState.ingest_host_signals();
+        wakeSigsuspendedThreads();
         bool switched = guestScheduler.schedule(
             requeue, live, hostServiceState.threadPendingSignals,
             hostServiceState.threadSignalMask);
@@ -3279,6 +3307,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const bool activeWasWaiting = activeBeforeWake != nullptr &&
                                           activeBeforeWake->wait.has_value();
             hostServiceState.ingest_host_signals();
+            wakeSigsuspendedThreads();
             if (const auto interruption = guestScheduler.interrupt_sleeping_thread(
                     hostServiceState.queuedProcessSignals, hostServiceState.signals, now)) {
                 auto* errorAddress = guestMemory.buffer(interruption->errnoAddress,
@@ -3321,6 +3350,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (!deadline || *timerDeadline < *deadline) deadline = timerDeadline;
             }
             if (!deadline) {
+                const bool waitingForSignal = std::any_of(
+                    rawProcState.sigsuspendRestore.begin(), rawProcState.sigsuspendRestore.end(),
+                    [&](const auto& entry) {
+                        const auto* thread = guestScheduler.find(entry.first);
+                        return thread != nullptr && thread->wait.has_value() &&
+                               std::holds_alternative<GuestSignalSuspendWait>(*thread->wait);
+                    });
+                if (waitingForSignal) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
                 progressTrace.event("threads-blocked-no-deadline", activeId);
                 throw std::runtime_error("All guest threads are blocked with no deadline or runnable thread");
             }
@@ -7345,12 +7385,17 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::vector<std::uint64_t> signalRegisterSnapshot;
     const auto deliverPendingSignal = [&]() -> std::optional<std::int32_t> {
         hostServiceState.ingest_host_signals();
-        const auto suspended = rawProcState.sigsuspendRestore;
-        rawProcState.sigsuspendRestore.reset();
+        if (!rawProcState.sigsuspendRestore.empty()) wakeSigsuspendedThreads();
+        const auto currentThread = guestScheduler.current_id();
+        const auto suspendedEntry = rawProcState.sigsuspendRestore.find(currentThread);
+        const std::optional<std::uint32_t> suspended =
+            suspendedEntry == rawProcState.sigsuspendRestore.end()
+                ? std::nullopt : std::optional<std::uint32_t>(suspendedEntry->second);
         const auto restoreSuspendedMask = [&]() {
-            if (!suspended || suspended->first != guestScheduler.current_id()) return;
-            hostServiceState.signals.set_mask_value(suspended->second);
+            if (!suspended) return;
+            hostServiceState.signals.set_mask_value(*suspended);
             hostServiceState.threadSignalMask = hostServiceState.signals.mask();
+            rawProcState.sigsuspendRestore.erase(currentThread);
         };
         if (!signalRuntime.has_pending_delivery(hostServiceState.signals,
                 hostServiceState.threadPendingSignals, hostServiceState.threadSignalMask,
@@ -7375,8 +7420,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::memcpy(stateBuffer.data(), signalRegisterSnapshot.data(),
                         signalRegisterSnapshot.size() * sizeof(std::uint64_t));
             selectKernel(static_cast<std::int64_t>(delivery.handler));
-            if (suspended && suspended->first == guestScheduler.current_id()) {
-                signalRuntime.set_top_frame_mask(suspended->first, suspended->second);
+            if (suspended) {
+                signalRuntime.set_top_frame_mask(currentThread, *suspended);
+                rawProcState.sigsuspendRestore.erase(currentThread);
             }
         } else {
             restoreSuspendedMask();
@@ -15836,6 +15882,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 rawProc.acquireTaskPort = [&]() {
                     return acquireGuestFixedSendRight(
                         static_cast<std::uint32_t>(guestMachTaskPort));
+                };
+                rawProc.yieldCurrentThread = [&]() {
+                    std::vector<std::uint64_t> live(
+                        registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
+                    (void)syncThreadSwitch(false, live);
                 };
                 const auto rawProcOutcome = dispatch_raw_proc_syscall(rawProc, syscall);
                 if (rawProcOutcome == RawProcOutcome::Exit) return rawProc.exitStatus;

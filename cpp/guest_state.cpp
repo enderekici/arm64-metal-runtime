@@ -250,6 +250,14 @@ bool GuestSignals::has_unblocked_pending(std::uint32_t threadPending) const noex
     return unblocked_pending(threadPending) != 0;
 }
 
+std::optional<std::int32_t> GuestSignals::claim_process_pending() {
+    const auto ready = pending_ & ~mask_;
+    if (ready == 0) return std::nullopt;
+    const auto bitValue = lowest_bit(ready);
+    pending_ &= ~bitValue;
+    return static_cast<std::int32_t>(__builtin_ctz(bitValue) + 1);
+}
+
 std::optional<std::pair<std::int32_t, GuestSignals::Action>> GuestSignals::next(
     std::uint32_t& threadPending) {
     const auto ready = unblocked_pending(threadPending);

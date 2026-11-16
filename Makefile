@@ -332,3 +332,25 @@ $(THREADS): guest-threads.c | $(BUILD)
 
 $(MEMORY): guest-memory.c | $(BUILD)
 	xcrun clang -arch arm64 -O2 -fno-builtin "$<" -o "$@"
+
+SIGSUSPEND_RUNTIME ?= $(APP_VERIFY_RUNTIME)
+SIGSUSPEND_TIMEOUT ?= 120
+.PHONY: verify-sigsuspend-cooperative
+verify-sigsuspend-cooperative:
+	@test -x "$(SIGSUSPEND_RUNTIME)" || { echo "Set SIGSUSPEND_RUNTIME to the built C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  out=$$(mktemp -d /tmp/arm64-metal-sigsuspend.XXXXXX); \
+	  printf 'sigsuspend receipts: %s\n' "$$out"; \
+	  xcrun clang -arch arm64 -Wall -Wextra -Werror -pthread \
+	    fixtures/handoff/sigsuspend-cooperative.c -o "$$out/sigsuspend-cooperative"; \
+	  if /usr/bin/timeout "$(SIGSUSPEND_TIMEOUT)" "$$out/sigsuspend-cooperative" \
+	    >"$$out/native.stdout" 2>"$$out/native.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$out/native.status"; \
+	  if /usr/bin/timeout "$(SIGSUSPEND_TIMEOUT)" "$(SIGSUSPEND_RUNTIME)" launch \
+	    "$$out/sigsuspend-cooperative" >"$$out/guest.stdout" 2>"$$out/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$out/guest.status"; \
+	  cmp "$$out/native.stdout" "$$out/guest.stdout"; \
+	  cmp "$$out/native.stderr" "$$out/guest.stderr"; \
+	  cmp "$$out/native.status" "$$out/guest.status"; \
+	  test "$$(cat "$$out/native.status")" = 0; \
+	  printf 'sigsuspend cooperative matches native (status 0)\n'

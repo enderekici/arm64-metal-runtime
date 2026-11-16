@@ -97,10 +97,11 @@ struct GuestUnixSocketReceiveWait {
 struct GuestHostPollWait {
     std::uint64_t nextPoll = 0;
 };
+struct GuestSignalSuspendWait {};
 using GuestWait = std::variant<GuestJoinWait, GuestMutexWait, GuestConditionWait,
                                GuestSleepWait, GuestSemaphoreWait, GuestMachReceiveWait,
                                GuestUlockWait, GuestUnixSocketReceiveWait,
-                               GuestHostPollWait>;
+                               GuestHostPollWait, GuestSignalSuspendWait>;
 
 // Guest thread bookkeeping only. `stack` and addresses are guest virtual
 // offsets; the runtime owns register save/restore and backing memory access.
@@ -170,6 +171,7 @@ public:
     void raise(std::int32_t signal);
     void ingest(std::uint32_t incoming);
     [[nodiscard]] bool has_unblocked_pending(std::uint32_t threadPending) const noexcept;
+    [[nodiscard]] std::optional<std::int32_t> claim_process_pending();
     [[nodiscard]] std::optional<std::pair<std::int32_t, Action>> next(
         std::uint32_t& threadPending);
     void enter(std::int32_t signal, const Action& action);
