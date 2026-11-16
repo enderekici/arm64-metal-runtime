@@ -342,51 +342,39 @@ The isolated SDK bridge/read candidate advances the unchanged Java/libz stop
 from `open_nocancel` 398 to raw syscall 396. App replay remains pending; this is
 not a Java/libz compatibility result.
 
-## Current `codex/tu-thread` checkpoint: `f76a922`
+## Current `codex/tu-thread` checkpoint: `b6e8994`
 
-Qualified on Apple M4 Pro / macOS 27.2.1. The exact C++ build, launch
-regression, interpreter/demand-cache gate, and extracted-package AOT smoke
-passed: 42 launch comparisons plus external SIGUSR1, 2,048 function matches,
-interpreter/demand-cache status 0, and packaged AOT status 42 after an
-81-packet dispatch. The raw packaged wall-time control exited 0 with
-`walltime ok`; the packaged QoS control matched native. Runtime SHA-256 is
-`1debb2be59800abbe93ddd05cef3112c53fbd4b09ffd738b5b0d33ea8a104fd3`,
+On Apple M4 Pro / macOS 27.2.1, the exact source passed the launch regression,
+interpreter, and demand-cache gates (all status 0), with 42 launch comparisons,
+external SIGUSR1, and 2,048 function matches. The extracted-package AOT smoke
+returned 42. The extracted raw wall-time control exited 0 with `walltime ok`;
+the QoS fixture matched native. The signal fixture matched native EINTR,
+handler, and signal-mask behavior (native/guest status 0). Signal receipts are
+under `/tmp/metal-thread-resume.E1NxHc/sigsuspend-two-waiters/`; extracted QoS
+and AOT receipts are under `/tmp/metal-thread-resume.E1NxHc/qos-package-*` and
+`/tmp/metal-thread-resume.E1NxHc/signal-final-package-aot.*`. Runtime SHA-256 is
+`50f8d65d3ea6c03b49f8ea0537c429031d9e8601bab74f29cd68f3592713af96`,
 interpreter metallib SHA-256 is
-`f3c8a415872170216a78cc47af5c9e17545bd629c6ea143ea2741802d82a00fd`, and
-archive SHA-256 is
-`d67149cb1ad4a6161f9045e9bb464c6c6ad639ee36bfd4e86e9ca91a66316bd9`. The
-qualified archive is `.build/arm64-metal-cpp-macos.tar.gz`; before/after
-digests and gate statuses are under `/tmp/metal-thread-resume.E1NxHc/final.*`.
+`f3c8a415872170216a78cc47af5c9e17545bd629c6ea143ea2741802d82a00fd`, and the
+promoted `.build/arm64-metal-cpp-macos.tar.gz` SHA-256 is
+`c1b6e9cfb4d8b5052c24aebbf4d8054501926a35dd78f4620c49b2a46a766303`. Build,
+gate statuses, and before/after hashes are under
+`/tmp/metal-thread-resume.E1NxHc/signal-final*` and
+`/tmp/metal-thread-resume.E1NxHc/signal-final.after.sha256`.
 
-The contiguous 40-byte commpage publication fixes the prior `0xfffffc128`
-guest access fault (status 139); the exact extracted package now prints
-`walltime ok` and exits 0. Evidence is in `/tmp/metal-thread-fc128-fix/guest-final.*`
-and `/tmp/metal-thread-resume.E1NxHc/final-package-walltime.*`.
+The extracted `mainq` fixture matches native stdout (`main queue ran`), empty
+stderr, and status 0. Receipts are under
+`/tmp/arm64-metal-thread-services.fHD5G1/`.
 
-The `verify-kevent-qos` control proves two events with the native 72-byte
-stride. On the same fixture, the 64-byte-stride baseline guest trapped with
-status 133 while native exited 0. Keep this separate from the arm64e
-unsigned-call control. The extracted QoS result and AOT trace are under
-`/tmp/metal-thread-resume.E1NxHc`.
+Timer delivery remains unresolved. The `f76a922` guest reached raw
+`gettimeofday` (116), then trapped with status 133 at `kevent_id` (375), flags
+`0x403` and `EVFILT_WORKLOOP` (-17); it produced no timer ticks. Native LLDB
+shows `_dispatch_kq_poll` returning 0 for the owner-address/state request.
+Receipts: `/tmp/metal-thread-fc128-fix/timer.guest.*` and
+`/tmp/metal-thread-fc128-fix/timer.native.lldb.txt`. The later `b6e8994`
+checkpoint does not close this gap.
 
-Timer delivery remains open. The exact `f76a922` run dispatched a workqueue
-user wake and reached raw `gettimeofday` (116), then trapped (status 133) at
-`kevent_id` (375), flags `0x403`; it produced no timer ticks. Native LLDB
-evidence shows `_dispatch_kq_poll` draining timers through `kevent_id` with
-`EVFILT_WORKLOOP` (-17), fflags `0x111`, and owner-address/state payload; the
-native call returns 0. This needs dynamic workloop ownership and event
-delivery. The raw wall-time positive does not qualify timer delivery. Receipts:
-`/tmp/metal-thread-fc128-fix/timer.guest.*` and
-`/tmp/metal-thread-fc128-fix/timer.native.lldb.txt`.
-
-Main-queue status is unresolved on the exact package. The isolated raw
-`sigsuspend` candidate matches native EINTR, handler, and signal-mask behavior,
-but remains on a WIP branch. The exact package failed with status 1 and
-`Guest signal wait would block while other guest threads exist`; native LLDB
-shows libdispatch reaching raw `sigsuspend_nocancel` syscall 410. This is not a
-main-queue package proof. Evidence:
-`/tmp/arm64-metal-thread-services.mx2kC2/` and
-`/tmp/metal-thread-resume.E1NxHc/native-sigsuspend-all.lldb`.
-
+General macOS compatibility now proceeds through reusable contract-differential
+lanes; full applications are occasional holdouts, not the repeated test loop.
 These results qualify only the recorded artifacts, fixtures, flags, and OS
-build; they do not establish full Azul/JNI startup or broad macOS compatibility.
+build; full Azul/JNI startup and broad macOS compatibility remain open.
