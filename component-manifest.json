@@ -161,7 +161,7 @@
       "test_target": "voucher-traps executable with argument e; task_set_exception_ports null-clear validation only",
       "domain": "Mach task exception ports",
       "fixture": "fixtures/handoff/voucher-traps.c",
-      "compile": ["xcrun", "clang", "-arch", "arm64", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
       "native_args": ["e"],
       "guest_args": ["e"],
       "required_launch_flags": {},
@@ -170,6 +170,36 @@
       "polarity": "positive-with-invalid-clear-controls",
       "negative_control": "Compares null-port clear and invalid mask, behavior, flavor, task, descriptor type, and right results; does not cover installing or delivering a valid exception handler.",
       "evidence_level": "native-and-guest stdout/stderr/status exact match"
+    },
+    {
+      "id": "raw-fd-lifecycle",
+      "test_target": "raw-fd-lifecycle-contract; freestanding syscall fixture with an immutable 18-byte input",
+      "domain": "Darwin raw file-descriptor lifecycle",
+      "fixture": "fixtures/handoff/raw-fd-lifecycle-contract.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib", "-Wl,-e,_start", "-lSystem", "-Wall", "-Wextra", "-Werror", "-DPROBE_PATH=\"{repo}/fixtures/handoff/raw-fd-lifecycle-input.txt\"", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-with-closed-descriptor-controls",
+      "negative_control": "Fixture verifies dup-shared offset, fstat size, close, and EBADF from fstat/lseek/dup/close after descriptor closure.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match plus read-only input hash receipt"
+    },
+    {
+      "id": "mkdtemp-contract",
+      "test_target": "mkdtemp-contract; valid temporary-directory creation and cleanup plus missing-parent error",
+      "domain": "libc temporary-directory creation and filesystem effects",
+      "fixture": "fixtures/handoff/mkdtemp-contract.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-with-missing-parent-control",
+      "negative_control": "Requires a unique 0700 directory, correct returned template pointer, successful cleanup, and ENOENT with no path creation when parent is missing.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match plus fixture cleanup assertion"
     }
   ]
 }
