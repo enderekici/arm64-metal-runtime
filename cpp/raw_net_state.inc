@@ -5,6 +5,23 @@ struct GuestHostPollResult {
 // Darwin's kevent_qos event includes four 64-bit extension words.
 constexpr std::size_t netKeventQosStride = 72;
 using GuestHostPollFn = std::function<std::optional<GuestHostPollResult>(std::uint64_t now)>;
+struct GuestDynamicWorkloopKnote {
+    std::uint64_t ident = 0;
+    std::int16_t filter = 0;
+    std::uint16_t flags = 0;
+    std::int32_t qos = 0;
+    std::uint64_t udata = 0;
+    std::uint32_t fflags = 0;
+    std::uint32_t xflags = 0;
+    std::int64_t data = 0;
+    std::array<std::uint64_t, 4> ext{};
+    bool active = false;
+};
+struct GuestDynamicWorkloop {
+    std::map<std::pair<std::uint64_t, std::int16_t>, GuestDynamicWorkloopKnote> knotes;
+    std::uint64_t ownerThread = 0;
+};
+std::map<std::uint64_t, GuestDynamicWorkloop> guestDynamicWorkloops;
 std::map<std::uint64_t, GuestHostPollFn> guestHostPollers;
 const auto pollGuestHostWaiters = [&](std::uint64_t now) {
     for (auto poller = guestHostPollers.begin(); poller != guestHostPollers.end();) {

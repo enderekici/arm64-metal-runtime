@@ -406,7 +406,8 @@
         std::memcpy(&qos, change + 12, sizeof(qos));
         std::memcpy(&fflags, change + 24, sizeof(fflags));
         if (filter != -17 || ident != workloopId ||
-            (fflags != 0x111U && fflags != 0x11U) || changeFlags != 0x5U) {
+            (changeFlags == 0x5U ? (fflags != 0x111U && fflags != 0x11U)
+                                 : (changeFlags != 0x2U || fflags != 0x121U))) {
             rawFail(ENOTSUP);
             continue;
         }
@@ -439,8 +440,52 @@
                 continue;
             }
         }
-        // A matching request would attach a knote and schedule a workloop worker.
-        rawFail(ENOTSUP);
+        const auto key = std::make_pair(ident, filter);
+        auto workloop = guestDynamicWorkloops.find(workloopId);
+        if (changeFlags == 0x2U) {
+            if (workloop == guestDynamicWorkloops.end()) {
+                rawFail(ENOENT);
+                continue;
+            }
+            const auto note = workloop->second.knotes.find(key);
+            if (note == workloop->second.knotes.end()) {
+                rawFail(ENOENT);
+                continue;
+            }
+            if ((fflags & 0x20U) != 0 &&
+                workloop->second.ownerThread == guestScheduler.current_id()) {
+                workloop->second.ownerThread = 0;
+            }
+            workloop->second.knotes.erase(note);
+            if (workloop->second.knotes.empty()) guestDynamicWorkloops.erase(workloop);
+            rawOk(0);
+            continue;
+        }
+        if (workloop == guestDynamicWorkloops.end()) {
+            workloop = guestDynamicWorkloops.emplace(workloopId, GuestDynamicWorkloop{}).first;
+        }
+        auto note = workloop->second.knotes.find(key);
+        if (note == workloop->second.knotes.end()) {
+            if (std::any_of(workloop->second.knotes.begin(), workloop->second.knotes.end(),
+                    [](const auto& entry) { return (entry.second.fflags & 0x0fU) == 0x1U; })) {
+                rawFail(EALREADY);
+                continue;
+            }
+            note = workloop->second.knotes.emplace(key, GuestDynamicWorkloopKnote{}).first;
+        }
+        auto& registration = note->second;
+        registration.ident = ident;
+        registration.filter = filter;
+        registration.flags = changeFlags;
+        registration.qos = qos;
+        std::memcpy(&registration.udata, change + 16, sizeof(registration.udata));
+        registration.fflags = fflags;
+        std::memcpy(&registration.xflags, change + 28, sizeof(registration.xflags));
+        std::memcpy(&registration.data, change + 32, sizeof(registration.data));
+        std::memcpy(registration.ext.data(), change + 40, sizeof(registration.ext));
+        if (debounceAddress != 0) registration.ext[3] = expected;
+        registration.active = true;
+        rawOk(0);
         continue;
     }
 
