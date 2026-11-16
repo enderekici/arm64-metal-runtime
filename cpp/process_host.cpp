@@ -1149,6 +1149,45 @@ HostServiceResult dispatch_guest_host_service(
             registers[0] = output.size();
             break;
         }
+        case 155: {  // mkdtemp
+            const auto address = registers[0];
+            if (address == 0) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            try {
+                const auto value = string_at(address);
+                // Validate the complete output range before creating a host path.
+                auto* destination = memory.buffer(address, value.size() + 1, true);
+                std::vector<char> hostTemplate(value.begin(), value.end());
+                hostTemplate.push_back('\0');
+                errno = 0;
+                if (::mkdtemp(hostTemplate.data()) == nullptr) {
+                    set_errno(errno == 0 ? EIO : errno);
+                    registers[0] = 0;
+                    break;
+                }
+                std::memcpy(destination, hostTemplate.data(), hostTemplate.size());
+                registers[0] = address;
+            } catch (const std::exception&) {
+                set_errno(EFAULT);
+                registers[0] = 0;
+            }
+            break;
+        }
+        case 156:  // unlink
+        case 177: {  // rmdir
+            std::string path;
+            if (!guest_path(registers[0], path)) {
+                registers[0] = failure;
+                break;
+            }
+            const auto result = service == 156 ? ::unlink(path.c_str()) : ::rmdir(path.c_str());
+            registers[0] = result == 0 ? 0 : failure;
+            if (result != 0) set_errno(errno);
+            break;
+        }
         case 157: {  // compat_mode
             const auto function = string_at(registers[0]);
             const auto requested = string_at(registers[1]);
