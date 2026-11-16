@@ -105,10 +105,8 @@
       "expected_status": 133,
       "expected_returncode": -5,
       "polarity": "negative-expected-signal-termination",
-      "negative_control": "The fixture deliberately leaves SIGTRAP at its default disposition; 133 is the expected signal exit, while any other status is a conformance failure.",
-      "evidence_level": "raw signal returncode -5 matches; stdout matches; launcher diagnostic is explicitly recorded",
-      "native_stderr_exact": "",
-      "guest_stderr_regex": "^arm64-metal: Guest process terminated by SIGTRAP at PC 0x[0-9a-f]+ LR 0x[0-9a-f]+\\n$"
+      "negative_control": "The fixture deliberately leaves SIGTRAP at its default disposition; raw returncode -5 and normalized status 133 distinguish signal termination from the ordinary-exit-133 control.",
+      "evidence_level": "native-and-guest stdout/stderr exact match; raw returncode -5 and normalized status 133 match"
     },
     {
       "id": "simd-table-lookup",
