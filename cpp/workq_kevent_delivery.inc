@@ -2,7 +2,7 @@
 // registrations live on a private host kqueue; ready events are delivered to a
 // guest workqueue thread started with WQ_FLAG_THREAD_KEVENT, as XNU does.
 {
-    constexpr std::uint64_t keventSize = 64;
+    constexpr std::uint64_t keventSize = netKeventQosStride;
     constexpr int maximumEvents = 16;
     constexpr std::uint64_t flagNewSpi = 0x00040000, flagPrioQos = 0x00004000,
         flagKevent = 0x00080000, flagManager = 0x00100000, flagTsdBaseSet = 0x00200000;

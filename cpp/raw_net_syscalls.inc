@@ -224,7 +224,8 @@
         constexpr std::uint32_t keventWorkqManager = 0x200U;
         constexpr std::uint32_t keventWorkloop = 0x400U;
         const int kind = netSyscall == 363 ? 0 : netSyscall == 369 ? 1 : 2;
-        const std::size_t stride = kind == 0 ? 32U : kind == 1 ? 48U : 64U;
+        const std::size_t stride = kind == 0 ? 32U : kind == 1 ? 48U
+                                                               : netKeventQosStride;
         auto kq = static_cast<std::int32_t>(registers[0]);
         const auto changesAddress = registers[1];
         const auto changeCount = std::max<std::int32_t>(static_cast<std::int32_t>(registers[2]), 0);

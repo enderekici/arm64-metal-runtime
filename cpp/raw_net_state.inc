@@ -2,6 +2,8 @@ struct GuestHostPollResult {
     std::uint64_t x0 = 0;
     bool carry = false;
 };
+// Darwin's kevent_qos event includes four 64-bit extension words.
+constexpr std::size_t netKeventQosStride = 72;
 using GuestHostPollFn = std::function<std::optional<GuestHostPollResult>(std::uint64_t now)>;
 std::map<std::uint64_t, GuestHostPollFn> guestHostPollers;
 const auto pollGuestHostWaiters = [&](std::uint64_t now) {

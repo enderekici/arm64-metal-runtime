@@ -95,6 +95,30 @@ verify-thread-services:
 	    printf '%s matches native (status 0)\n' "$$mode"; \
 	  done
 
+KEVENT_QOS_RUNTIME ?= $(APP_VERIFY_RUNTIME)
+KEVENT_QOS_TIMEOUT ?= 1200
+.PHONY: verify-kevent-qos
+verify-kevent-qos:
+	@test -x "$(KEVENT_QOS_RUNTIME)" || { echo "Set KEVENT_QOS_RUNTIME to the built C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  out=$$(mktemp -d /tmp/arm64-metal-kevent-qos.XXXXXX); \
+	  printf 'kevent_qos receipts: %s\n' "$$out"; \
+	  xcrun clang -arch arm64 -ffreestanding -fno-builtin -fno-stack-protector \
+	    -nostdlib -Wl,-e,_start -lSystem -Wall -Wextra -Werror \
+	    fixtures/handoff/kevent-qos-two-events.c -o "$$out/kevent-qos-two-events"; \
+	  if /usr/bin/timeout "$(KEVENT_QOS_TIMEOUT)" "$$out/kevent-qos-two-events" \
+	    >"$$out/native.stdout" 2>"$$out/native.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$out/native.status"; \
+	  if /usr/bin/timeout "$(KEVENT_QOS_TIMEOUT)" \
+	    "$(KEVENT_QOS_RUNTIME)" launch "$$out/kevent-qos-two-events" \
+	    >"$$out/guest.stdout" 2>"$$out/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$out/guest.status"; \
+	  cmp "$$out/native.stdout" "$$out/guest.stdout"; \
+	  cmp "$$out/native.stderr" "$$out/guest.stderr"; \
+	  cmp "$$out/native.status" "$$out/guest.status"; \
+	  test "$$(cat "$$out/native.status")" = 0; \
+	  printf 'Two kevent_qos events and 72-byte stride match native (status 0)\n'
+
 DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
 DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib
 DYLD_IMAGE_ROOT := $(BUILD)/libdyld-image-root.dylib
