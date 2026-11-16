@@ -360,10 +360,82 @@
         continue;
     }
 
-    if (netSyscall == 375 || netSyscall == 443 || netSyscall == 530) {
-        // kevent_id, guarded_kqueue_np, kqueue_workloop_ctl: workloop and guarded
-        // kqueues are not modeled. kevent_id without KEVENT_FLAG_WORKLOOP is EINVAL.
-        rawFail(netSyscall == 375 && (registers[1] & 0x400U) == 0 ? EINVAL : ENOTSUP);
+    if (netSyscall == 375) {  // kevent_id
+        constexpr std::uint32_t workloopFlag = 0x400U;
+        constexpr std::uint32_t ignoreStale = 0x100U;
+        constexpr std::uint32_t threadRequest = 0x1U;
+        constexpr std::size_t eventStride = netKeventQosStride;
+        const auto workloopId = registers[0];
+        const auto changesAddress = registers[1];
+        const auto changeCount = static_cast<std::int32_t>(registers[2]);
+        const auto eventCount = static_cast<std::int32_t>(registers[4]);
+        const auto flags = static_cast<std::uint32_t>(registers[7]);
+        if ((flags & workloopFlag) == 0) {
+            rawFail(EINVAL);
+            continue;
+        }
+        if ((flags & ~(workloopFlag | 0x3U)) != 0) {
+            rawFail(ENOTSUP);
+            continue;
+        }
+        if (workloopId == 0 || changeCount < 0 || eventCount < 0 ||
+            changeCount > (1 << 16) || eventCount > (1 << 16)) {
+            rawFail(EINVAL);
+            continue;
+        }
+        if (changeCount != 1 || eventCount != 0) {
+            rawFail(ENOTSUP);
+            continue;
+        }
+        std::vector<std::uint8_t> changes(static_cast<std::size_t>(changeCount) * eventStride);
+        if (!netReadGuest(changesAddress, changes.data(), changes.size())) {
+            rawFail(EFAULT);
+            continue;
+        }
+        const auto* change = changes.data();
+        std::uint64_t ident = 0;
+        std::int16_t filter = 0;
+        std::uint16_t changeFlags = 0;
+        std::int32_t qos = 0;
+        std::uint32_t fflags = 0;
+        std::memcpy(&ident, change, sizeof(ident));
+        std::memcpy(&filter, change + 8, sizeof(filter));
+        std::memcpy(&changeFlags, change + 10, sizeof(changeFlags));
+        std::memcpy(&qos, change + 12, sizeof(qos));
+        std::memcpy(&fflags, change + 24, sizeof(fflags));
+        if (filter != -17 || ident != workloopId ||
+            (fflags & 0x8000000fU) != threadRequest ||
+            changeFlags != 0x5U || qos != 0x080008ff) {
+            rawFail(ENOTSUP);
+            continue;
+        }
+        std::uint64_t debounceAddress = 0;
+        std::uint64_t mask = 0;
+        std::uint64_t expected = 0;
+        std::memcpy(&debounceAddress, change + 48, sizeof(debounceAddress));
+        std::memcpy(&mask, change + 56, sizeof(mask));
+        std::memcpy(&expected, change + 64, sizeof(expected));
+        if (debounceAddress != 0) {
+            std::uint64_t observed = 0;
+            if (!netReadGuest(debounceAddress, &observed, sizeof(observed))) {
+                rawFail(EFAULT);
+                continue;
+            }
+            if ((observed & mask) != (expected & mask) &&
+                (fflags & ignoreStale) != 0) {
+                // XNU masks ESTALE and performs no attach/update when requested.
+                rawOk(0);
+                continue;
+            }
+        }
+        // A matching request would attach a knote and schedule a workloop worker.
+        rawFail(ENOTSUP);
+        continue;
+    }
+
+    if (netSyscall == 443 || netSyscall == 530) {
+        // guarded_kqueue_np and kqueue_workloop_ctl are not yet modeled.
+        rawFail(ENOTSUP);
         continue;
     }
 
