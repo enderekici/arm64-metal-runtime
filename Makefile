@@ -82,6 +82,36 @@ verify-components:
 	  exec python3 tools/verify-components.py --runtime "$(COMPONENT_RUNTIME)" \
 	    --results "$(COMPONENT_RESULTS)" --jobs "$(COMPONENT_JOBS)" \
 	    --gpu-slots "$(COMPONENT_GPU_SLOTS)" "$$@"
+DYNAMIC_IMPORT_RUNTIME ?= $(APP_VERIFY_RUNTIME)
+DYNAMIC_IMPORT_BUILD := $(BUILD)/dynamic-import
+DYNAMIC_IMPORT_PROVIDER := $(DYNAMIC_IMPORT_BUILD)/libdynamic-import.dylib
+DYNAMIC_IMPORT_MAIN := $(DYNAMIC_IMPORT_BUILD)/dynamic-import-main
+.PHONY: verify-dynamic-import-stub
+$(DYNAMIC_IMPORT_BUILD):
+	mkdir -p "$@"
+
+$(DYNAMIC_IMPORT_PROVIDER): fixtures/handoff/dynamic-import-provider.c | $(DYNAMIC_IMPORT_BUILD)
+	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
+		-Wl,-install_name,@rpath/libdynamic-import.dylib -Wall -Wextra -Werror "$<" -o "$@"
+
+$(DYNAMIC_IMPORT_MAIN): fixtures/handoff/dynamic-import-main.c | $(DYNAMIC_IMPORT_BUILD)
+	xcrun clang -arch arm64 -Wl,-fixup_chains -Wall -Wextra -Werror -pedantic \
+		"$<" -o "$@"
+
+verify-dynamic-import-stub: $(DYNAMIC_IMPORT_MAIN) $(DYNAMIC_IMPORT_PROVIDER)
+	@test -x "$(DYNAMIC_IMPORT_RUNTIME)" || { echo "Set DYNAMIC_IMPORT_RUNTIME to the C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  if "$(DYNAMIC_IMPORT_MAIN)" "$(DYNAMIC_IMPORT_PROVIDER)" \
+	    >"$(DYNAMIC_IMPORT_BUILD)/native.stdout" 2>"$(DYNAMIC_IMPORT_BUILD)/native.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$(DYNAMIC_IMPORT_BUILD)/native.status"; \
+	  if "$(DYNAMIC_IMPORT_RUNTIME)" launch "$(DYNAMIC_IMPORT_MAIN)" "$(DYNAMIC_IMPORT_PROVIDER)" \
+	    >"$(DYNAMIC_IMPORT_BUILD)/guest.stdout" 2>"$(DYNAMIC_IMPORT_BUILD)/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$(DYNAMIC_IMPORT_BUILD)/guest.status"; \
+	  cmp "$(DYNAMIC_IMPORT_BUILD)/native.stdout" "$(DYNAMIC_IMPORT_BUILD)/guest.stdout"; \
+	  cmp "$(DYNAMIC_IMPORT_BUILD)/native.stderr" "$(DYNAMIC_IMPORT_BUILD)/guest.stderr"; \
+	  cmp "$(DYNAMIC_IMPORT_BUILD)/native.status" "$(DYNAMIC_IMPORT_BUILD)/guest.status"; \
+	  test "$$rc" -eq 0; \
+	  printf 'dynamic dylib host import binding and call match native\n'
 
 THREAD_SERVICES_RUNTIME ?= $(APP_VERIFY_RUNTIME)
 THREAD_SERVICES_CASES ?= pthread8 condvar tsd async group timer mainq

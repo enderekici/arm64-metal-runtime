@@ -4235,25 +4235,41 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         processRegisters.resize(guestTokenStart + 3 * capacity, 0);
         std::memcpy(processRegisters.data(), stateBuffer.data(), stateBuffer.size());
     };
-    const auto validateStagedNamedLoad = [&](const StagedNamedLoad& plan) {
+        const auto allocateNamedImportStub = [&](
+            std::uint64_t& cursor, const std::set<std::uint64_t>& reserved,
+            const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges) {
+            constexpr std::uint64_t first = 0x80000000ULL;
+            cursor = std::max(cursor, first);
+            cursor = (cursor + 3U) & ~std::uint64_t{3};
+            while (cursor < guestCodeLimit &&
+                   cursor <= static_cast<std::uint64_t>(
+                       std::numeric_limits<std::int64_t>::max()) - 4) {
+                const auto address = static_cast<std::int64_t>(cursor);
+                if (imports.find(address) == imports.end() &&
+                    guestStubs.find(address) == guestStubs.end() &&
+                    reserved.find(cursor) == reserved.end()) {
+                    const auto overlap = std::find_if(
+                        ranges.begin(), ranges.end(), [cursor](const auto& range) {
+                            return cursor < range.second && range.first < cursor + 4;
+                        });
+                    if (overlap == ranges.end()) {
+                        cursor += 4;
+                        return static_cast<std::uint64_t>(address);
+                    }
+                    cursor = std::max(cursor, overlap->second);
+                    cursor = (cursor + 3U) & ~std::uint64_t{3};
+                    continue;
+                }
+                cursor += 4;
+            }
+            throw std::runtime_error("Guest synthetic import address space exhausted");
+        };
+    const auto validateStagedNamedLoad = [&](
+        const StagedNamedLoad& plan,
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>>& occupiedRanges) {
         std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
         std::uint64_t synthetic = 0x80000000ULL;
-        const auto observeSynthetic = [&synthetic](std::int64_t address) {
-            if (address >= 0x80000000LL &&
-                static_cast<std::uint64_t>(address) >= synthetic &&
-                static_cast<std::uint64_t>(address) <=
-                    std::numeric_limits<std::uint64_t>::max() - 4) {
-                synthetic = static_cast<std::uint64_t>(address) + 4;
-            }
-        };
-        for (const auto& [address, unused] : imports) {
-            (void)unused;
-            observeSynthetic(address);
-        }
-        for (const auto& [address, unused] : guestStubs) {
-            (void)unused;
-            observeSynthetic(address);
-        }
+        std::set<std::uint64_t> reservedSynthetic;
         for (std::size_t index = 0; index < plan.images.size(); ++index) {
             const auto& staged = plan.images[index];
             if (staged.image_bytes != staged.image.memory.size() ||
@@ -4302,22 +4318,23 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 if (!bind.is_stub && !resolvedTarget &&
                     (bind.host_service_id || bind.guest_memory_import)) {
-                    while (synthetic <= static_cast<std::uint64_t>(
-                               std::numeric_limits<std::int64_t>::max()) &&
-                           (imports.find(static_cast<std::int64_t>(synthetic)) != imports.end() ||
-                            guestStubs.find(static_cast<std::int64_t>(synthetic)) !=
-                                guestStubs.end())) {
-                        synthetic += 4;
-                    }
+                    const auto stub = allocateNamedImportStub(
+                        synthetic, reservedSynthetic, occupiedRanges);
+                    reservedSynthetic.insert(stub);
                     const auto addend = bind.imported.addend;
-                    if ((addend > 0 && synthetic > static_cast<std::uint64_t>(
-                            std::numeric_limits<std::int64_t>::max()) -
-                            static_cast<std::uint64_t>(addend)) ||
-                        (addend < 0 && synthetic <
+                    if ((addend > 0 &&
+                         (static_cast<std::uint64_t>(addend) >= guestCodeLimit ||
+                          stub > guestCodeLimit - static_cast<std::uint64_t>(addend))) ||
+                        (addend < 0 && stub <
                             static_cast<std::uint64_t>(-(addend + 1)) + 1)) {
                         throw std::runtime_error("Staged synthetic binding addend overflows");
                     }
-                    synthetic += 4;
+                    const auto adjusted = addend >= 0
+                        ? stub + static_cast<std::uint64_t>(addend)
+                        : stub - (static_cast<std::uint64_t>(-(addend + 1)) + 1);
+                    if (adjusted >= guestCodeLimit) {
+                        throw std::runtime_error("Staged synthetic binding exceeds guest code range");
+                    }
                 }
             }
             for (const auto& [offset, unused] : staged.image.authentication) {
@@ -4352,7 +4369,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
         }
     };
-    const auto publishStagedNamedLoad = [&](StagedNamedLoad& plan) {
+    const auto publishStagedNamedLoad = [&](
+        StagedNamedLoad& plan,
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>>& occupiedRanges) {
         std::size_t segmentCount = 0;
         std::size_t authenticatedCount = 0;
         for (const auto& staged : plan.images) {
@@ -4427,29 +4446,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::vector<std::size_t>> unloadAuthenticationTokens(
             plan.images.size());
         std::uint64_t synthetic = 0x80000000ULL;
-        for (const auto& [address, unused] : imports) {
-            (void)unused;
-            if (address >= 0x80000000LL &&
-                static_cast<std::uint64_t>(address) >= synthetic &&
-                static_cast<std::uint64_t>(address) <=
-                    std::numeric_limits<std::uint64_t>::max() - 4) {
-                synthetic = static_cast<std::uint64_t>(address) + 4;
-            }
-        }
+        std::set<std::uint64_t> reservedSynthetic;
         const auto makeImportStub = [&](const std::string& name,
                                         std::vector<std::uint64_t>& ownedAddresses) {
-            while (synthetic <= static_cast<std::uint64_t>(
-                       std::numeric_limits<std::int64_t>::max()) &&
-                   (imports.find(static_cast<std::int64_t>(synthetic)) != imports.end() ||
-                    guestStubs.find(static_cast<std::int64_t>(synthetic)) != guestStubs.end())) {
-                synthetic += 4;
-            }
-            if (synthetic > static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max()) - 4) {
-                throw std::runtime_error("Guest synthetic import address space exhausted");
-            }
-            const auto address = synthetic;
-            synthetic += 4;
+            const auto address = allocateNamedImportStub(
+                synthetic, reservedSynthetic, occupiedRanges);
+            reservedSynthetic.insert(address);
             imports.emplace(static_cast<std::int64_t>(address), name);
             ownedAddresses.push_back(address);
             return address;
@@ -9545,9 +9547,44 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     setGuestDlerror("dlopen: " + std::string(error.what()));
                                 }
                                 bool validatedPlan = false;
+                                std::vector<std::pair<std::uint64_t, std::uint64_t>>
+                                    occupiedStubRanges;
                                 if (stagedPlan) {
                                     try {
-                                        validateStagedNamedLoad(*stagedPlan);
+                                        const auto appendOccupiedRange = [&](
+                                            std::uint64_t begin, std::uint64_t size) {
+                                            if (size == 0) return;
+                                            if (begin >= guestCodeLimit ||
+                                                size > guestCodeLimit - begin) {
+                                                throw std::runtime_error(
+                                                    "Named image range exceeds guest code space");
+                                            }
+                                            occupiedStubRanges.emplace_back(begin, begin + size);
+                                        };
+                                        for (const auto& segment : image.mapped_image_segments) {
+                                            if (segment.start < 0 || segment.end < segment.start) {
+                                                throw std::runtime_error(
+                                                    "Invalid existing named image range");
+                                            }
+                                            appendOccupiedRange(
+                                                static_cast<std::uint64_t>(segment.start),
+                                                static_cast<std::uint64_t>(
+                                                    segment.end - segment.start));
+                                        }
+                                        for (const auto& staged : stagedPlan->images) {
+                                            for (const auto& segment : staged.image.mapped_segments) {
+                                                if (segment.offset >
+                                                        std::numeric_limits<std::uint64_t>::max() -
+                                                            staged.guest_header) {
+                                                    throw std::runtime_error(
+                                                        "Staged named image range overflows");
+                                                }
+                                                appendOccupiedRange(
+                                                    staged.guest_header + segment.offset,
+                                                    segment.size);
+                                            }
+                                        }
+                                        validateStagedNamedLoad(*stagedPlan, occupiedStubRanges);
                                         validatedPlan = true;
                                     } catch (const std::exception& error) {
                                         hostRegisters[0] = 0;
@@ -9559,7 +9596,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 if (!plan.cache_images.empty())
                                     image.activate_named_cache_reader();
                                 auto cacheInitializers = publishStagedCacheImages(plan);
-                                auto initializers = publishStagedNamedLoad(plan);
+                                auto initializers = publishStagedNamedLoad(
+                                    plan, occupiedStubRanges);
                                 cacheInitializers.insert(cacheInitializers.end(),
                                     initializers.begin(), initializers.end());
                                 initializers = std::move(cacheInitializers);
