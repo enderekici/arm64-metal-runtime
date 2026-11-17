@@ -1,6 +1,7 @@
 #define OS_OBJECT_USE_OBJC 0
 #include <dispatch/dispatch.h>
 #include <stdio.h>
+#include <string.h>
 
 __attribute__((objc_root_class))
 @interface TimerProbe
@@ -18,12 +19,16 @@ static void marker(const char *message) {
     fflush(stdout);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    int startup_only = argc == 2 && strcmp(argv[1], "--startup-only") == 0;
+    if (argc != 1 && !startup_only) return 64;
+
     marker("objc-timer: main");
     @autoreleasepool {
         if ([TimerProbe value] != 42) return 1;
     }
     marker("objc-timer: objc ready");
+    if (startup_only) return 0;
 
     dispatch_queue_t queue = dispatch_queue_create("objc-timer", DISPATCH_QUEUE_SERIAL);
     dispatch_semaphore_t fired = dispatch_semaphore_create(0);

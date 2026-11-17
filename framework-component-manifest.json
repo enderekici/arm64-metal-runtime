@@ -21,6 +21,28 @@
       "polarity": "positive",
       "negative_control": "The fixture exits nonzero if the Objective-C method returns an unexpected value or the timer callback misses the semaphore deadline.",
       "evidence_level": "Exact native/guest stdout, stderr, normalized status and raw return code."
+    },
+    {
+      "id": "objc-startup",
+      "domain": "Shared-cache Objective-C startup",
+      "fixture": "fixtures/handoff/objc-timer.m",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "-fblocks", "{source}", "-lobjc", "-o", "{executable}"],
+      "native_args": ["--startup-only"],
+      "guest_args": ["--startup-only"],
+      "required_launch_flags": {
+        "ARM64_METAL_INTERPRETER": "1",
+        "ARM64_METAL_SHARED_CACHE": "1",
+        "ARM64_METAL_CACHE_DEMAND": "1",
+        "ARM64_METAL_CACHE_BOOTSTRAP": "1",
+        "ARM64_METAL_CACHE_INITIALIZERS": "1"
+      },
+      "timeout_seconds": 300,
+      "expected_status": 0,
+      "expected_returncode": 0,
+      "expected_stdout_lines": 2,
+      "polarity": "positive",
+      "negative_control": "The fixture exits nonzero if the Objective-C method returns an unexpected value.",
+      "evidence_level": "Exact native/guest stdout, stderr, normalized status and raw return code through Objective-C startup."
     }
   ]
 }
