@@ -1,7 +1,9 @@
 BUILD := .build
-SWIFT_RUNTIME := $(BUILD)/arm64-metal
+CPP_RUNTIME ?= $(BUILD)/cpp/arm64-metal
+CPP_INTERPRETER_METALLIB ?= $(BUILD)/cpp/interpreter/runtime-interpreter.metallib
+METAL_CPP ?= ../metal-cpp
 GUEST := $(BUILD)/workload.dylib
-RUNTIME := $(SWIFT_RUNTIME)
+RUNTIME ?= $(CPP_RUNTIME)
 CONSOLE := $(BUILD)/console
 STREAMS := $(BUILD)/streams
 INDIRECT := $(BUILD)/indirect
@@ -13,7 +15,6 @@ WRAPPER := $(BUILD)/libbridge.dylib
 SUPPORT := $(BUILD)/libsupport.dylib
 REGION := $(BUILD)/region
 PIPE := $(BUILD)/guest-pipe
-SIGNAL_BRIDGE := $(BUILD)/SignalBridge.o
 SIGNAL := $(BUILD)/guest-signal
 VECTOR := $(BUILD)/vector-memory
 HEAP := $(BUILD)/guest-heap
@@ -391,19 +392,19 @@ $(CACHE_CONFORMANCE): cache-dyld-conformance.c | $(BUILD)
 $(CACHE_CHECK): cache-rebase-check.c | $(BUILD)
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
 
-bundle: verify
+bundle: verify bundle-cpp
+	@rm -rf "$(BUILD)/arm64-metal-macos"
 	@mkdir -p "$(BUILD)/arm64-metal-macos"
-	@cp "$(RUNTIME)" "$(GUEST)" "$(CONSOLE)" "$(STREAMS)" "$(INDIRECT)" "$(REBASED)" "$(LINKED)" "$(WRAPPER)" "$(SUPPORT)" "$(SIGNAL)" "$(THREADS)" example.json README.md LEDGER.md "$(BUILD)/arm64-metal-macos/"
+	@cp -R "$(CPP_PACKAGE)/." "$(BUILD)/arm64-metal-macos/"
+	@cp "$(GUEST)" "$(CONSOLE)" "$(STREAMS)" "$(INDIRECT)" "$(REBASED)" "$(LINKED)" "$(WRAPPER)" "$(SUPPORT)" "$(SIGNAL)" "$(THREADS)" example.json "$(BUILD)/arm64-metal-macos/"
 	@cd "$(BUILD)" && tar -czf arm64-metal-macos.tar.gz arm64-metal-macos
 
-# Package a previously verified C++ launcher without changing the Swift bundle.
-CPP_RUNTIME ?= $(BUILD)/cpp/arm64-metal
-CPP_INTERPRETER_METALLIB ?= $(BUILD)/cpp/interpreter/runtime-interpreter.metallib
+# Keep the C++ package name and archive path for existing callers.
 CPP_PACKAGE := $(BUILD)/arm64-metal-cpp-macos
 
 .PHONY: cpp-release bundle-cpp
 cpp-release:
-	$(MAKE) -C cpp app interpreter-metallib
+	$(MAKE) -C cpp app interpreter-metallib METAL_CPP="$(METAL_CPP)"
 
 bundle-cpp: cpp-release
 	@test -x "$(CPP_RUNTIME)" || { echo 'Set CPP_RUNTIME to the verified C++ launcher' >&2; exit 1; }
@@ -422,11 +423,7 @@ $(BUILD):
 $(GUEST): workload.c | $(BUILD)
 	xcrun clang -arch arm64 -O2 -fno-vectorize -fno-slp-vectorize -fno-unroll-loops -dynamiclib "$<" -o "$@"
 
-$(SWIFT_RUNTIME): Translate.swift SharedCache.swift ImageLoader.swift Fixups.swift Exports.swift GuestFormat.swift GuestHeap.swift GuestSignals.swift GuestThreads.swift GuestStrings.swift GuestVectorCrypto.swift ProcessTranslation.swift Launch.swift main.swift $(SIGNAL_BRIDGE) SignalBridge.h | $(BUILD)
-	xcrun swiftc -O -warnings-as-errors -import-objc-header SignalBridge.h $(filter-out SignalBridge.h,$^) -o "$@"
-
-$(SIGNAL_BRIDGE): SignalBridge.c SignalBridge.h | $(BUILD)
-	xcrun clang -arch arm64 -std=c11 -fblocks -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror -c "$<" -o "$@"
+$(CPP_RUNTIME): cpp-release
 
 $(CONSOLE): console.c score.c | $(BUILD)
 	xcrun clang -arch arm64 -O2 $^ -o "$@"

@@ -4,15 +4,20 @@
 
 This is a local Apple Silicon runtime for unmodified ARM64 and arm64e Mach-O binaries. Guest instructions are decoded to Metal and execute on the GPU. The CPU builds kernels, manages guest state, maps images, and services modeled macOS boundaries. There is no native guest-execution fallback. General application compatibility remains open.
 
-The current implementation is under `cpp/`. The root Swift implementation and fixtures are retained as a reference. The root `make bundle` packages the Swift launcher. Build the current C++ launcher explicitly.
+The C++ implementation is under `cpp/`. The default root `make` target builds
+the C++ launcher and native fixtures, `make verify` runs the default gates, and
+`make bundle` verifies and packages the C++ launcher at the original archive
+path. `make bundle-cpp` retains the separately named C++ archive. Python
+supports verification tools. The packaged runtime uses Foundation and Metal.
 
 ## Build and verify
 
 Requirements are Apple Silicon, Xcode Command Line Tools, and Apple's metal-cpp headers. The last test host was an M4 Pro on macOS 27.0.1 (26A434), Apple clang 21. The local metal-cpp include root was `/tmp/metal-cpp`.
 
 ```sh
-make -C cpp app METAL_CPP=/path/to/metal-cpp
+make METAL_CPP=/path/to/metal-cpp
 make verify RUNTIME="$PWD/.build/cpp/arm64-metal"
+make bundle METAL_CPP=/path/to/metal-cpp
 ```
 
 A normal launch is `.build/cpp/arm64-metal launch /bin/cat example.json`. For shared-cache app probes, use:

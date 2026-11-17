@@ -3,7 +3,7 @@
 | Milestone | State | Evidence |
 |---|---|---|
 | Translate ARM64 leaf functions and compare native/GPU state | Verified | Two symbols, 2,048 exact invocations on M4 Pro |
-| Remove Python and ship a native launcher | Verified | Swift decodes Mach-O and ARM64 directly, compiles Metal in-process, and runs from the extracted bundle with an empty PATH |
+| Ship a runtime independent of Python | Verified | The current C++ launcher runs from an extracted bundle with its AOT Metal interpreter library; Python remains part of verification tooling |
 | Run caller-supplied inputs without executing the native binary | Verified | Known-answer JSON from dylib and executable Mach-O. Universal dylib selects the ARM64 slice |
 | Reject bad inputs and guest exits | Verified | Unsupported instruction, invalid Mach-O, execution budget, and a GPU load beyond the logical word buffer |
 | Support nested calls and guest stack | Verified | Console `main` calls a separately compiled helper, reads argv, spills registers, and returns through the guest stack |
@@ -184,20 +184,21 @@ Run `make verify` to repeat the core GPU and rejection checks. Run `make bundle`
 to regenerate the release archive. Validation was performed on the M4 Pro with
 macOS 27.0.1.
 
-## C++ migration
+## C++ implementation
 
-The C++17 port lives in `cpp/`. The Swift launcher remains the compatibility
-baseline until the same unchanged binaries pass with the C++ executable.
-Guest instructions must continue through generated MSL. The C++ host owns
-loader, scheduling and Darwin service state and uses Apple's metal-cpp for
-device and command submission.
+The active runtime lives in `cpp/`. Root `make`, `make verify`, and `make bundle`
+use the C++ launcher. The former root Swift launcher and its C bridge
+have been removed. Earlier Swift comparisons below are historical results.
+Guest instructions continue through generated MSL. The C++ host owns loader,
+scheduling and Darwin service state and uses Apple's metal-cpp for device and
+command submission.
 
 Independent tracks cover Mach-O/fixups, the shared cache, executable image
 loading, instruction decoding, Metal source generation, the Metal backend,
 guest state, Darwin bridges, process launch, function batching, and the CLI.
 Check each module with warnings-as-errors, then link the C++ executable and
-run the same native comparisons for both launch and function paths before
-replacing the baseline.
+run native comparisons for both launch and function paths as implementation
+coverage grows.
 
 The first port wave has focused checks for the parser, guest state, Darwin
 bridge, base decoder, crypto and string code generation, and Metal backend.
@@ -209,7 +210,8 @@ backend uses autorelease-pool ownership for command buffers. The linked
 fixture loads three images with three executable initializers and bound
 guest targets after correcting the chained-fixup offset base. That is a
 loader check, and execution of its initializers through the C++ runner is
-still pending. The clean C++ component gate and Swift release gate pass.
+still pending. The earlier C++ component and Swift release gate results are
+historical; use the current root Make targets for fresh verification.
 
 The strict integrated C++17 checkpoint at `.build/cpp-verified/arm64-metal`
 matches native stdout, stderr and exit status for nine process cases:

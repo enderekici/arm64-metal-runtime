@@ -4,9 +4,11 @@ The launcher reads a compiled ARM64 Mach-O, decodes reachable machine instructio
 builds basic blocks, and emits Metal in memory. It has a process launcher for
 supported executables and a separate function runner for independent batches.
 
-The current C++ build, verification commands, and open compatibility work are
-documented in [HANDOFF.md](HANDOFF.md). `make bundle-cpp` builds the C++ launcher;
-`make bundle` packages the Swift reference launcher.
+The C++ build, verification commands, and open compatibility work are
+documented in [HANDOFF.md](HANDOFF.md). `make` builds the C++ launcher and its
+native fixtures. `make verify` runs the launch and function gates. `make bundle`
+verifies and packages the C++ launcher at the original archive path. `make
+bundle-cpp` creates the C++ named archive.
 
 ## Launch an executable
 
@@ -157,9 +159,9 @@ The Azul JDK 25.0.3 `java -version` launch resolves local `libjli` but stops
 at `_strdup`.
 See `LEDGER.md` for exact probe boundaries and remaining work.
 
-The launcher uses macOS Swift and Metal runtimes. It does not require Python,
-Xcode, an external disassembler, or a generated shader file at runtime. The
-bundle was verified on macOS 27.0.1 with an M4 Pro.
+The C++ launcher uses macOS Foundation and Metal frameworks. Running the
+packaged launcher does not require Python or Xcode. Xcode and metal-cpp headers
+are needed to build it. The AOT interpreter library ships with the launcher.
 
 ## Run an individual function
 
@@ -182,12 +184,15 @@ results. Use it only with trusted libraries that implement the function ABI.
 
 ## Build and verify
 
-From the source directory on an Apple Silicon Mac with Xcode:
+From the source directory on an Apple Silicon Mac with Xcode and Apple's
+metal-cpp headers:
 
 ```sh
-make bundle
+make bundle METAL_CPP=/path/to/metal-cpp
 ```
 
 This compares complete process runs with native stdout, stderr, and exit status.
 It also compares 2,048 native and GPU function invocations, checks the known
 JSON result and rejection paths, and creates `.build/arm64-metal-macos.tar.gz`.
+The extracted archive contains the C++ launcher and its AOT Metal interpreter
+library. `make bundle-cpp` also creates `.build/arm64-metal-cpp-macos.tar.gz`.
