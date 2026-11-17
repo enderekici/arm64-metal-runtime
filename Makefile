@@ -69,6 +69,7 @@ verify-apps:
 
 COMPONENT_RUNTIME ?= $(APP_VERIFY_RUNTIME)
 COMPONENT_RESULTS ?= $(BUILD)/component-conformance
+COMPONENT_MANIFEST ?= component-manifest.json
 COMPONENT_CASES ?= all
 COMPONENT_JOBS ?= 2
 COMPONENT_GPU_SLOTS ?= 4
@@ -79,9 +80,19 @@ verify-components:
 	@set -eu; selected='$(COMPONENT_CASES)'; set --; \
 	  for case_id in $$selected; do [ "$$case_id" = all ] || set -- "$$@" --case "$$case_id"; done; \
 	  lock='$(COMPONENT_GPULOCK)'; if [ -n "$$lock" ]; then set -- "$$@" --gpulock "$$lock"; fi; \
-	  exec python3 tools/verify-components.py --runtime "$(COMPONENT_RUNTIME)" \
+	  exec python3 tools/verify-components.py --manifest "$(COMPONENT_MANIFEST)" \
+	    --runtime "$(COMPONENT_RUNTIME)" \
 	    --results "$(COMPONENT_RESULTS)" --jobs "$(COMPONENT_JOBS)" \
 	    --gpu-slots "$(COMPONENT_GPU_SLOTS)" "$$@"
+
+.PHONY: verify-framework-components
+verify-framework-components:
+	@test -x "$(COMPONENT_RUNTIME)" || { echo "Set COMPONENT_RUNTIME to the frozen C++ launcher" >&2; exit 2; }
+	@set -eu; runtime=$$(realpath "$(COMPONENT_RUNTIME)"); \
+	  lib="$${runtime%/*}/resources/interpreter/runtime-interpreter.metallib"; \
+	  test -f "$$lib" || { echo "Missing AOT interpreter library: $$lib" >&2; exit 2; }
+	@$(MAKE) verify-components COMPONENT_MANIFEST=framework-component-manifest.json
+
 DYNAMIC_IMPORT_RUNTIME ?= $(APP_VERIFY_RUNTIME)
 DYNAMIC_IMPORT_BUILD := $(BUILD)/dynamic-import
 DYNAMIC_IMPORT_PROVIDER := $(DYNAMIC_IMPORT_BUILD)/libdynamic-import.dylib
