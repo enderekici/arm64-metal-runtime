@@ -1056,3 +1056,24 @@ OFF=$(./dyld-api-slots --find-appkit)      # native only: AppKit's cache offset
 On the guest the `cache-image` line reads `header=mismatch dladdr_base=none path=AppKit`:
 the slot answers match native, the guest `dladdr` (service 165) does not resolve unloaded
 cache images.
+
+## Native AppKit window positive control (`appkit-window-positive.m`)
+
+This is a native-only positive control for an offscreen AppKit window. It checks
+the WindowServer record, rendered PNG pixels, one posted AppKit queue event, and
+clean close. The checked native command is:
+
+```sh
+mkdir -p .build/handoff-probes
+xcrun clang -arch arm64 -fobjc-arc -Wall -Wextra -Werror \
+  -Wno-deprecated-declarations -framework AppKit -framework CoreGraphics \
+  fixtures/handoff/appkit-window-positive.m \
+  -o .build/handoff-probes/appkit-window-positive
+APPKIT_RECEIPT_PNG=/tmp/appkit-window-positive.png \
+  .build/handoff-probes/appkit-window-positive
+```
+
+The native receipt passed with status 0. The current guest attempt is a known
+red at AppKit startup, before fixture output; see the [compatibility matrix](../../COMPATIBILITY.md#contract-matrix)
+and detailed run receipt at `/tmp/arm64-metal-completion.Uyas4B/gui-receipts/RESULT.md`.
+Do not count the native positive as guest GUI compatibility.
