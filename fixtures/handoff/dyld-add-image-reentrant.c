@@ -33,18 +33,25 @@ static void added(const struct mach_header *header, intptr_t slide) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 4) return 64;
-  nested_path = argv[3];
+  const int stable_compare = argc == 5 && strcmp(argv[1], "--stable-compare") == 0;
+  const int argument = stable_compare ? 2 : 1;
+  if ((!stable_compare && argc != 4) || (stable_compare && argc != 5)) return 64;
+  nested_path = argv[argument + 2];
   _dyld_register_func_for_add_image(added);
   const unsigned initial = _dyld_image_count();
-  void *bad = dlopen(argv[2], RTLD_NOW);
+  void *bad = dlopen(argv[argument + 1], RTLD_NOW);
   const unsigned failed = _dyld_image_count() - initial;
   if (bad != NULL || failed != 0 || event_count != 0) return 1;
-  void *root = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+  void *root = dlopen(argv[argument], RTLD_NOW | RTLD_LOCAL);
   record(root == NULL ? 'e' : 'O');
   const unsigned added_count = _dyld_image_count() - initial;
-  printf("initial=%u failed=%u added=%u events=%s nested=%d\n",
-         initial, failed, added_count, events, nested_handle != NULL);
+  if (stable_compare) {
+    printf("initial=not-compared failed=%u added=%u events=%s nested=%d\n",
+           failed, added_count, events, nested_handle != NULL);
+  } else {
+    printf("initial=%u failed=%u added=%u events=%s nested=%d\n",
+           initial, failed, added_count, events, nested_handle != NULL);
+  }
   if (root != NULL) dlclose(root);
   if (nested_handle != NULL) dlclose(nested_handle);
   return root == NULL || nested_handle == NULL || added_count != 3 ||

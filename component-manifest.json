@@ -356,6 +356,36 @@
       "polarity": "positive-stdin-stdout-pipe-handoff-and-stale-source-rejection",
       "negative_control": "Uses ordered dup2/close file actions, parent stdin EOF, child transformation, exact output, and exit 23; a closed pipe source must return EBADF without spawning. Expected stdout is exactly `posix_spawn pipeline ok\\n`.",
       "evidence_level": "native-and-guest exact stdout/stderr/status parity against the expected pipeline marker"
+    },
+    {
+      "id": "dyld-add-image-local-dylib-stable",
+      "test_target": "verify-dyld-add-image-native; local root and dependency add-image notifications with stable native-versus-Metal output",
+      "domain": "dyld local dylib image notifications",
+      "fixture": "fixtures/handoff/probe.c",
+      "compile": ["make", "-C", "{repo}", "verify-dyld-add-image-native", "BUILD={case_dir}", "DYLD_ADD_IMAGE_ORACLE={executable}"],
+      "native_args": ["--stable-compare", "{case_dir}/libdyld-add-image-new.dylib", "{case_dir}/missing-dyld-add-image.dylib"],
+      "guest_args": ["--stable-compare", "{case_dir}/libdyld-add-image-new.dylib", "{case_dir}/missing-dyld-add-image.dylib"],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "polarity": "positive-with-failed-load-control-and-dependency-order",
+      "negative_control": "Fixture checks failed dlopen emits no callback, then root and dependency callback order, callback header and slide validity for every initial and added image, dependency-first constructors, and exported provider value 42.",
+      "evidence_level": "native-and-guest stable stdout/stderr/status exact match; initial enumeration cardinality intentionally omitted"
+    },
+    {
+      "id": "dyld-add-image-reentrant-stable",
+      "test_target": "verify-dyld-add-image-native; reentrant local load from add-image callback with stable native-versus-Metal output",
+      "domain": "dyld reentrant local dylib image notifications",
+      "fixture": "fixtures/handoff/dyld-add-image-reentrant.c",
+      "compile": ["make", "-C", "{repo}", "verify-dyld-add-image-native", "BUILD={case_dir}"],
+      "native_args": ["--stable-compare", "{case_dir}/libdyld-add-image-new.dylib", "{case_dir}/missing-dyld-add-image.dylib", "{case_dir}/libdyld-add-image-nested.dylib"],
+      "guest_args": ["--stable-compare", "{case_dir}/libdyld-add-image-new.dylib", "{case_dir}/missing-dyld-add-image.dylib", "{case_dir}/libdyld-add-image-nested.dylib"],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "polarity": "positive-with-failed-load-control-and-reentrant-order",
+      "negative_control": "Fixture checks failed dlopen leaves image count and callback record unchanged; callback performs a nested load, then asserts the nested load completed, the expected three images were added, and reentrant event order is RNrDO.",
+      "evidence_level": "native-and-guest stable stdout/stderr/status exact match; initial enumeration cardinality intentionally omitted and initial replay is not asserted"
     }
   ]
 }

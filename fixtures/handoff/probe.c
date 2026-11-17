@@ -66,7 +66,9 @@ static void added(const struct mach_header *header, intptr_t slide) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3) return 64;
+  const int stable_compare = argc == 4 && strcmp(argv[1], "--stable-compare") == 0;
+  const int argument = stable_compare ? 2 : 1;
+  if ((!stable_compare && argc != 3) || (stable_compare && argc != 4)) return 64;
   _dyld_register_func_for_add_image(added);
   const unsigned initial_callbacks = notification_count;
   const unsigned current_images = _dyld_image_count();
@@ -76,7 +78,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  void *bad = dlopen(argv[2], RTLD_NOW);
+  void *bad = dlopen(argv[argument + 1], RTLD_NOW);
   const unsigned failed_callbacks = notification_count - initial_callbacks;
   if (bad != NULL) dlclose(bad);
   if (bad != NULL || failed_callbacks != 0) {
@@ -84,7 +86,7 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  void *good = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+  void *good = dlopen(argv[argument], RTLD_NOW | RTLD_LOCAL);
   const unsigned successful_callbacks = notification_count - initial_callbacks;
   if (good == NULL) {
     fprintf(stderr, "dlerror=%s\n", dlerror());
@@ -121,10 +123,16 @@ int main(int argc, char **argv) {
     callbacks_valid &= notifications[i].slide_matches_text;
   }
 
-  printf("initial=%u failed=%u added=%u order=%d headers_slides=%d/%u value=%d\n",
-         initial_callbacks, failed_callbacks, successful_callbacks,
-         order_matches, initial_header_slide_matches, initial_callbacks,
-         get_value == NULL ? -1 : get_value());
+  if (stable_compare) {
+    printf("initial=validated failed=%u added=%u order=%d headers_slides=all value=%d\n",
+           failed_callbacks, successful_callbacks, order_matches,
+           get_value == NULL ? -1 : get_value());
+  } else {
+    printf("initial=%u failed=%u added=%u order=%d headers_slides=%d/%u value=%d\n",
+           initial_callbacks, failed_callbacks, successful_callbacks,
+           order_matches, initial_header_slide_matches, initial_callbacks,
+           get_value == NULL ? -1 : get_value());
+  }
   dlclose(good);
   return !callbacks_valid || get_value == NULL;
 }
