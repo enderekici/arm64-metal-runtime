@@ -10850,6 +10850,50 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::copy_n(hostRegisters.begin(), 36,
                         static_cast<std::uint64_t*>(stateBuffer.data()));
             if (result.exited) return result.exitStatus;
+            if (result.waitPid > 0) {
+                const auto threadId = guestScheduler.current_id();
+                auto& thread = guestScheduler.current();
+                if (thread.wait.has_value()) {
+                    throw std::runtime_error("Guest child wait overlaps an existing wait");
+                }
+                thread.wait = GuestHostPollWait{monotonicNanoseconds()};
+                const auto pid = result.waitPid;
+                const auto statusAddress = result.waitStatusAddress;
+                guestHostSignalInterruptible.insert(threadId);
+                guestHostPollers[threadId] = [&, pid, statusAddress](std::uint64_t)
+                    -> std::optional<GuestHostPollResult> {
+                    int childStatus = 0;
+                    const auto waited = ::waitpid(pid, &childStatus, WNOHANG);
+                    if (waited == 0) return std::nullopt;
+                    if (waited < 0) {
+                        const auto error = errno;
+                        return GuestHostPollResult{static_cast<std::uint64_t>(-1), false,
+                                                   static_cast<std::uint32_t>(error), true};
+                    }
+                    auto& children = hostServiceState.spawnedChildren;
+                    children.erase(std::remove(children.begin(), children.end(), pid),
+                                   children.end());
+                    if (statusAddress != 0) {
+                        try {
+                            std::memcpy(guestMemory.buffer(statusAddress, sizeof(childStatus), true),
+                                        &childStatus, sizeof(childStatus));
+                        } catch (const std::out_of_range&) {
+                            return GuestHostPollResult{static_cast<std::uint64_t>(-1), false,
+                                                       EFAULT, true};
+                        }
+                    }
+                    return GuestHostPollResult{static_cast<std::uint64_t>(waited), false};
+                };
+                hostRegisters[0] = 0;
+                const auto* saved = static_cast<const std::uint64_t*>(stateBuffer.data());
+                auto live = std::vector<std::uint64_t>(saved,
+                    saved + stateBuffer.size() / sizeof(std::uint64_t));
+                live[0] = 0;
+                if (!syncThreadSwitch(false, live)) {
+                    throw std::runtime_error("Guest child wait has no runnable thread");
+                }
+                continue;
+            }
             if (hostRegisters[33] == guestReturnSentinel && callbackFrames.empty()) {
                 if (signalRuntime.has_frames(guestScheduler.current_id()) && resumeSignalFrame()) continue;
                 if (advanceStartup()) continue;

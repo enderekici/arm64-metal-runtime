@@ -189,6 +189,8 @@ private:
 struct HostServiceResult {
     bool exited = false;
     std::int32_t exitStatus = 0;
+    pid_t waitPid = 0;
+    std::uint64_t waitStatusAddress = 0;
 };
 
 struct HostMachVmRegion {

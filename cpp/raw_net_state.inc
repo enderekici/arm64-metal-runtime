@@ -1,6 +1,8 @@
 struct GuestHostPollResult {
     std::uint64_t x0 = 0;
     bool carry = false;
+    std::uint32_t error = 0;
+    bool namedLibcResult = false;
 };
 // Darwin's kevent_qos event includes four 64-bit extension words.
 constexpr std::size_t netKeventQosStride = 72;
@@ -23,6 +25,7 @@ struct GuestDynamicWorkloop {
 };
 std::map<std::uint64_t, GuestDynamicWorkloop> guestDynamicWorkloops;
 std::map<std::uint64_t, GuestHostPollFn> guestHostPollers;
+std::set<std::uint64_t> guestHostSignalInterruptible;
 const auto pollGuestHostWaiters = [&](std::uint64_t now) {
     for (auto poller = guestHostPollers.begin(); poller != guestHostPollers.end();) {
         const auto id = poller->first;
@@ -30,6 +33,7 @@ const auto pollGuestHostWaiters = [&](std::uint64_t now) {
         auto* wait = thread != nullptr && thread->wait.has_value()
             ? std::get_if<GuestHostPollWait>(&*thread->wait) : nullptr;
         if (wait == nullptr) {
+            guestHostSignalInterruptible.erase(id);
             poller = guestHostPollers.erase(poller);
             continue;
         }
@@ -37,7 +41,21 @@ const auto pollGuestHostWaiters = [&](std::uint64_t now) {
             ++poller;
             continue;
         }
-        const auto result = poller->second(now);
+        std::uint32_t interruptingSignals = guestHostSignalInterruptible.count(id) != 0
+            ? thread->pendingSignals & ~thread->signalMask : 0;
+        for (std::int32_t signal = 1; signal <= 31 && interruptingSignals != 0; ++signal) {
+            const auto bit = GuestSignals::bit(signal);
+            if ((interruptingSignals & bit) == 0) continue;
+            const auto action = hostServiceState.signals.action(signal);
+            if (action.handler <= 1 || (action.flags & SA_RESTART) != 0) {
+                interruptingSignals &= ~bit;
+            }
+        }
+        auto result = poller->second(now);
+        if (!result && interruptingSignals != 0) {
+            result = GuestHostPollResult{static_cast<std::uint64_t>(-1), false,
+                                         EINTR, true};
+        }
         if (!result) {
             wait->nextPoll = now + 500'000ULL;
             ++poller;
@@ -46,14 +64,20 @@ const auto pollGuestHostWaiters = [&](std::uint64_t now) {
         poller = guestHostPollers.erase(poller);
         guestScheduler.wake(id, 0);
         thread->registers[0] = result->x0;
-        if (result->carry) {
+        if (result->namedLibcResult) {
+            thread->registers[32] &= ~std::uint64_t{8};
+        } else if (result->carry) {
             thread->registers[32] |= 8U;
-            const auto error = static_cast<std::uint32_t>(result->x0);
-            std::memcpy(guestMemory.buffer(static_cast<std::uint64_t>(thread->errnoAddress),
-                                           sizeof(error), true), &error, sizeof(error));
         } else {
             thread->registers[32] &= ~std::uint64_t{8};
         }
+        if (result->carry || (result->namedLibcResult && result->error != 0)) {
+            const auto error = result->error != 0 ? result->error
+                : static_cast<std::uint32_t>(result->x0);
+            std::memcpy(guestMemory.buffer(static_cast<std::uint64_t>(thread->errnoAddress),
+                                           sizeof(error), true), &error, sizeof(error));
+        }
+        guestHostSignalInterruptible.erase(id);
     }
 };
 const auto netFdUsable = [&](std::int32_t descriptor) {

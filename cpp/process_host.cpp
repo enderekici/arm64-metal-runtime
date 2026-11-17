@@ -1524,8 +1524,9 @@ HostServiceResult dispatch_guest_host_service(
                 }
             }
             int status = 0;
-            // A blocking host wait stalls the cooperative guest scheduler; this
-            // path is only qualified for parents without runnable guest siblings.
+            if (options == 0) {
+                return {false, 0, requested, statusAddress};
+            }
             const auto waited = ::waitpid(requested, &status, options);
             if (waited < 0) {
                 set_errno(errno);
