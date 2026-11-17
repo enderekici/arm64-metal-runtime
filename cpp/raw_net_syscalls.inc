@@ -451,7 +451,11 @@
             // Native XNU fires a thread request at successful attach. This lane
             // supports the measured timer QoS and its worker upcall ABI only.
             constexpr std::uint32_t observedTimerQos = 0x800008ffU;
-            constexpr std::uint64_t observedTimerWorkerFlags = 0x004f4004U;
+            constexpr std::uint64_t workqFlagPrioQos = 0x00004000U;
+            constexpr std::uint64_t workqFlagNewSpi = 0x00040000U;
+            constexpr std::uint64_t workqFlagKevent = 0x00080000U;
+            constexpr std::uint64_t workqFlagTsdBaseSet = 0x00200000U;
+            constexpr std::uint64_t workqFlagWorkloop = 0x00400000U;
             if (priority != observedTimerQos || !guestBsdthreadRegistration ||
                 !guestWorkqueueDispatchConfig) {
                 rawFail(ENOTSUP);
@@ -476,6 +480,10 @@
                 changeFlags | evClear);
             std::memcpy(delivered.data() + 10, &deliveredWorkloopFlags,
                         sizeof(deliveredWorkloopFlags));
+            const auto qosIndex = static_cast<std::uint64_t>(__builtin_ffs(
+                static_cast<int>((priority & qosClassMask) >> 8U)));
+            const auto observedTimerWorkerFlags = workqFlagNewSpi | workqFlagKevent |
+                workqFlagTsdBaseSet | workqFlagWorkloop | workqFlagPrioQos | qosIndex;
             if (!spawnKeventWorker(delivered, 1, observedTimerWorkerFlags, &ownerThread)) {
                 rawFail(EAGAIN);
                 continue;

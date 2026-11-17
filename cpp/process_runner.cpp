@@ -15352,6 +15352,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == 368) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint64_t threadReturn = 0x4;
+                constexpr std::uint64_t threadWorkloopReturn = 0x100;
                 constexpr std::uint64_t requestThreads = 0x20;
                 constexpr std::uint64_t setupDispatch = 0x400;
                 constexpr std::uint64_t dispatchConfigSize = 24;
@@ -15360,6 +15361,75 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 constexpr std::uint64_t requestFallbackFlag = 0x04000000;
                 constexpr std::uint64_t requestDefaultQueueFlag = 0x10000000;
                 static_assert(sizeof(GuestWorkqueueDispatchConfig) == dispatchConfigSize);
+                if (registers[0] == threadWorkloopReturn &&
+                    guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0) {
+                    constexpr std::uint64_t workloopReturnFlags = 0x7U;
+                    constexpr std::int16_t workloopFilter = -17;
+                    constexpr std::uint32_t threadRequest = 0x1U;
+                    const auto count = registers[2];
+                    std::uint64_t error = 0;
+                    if (count != 1 || registers[1] == 0) {
+                        error = ENOTSUP;
+                    } else {
+                        try {
+                            const auto* change = guestMemory.buffer(
+                                registers[1], netKeventQosStride);
+                            std::uint64_t ident = 0, debounceAddress = 0, mask = 0,
+                                expected = 0;
+                            std::int16_t filter = 0;
+                            std::uint16_t flags = 0;
+                            std::int32_t qos = 0;
+                            std::uint32_t fflags = 0;
+                            std::memcpy(&ident, change, sizeof(ident));
+                            std::memcpy(&filter, change + 8, sizeof(filter));
+                            std::memcpy(&flags, change + 10, sizeof(flags));
+                            std::memcpy(&qos, change + 12, sizeof(qos));
+                            std::memcpy(&fflags, change + 24, sizeof(fflags));
+                            std::memcpy(&debounceAddress, change + 48, sizeof(debounceAddress));
+                            std::memcpy(&mask, change + 56, sizeof(mask));
+                            std::memcpy(&expected, change + 64, sizeof(expected));
+                            auto workloop = guestDynamicWorkloops.find(ident);
+                            if (filter != workloopFilter || flags != workloopReturnFlags ||
+                                qos != 0 || fflags != threadRequest ||
+                                workloop == guestDynamicWorkloops.end() ||
+                                workloop->second.ownerThread != guestScheduler.current_id()) {
+                                error = EINVAL;
+                            } else {
+                                const auto note = workloop->second.knotes.find({ident, filter});
+                                if (note == workloop->second.knotes.end() ||
+                                    (note->second.fflags & 0x0fU) != threadRequest ||
+                                    note->second.ext[1] != debounceAddress ||
+                                    note->second.ext[2] != mask) {
+                                    error = EINVAL;
+                                } else if (debounceAddress != 0) {
+                                    std::uint64_t observed = 0;
+                                    const auto* value = guestMemory.buffer(
+                                        debounceAddress, sizeof(observed));
+                                    std::memcpy(&observed, value, sizeof(observed));
+                                    if ((observed & mask) != (expected & mask)) {
+                                        error = ESTALE;
+                                    }
+                                }
+                                if (error == 0) {
+                                    note->second.active = false;
+                                    workloop->second.ownerThread = 0;
+                                }
+                            }
+                        } catch (const std::out_of_range&) {
+                            error = EFAULT;
+                        }
+                    }
+                    if (error != 0) {
+                        registers[0] = error;
+                        registers[32] |= carryMask;
+                        registers[34] = 0;
+                        continue;
+                    }
+                    workqueueTrace.event("workloop-worker-return", threadWorkloopReturn,
+                                         registers[33], guestScheduler.current_id());
+                    registers[0] = threadReturn;
+                    registers[1] = registers[2] = registers[3] = 0;
+                }
                 if (registers[0] == 0x40 &&
                     guestWorkqueueThreadIds.count(guestScheduler.current_id()) != 0) {
                     // WQOPS_THREAD_KEVENT_RETURN: apply returned changes, then retire.

@@ -40,6 +40,28 @@ and require `workq libpthread worker callback ok`. With
 `ARM64_METAL_TRACE_WORKQ=1`, registration diagnostics report only branch names,
 status, sizes, offsets, and nullness; they do not print pointers or payload.
 
+## Dynamic workloop delivery
+
+`kevent-workloop-debounce.c` is a native-vs-runtime differential for workloop
+priority validation and stale-owner debounce. `make verify-workloop-debounce`
+checks the accepted QoS matrix, ERANGE cases, and ESTALE behavior.
+
+`kevent-workloop-delivery.c` is a focused runtime-positive probe for the
+observed timer lane. It attaches two workloops with zero output capacity,
+checks that both independently deliver one 72-byte `EVFILT_WORKLOOP` record,
+returns each worker through `WQOPS_THREAD_WORKLOOP_RETURN`, then reattaches and
+deletes them. The native LLDB capture in `/tmp/metal-dynamic-workloop-evidence`
+records the event flags (`EV_ADD | EV_ENABLE | EV_CLEAR`), QoS, workloop
+upcall flags, and return record. The runtime currently accepts only QoS
+`0x800008ff` for delivery because no other worker-upcall priority was measured.
+This fixture does not claim full `thread-services timer` parity.
+
+`kevent-workloop-missing-trampoline.c` checks the unsupported boundary: a
+matching attach without a registered guest worker trampoline returns ENOTSUP
+instead of claiming delivery. Its expected native behavior differs because
+native libpthread supplies the trampoline automatically; run it only through
+`make verify-workloop-missing-trampoline` with the guest runtime.
+
 ## Process BRK #1 and SIGTRAP
 
 `brk-sigtrap.c` first branches around an adjacent `BRK #1`, then executes BRK

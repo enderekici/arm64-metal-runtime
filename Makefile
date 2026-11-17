@@ -234,6 +234,23 @@ verify-workloop-delivery:
 	  test "$$(cat "$$out/guest.stdout")" = 'workloop delivery and owner return ok'; \
 	  printf 'Dynamic workloop worker delivery and return observed (status 0)\n'
 
+.PHONY: verify-workloop-missing-trampoline
+verify-workloop-missing-trampoline:
+	@test -x "$(WORKLOOP_RUNTIME)" || { echo "Set WORKLOOP_RUNTIME to the built C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  out=$$(mktemp -d /tmp/arm64-metal-workloop-boundary.XXXXXX); \
+	  printf 'workloop-boundary receipts: %s\n' "$$out"; \
+	  xcrun clang -arch arm64 -Wall -Wextra -Werror \
+	    fixtures/handoff/kevent-workloop-missing-trampoline.c -o "$$out/workloop-boundary"; \
+	  if /usr/bin/timeout "$(WORKLOOP_TIMEOUT)" "$(WORKLOOP_RUNTIME)" launch \
+	    "$$out/workloop-boundary" >"$$out/guest.stdout" 2>"$$out/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$out/guest.status"; \
+	  cat "$$out/guest.stdout"; cat "$$out/guest.stderr"; \
+	  test "$$rc" = 0; \
+	  test "$$(cat "$$out/guest.stdout")" = \
+	    'matching workloop attach rejected without guest worker trampoline (ENOTSUP)'; \
+	  printf 'Missing-trampoline attach rejected without fake success (status 0)\n'
+
 DYLD_IMAGE_ORACLE := $(BUILD)/dyld-image-enumeration-oracle
 DYLD_IMAGE_DEPENDENCY := $(BUILD)/libdyld-image-dependency.dylib
 DYLD_IMAGE_ROOT := $(BUILD)/libdyld-image-root.dylib
