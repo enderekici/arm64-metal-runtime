@@ -10374,13 +10374,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 }
                 std::vector<std::pair<std::uint64_t, std::string>> objcImages;
-                for (const auto& [header, path] : image.image_paths) {
+                for (const auto header : loadedImageHeaders) {
+                    const auto path = image.image_paths.find(header);
+                    if (path == image.image_paths.end()) continue;
                     const auto info = image.lookup_guest_section(
                         static_cast<std::int64_t>(header), 6);
-                    if (info && info->second != 0) objcImages.emplace_back(header, path);
+                    if (info && info->second != 0) objcImages.emplace_back(header, path->second);
                 }
-                std::sort(objcImages.begin(), objcImages.end(),
-                    [](const auto& left, const auto& right) { return left.first < right.first; });
                 if (objcImages.empty()) {
                     std::copy_n(hostRegisters.begin(), 36,
                                 static_cast<std::uint64_t*>(stateBuffer.data()));
