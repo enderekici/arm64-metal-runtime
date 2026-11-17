@@ -264,6 +264,37 @@
       "negative_control": "Compares fmax/fmin/fmaxnm/fminnm across three NaN and signed-zero vectors and four FPCR modes; all 48 output rows are required.",
       "evidence_level": "native-and-guest stdout/stderr/status exact match with 48 stdout lines",
       "coverage_boundary": "Process-level translated output only; custom SIMD fallback does not prove typed GPU-interpreter packet coverage."
+    },
+    {
+      "id": "af-unix-stream-socketpair",
+      "test_target": "af-unix-stream-socketpair; raw socketpair copyout, bidirectional stream I/O, invalid cases, and EOF",
+      "domain": "AF_UNIX stream socketpair lifecycle",
+      "fixture": "fixtures/handoff/af-unix-stream-socketpair.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "-fno-stack-protector", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-with-invalid-family-type-output-and-fd-controls",
+      "negative_control": "Checks bidirectional stream payloads, invalid descriptors/family/domain/type/output pointers, peer close, and EOF against native results.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match"
+    },
+    {
+      "id": "dynamic-import-main-provider",
+      "test_target": "verify-dynamic-import-stub build rules; dlopen/dlsym call through an explicit provider path",
+      "domain": "dyld named dynamic imports and dylib loading",
+      "fixture": "fixtures/handoff/dynamic-import-main.c",
+      "compile": ["make", "{executable}", "{case_dir}/libdynamic-import.dylib", "DYNAMIC_IMPORT_BUILD={case_dir}", "DYNAMIC_IMPORT_MAIN={executable}", "DYNAMIC_IMPORT_PROVIDER={case_dir}/libdynamic-import.dylib"],
+      "input_files": ["{repo}/fixtures/handoff/dynamic-import-provider.c"],
+      "native_args": ["{case_dir}/libdynamic-import.dylib"],
+      "guest_args": ["{case_dir}/libdynamic-import.dylib"],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "polarity": "positive-named-import-and-dylib-load",
+      "negative_control": "None; provider exports dynamic_import_length and the executable verifies the resolved call, output length 16, and dlclose success.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match plus provider source hash receipt"
     }
   ]
 }
