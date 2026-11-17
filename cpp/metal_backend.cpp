@@ -472,6 +472,12 @@ ComputeKernel::~ComputeKernel() = default;
 ComputeKernel::ComputeKernel(ComputeKernel&&) noexcept = default;
 ComputeKernel& ComputeKernel::operator=(ComputeKernel&&) noexcept = default;
 
+std::uint64_t ComputeKernel::threadExecutionWidth() const noexcept {
+    return impl_ == nullptr || impl_->pipeline == nullptr
+               ? 0
+               : static_cast<std::uint64_t>(impl_->pipeline->threadExecutionWidth());
+}
+
 ComputeKernel::operator bool() const noexcept {
     return impl_ != nullptr && impl_->pipeline != nullptr;
 }

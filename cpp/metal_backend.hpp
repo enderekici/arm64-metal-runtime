@@ -52,6 +52,7 @@ public:
     ComputeKernel(const ComputeKernel&) = delete;
     ComputeKernel& operator=(const ComputeKernel&) = delete;
 
+    [[nodiscard]] std::uint64_t threadExecutionWidth() const noexcept;
     explicit operator bool() const noexcept;
 
 private:

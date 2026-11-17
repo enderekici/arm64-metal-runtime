@@ -405,8 +405,10 @@ class MetalGuest {
         {&memory_buffer, 0, 0}, {&count_buffer, 1, 0}, {&seed_buffer, 2, 0},
         {&output_buffer, 3, 0}, {&status_buffer, 4, 0},
         {&stride_buffer, 5, 0}, {&budget_buffer, 6, 0}};
+    const auto threadgroupWidth = std::min<std::uint64_t>(
+        inputs.size(), kernel_.threadExecutionWidth());
     (void)backend_.dispatch(kernel_, bindings, DispatchSize{inputs.size(), 1, 1},
-                            DispatchSize{1, 1, 1});
+                            DispatchSize{threadgroupWidth, 1, 1});
     std::memcpy(words.data(), memory_buffer.data(), words.size() * sizeof(std::uint32_t));
     std::memcpy(results.data(), output_buffer.data(), results.size() * sizeof(std::uint32_t));
     std::memcpy(statuses.data(), status_buffer.data(), statuses.size() * sizeof(std::uint32_t));
