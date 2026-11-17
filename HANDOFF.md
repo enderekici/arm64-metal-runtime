@@ -390,6 +390,13 @@ Build, regression (42 launch comparisons, 2,048 function matches), both
 interpreter gates, named Mach memory-entry, static TLS reopen, scoped workloop,
 and extracted-package AOT CSEL all returned status 0 under
 `/tmp/metal-lifecycle-combined.qkAayK/` (native and extracted CSEL both returned
-42). These results cover only the recorded contracts. Child spawn remains
-isolated; fork and GUI behavior remain open. See
-[COMPATIBILITY.md](COMPATIBILITY.md) for the contract map and earlier receipts.
+42). These results cover only the recorded contracts; later process-tree code
+is not in this package. Runtime source `ca87080` with manifest `98e6fed` passed
+22/22 exact component cases in
+`/tmp/metal-next-milestone.GiLP0u/components/run-20261117T010050Z-3b02eba0/summary.json`;
+the spawn control also matched native in that wave. The measured scope covers
+null spawn actions/attributes, one tracked PID, two waiters, and sibling
+release. An earlier pre-fix wait run returned status 1 despite printing
+`exited23=0` (`/tmp/metal-next-milestone.GiLP0u/wait-red.*`). SA_RESTART
+delivery may defer; raw fork/exec and GUI behavior remain open. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for the contract map and receipts.
