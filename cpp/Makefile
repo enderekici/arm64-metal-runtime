@@ -83,6 +83,11 @@ APP_SOURCES := \
 	main.cpp
 APP_HEADERS := $(wildcard *.h *.hpp *.inc)
 APP := $(BUILD_DIR)/arm64-metal
+APP_OBJECT_DIR := $(BUILD_DIR)/app-objects
+APP_OBJECTS := $(addprefix $(APP_OBJECT_DIR)/,$(APP_SOURCES:.cpp=.o))
+APP_DEPFILES := $(APP_OBJECTS:.o=.d)
+APP_CONFIG := $(APP_OBJECT_DIR)/build-config
+APP_LINK_LIBS := -framework Foundation -framework Metal -framework Security
 OPEN_NOCANCEL_NATIVE := $(BUILD_DIR)/open-nocancel
 OPEN_APPEND_NATIVE := $(BUILD_DIR)/open-append-native
 PROC_INFO_NATIVE := $(BUILD_DIR)/proc-info-self
@@ -237,6 +242,31 @@ INTERPRETER_METALLIB := $(BUILD_DIR)/interpreter/runtime-interpreter.metallib
 
 app: $(APP)
 
+.PHONY: app-build-config-force
+app-build-config-force:
+
+$(APP_CONFIG): app-build-config-force
+	@mkdir -p "$(APP_OBJECT_DIR)"
+	@{ \
+	  printf '%s\n' 'format=1'; \
+	  printf '%s\n' 'CXX=$(CXX)'; \
+	  printf '%s\n' 'CPPFLAGS=$(CPPFLAGS)'; \
+	  printf '%s\n' 'CXXFLAGS=$(CXXFLAGS)'; \
+	  printf '%s\n' 'METAL_CPP=$(METAL_CPP)'; \
+	  printf '%s\n' 'APP_SOURCES=$(APP_SOURCES)'; \
+	  printf '%s\n' 'APP_COMPILE_EXTRA=-fblocks'; \
+	  printf '%s\n' 'APP_DEP_MODE=-MD'; \
+	  printf '%s\n' 'APP_LINK_LIBS=$(APP_LINK_LIBS)'; \
+	} >"$@.tmp"
+	@if ! cmp -s "$@.tmp" "$@"; then mv "$@.tmp" "$@"; else rm "$@.tmp"; fi
+
+$(APP_OBJECT_DIR)/%.o: %.cpp $(APP_CONFIG)
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks \
+		-MD -MP -MF "$(@:.o=.d)" -c "$<" -o "$@"
+
+-include $(APP_DEPFILES)
+
 $(KDEBUG_TRACE64_NATIVE): ../fixtures/handoff/kdebug-trace64-disabled.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
@@ -380,11 +410,11 @@ $(DYLD_PLATFORM_APIS): ../fixtures/handoff/dyld-platform-apis.c
 verify-dyld-platform-apis-native: $(DYLD_PLATFORM_APIS)
 	"$(DYLD_PLATFORM_APIS)"
 
-$(APP): $(APP_SOURCES) $(APP_HEADERS)
+$(APP): $(APP_OBJECTS) $(APP_CONFIG) Makefile
 	@test -f "$(METAL_CPP)/Foundation/Foundation.hpp" || { echo 'Set METAL_CPP to the installed metal-cpp include root' >&2; exit 1; }
 	@mkdir -p "$(BUILD_DIR)"
-	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks $(APP_SOURCES) \
-		-framework Foundation -framework Metal -framework Security -o "$@"
+	$(CXX) $(CPPFLAGS) -isystem "$(METAL_CPP)" $(CXXFLAGS) -fblocks $(APP_OBJECTS) \
+		$(APP_LINK_LIBS) -o "$@"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
