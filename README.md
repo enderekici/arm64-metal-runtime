@@ -167,6 +167,7 @@ are needed to build it. The AOT interpreter library ships with the launcher.
 
 ```sh
 ./arm64-metal run workload.dylib update_words example.json
+./arm64-metal run-stream workload.dylib update_words < batches.jsonl
 ./arm64-metal translate /path/to/binary symbol
 ./arm64-metal verify /path/to/trusted.dylib symbol
 ```
@@ -176,6 +177,8 @@ array of objects with unsigned 32-bit `words` and `seed`. Omitting the input
 path or passing `-` reads stdin. An optional argument after the input path sets
 the maximum number of basic blocks per invocation. The launcher emits a JSON
 array on success and exits with an error if any invocation fails.
+`run-stream` reads one JSON batch per line and reuses its translated Metal
+pipeline until EOF; each line produces one flushed JSON result line.
 
 The function ABI is `uint32_t function(uint32_t *words, uint64_t count, uint32_t
 seed)`. Each invocation gets its own word buffer at guest address zero.

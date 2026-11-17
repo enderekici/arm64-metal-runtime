@@ -24,7 +24,7 @@ CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
 CACHE_CONFORMANCE := $(BUILD)/cache-dyld-conformance
 
-.PHONY: all verify verify-cache verify-apps verify-java bundle
+.PHONY: all verify verify-function-stream verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
 
 verify: all
@@ -59,6 +59,9 @@ verify: all
 	@printf 'not a Mach-O\n' >"$(BUILD)/invalid.bin"
 	@! $(RUNTIME) translate "$(BUILD)/invalid.bin" update_words >"$(BUILD)/invalid.out" 2>"$(BUILD)/invalid.log"
 	@grep 'Expected a little-endian ARM64 Mach-O' "$(BUILD)/invalid.log"
+
+verify-function-stream: $(RUNTIME) $(GUEST)
+	./verify-function-stream.sh "$(RUNTIME)" "$(GUEST)" "$(BUILD)/function-stream"
 
 APP_VERIFY_RUNTIME ?= $(BUILD)/cpp/arm64-metal
 APP_VERIFY_RESULTS ?= $(BUILD)/app-verification

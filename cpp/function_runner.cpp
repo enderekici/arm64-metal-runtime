@@ -480,6 +480,26 @@ std::string run(const std::filesystem::path& binary, const std::string& symbol,
   return serialize(guest.run(inputs, budget));
 }
 
+void run_stream(const std::filesystem::path& binary, const std::string& symbol,
+                std::istream& input, std::ostream& output, std::uint32_t budget) {
+  if (budget == 0 || budget > 1'000'000) throw std::runtime_error("Invalid block budget");
+  MetalGuest guest(translate(binary, symbol));
+  std::string line;
+  std::size_t line_number = 0;
+  while (std::getline(input, line)) {
+    ++line_number;
+    try {
+      const auto invocations = JsonInvocationParser(line).parse();
+      output << serialize(guest.run(invocations, budget)) << '\n' << std::flush;
+      if (!output) throw std::runtime_error("Unable to write stream result");
+    } catch (const std::exception& error) {
+      throw std::runtime_error("Stream line " + std::to_string(line_number) + ": " + error.what());
+    }
+  }
+  if (input.bad()) throw std::runtime_error("Unable to read stream input");
+  if (line_number == 0) throw std::runtime_error("Stream input is empty");
+}
+
 void verify(const std::filesystem::path& binary, const std::string& symbol) {
   void* handle = dlopen(binary.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {

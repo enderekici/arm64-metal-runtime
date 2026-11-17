@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <string>
 
 namespace arm64metal::function_runner {
@@ -16,6 +17,12 @@ std::string translate(const std::filesystem::path& binary, const std::string& sy
 // checks as the original batch runner.
 std::string run(const std::filesystem::path& binary, const std::string& symbol,
                 const std::string& json_input, std::uint32_t budget = 65'536);
+
+// Read one JSON batch per line, retaining the translated Metal pipeline while
+// allocating fresh guest buffers for each batch. Stops at the first failure.
+void run_stream(const std::filesystem::path& binary, const std::string& symbol,
+                std::istream& input, std::ostream& output,
+                std::uint32_t budget = 65'536);
 
 // Compare 1,024 deterministic native invocations with Metal and verify the
 // zero block-budget rejection path. Throws std::runtime_error on failure.

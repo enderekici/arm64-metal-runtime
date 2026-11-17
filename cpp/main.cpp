@@ -173,6 +173,7 @@ void print_help() {
       "    Packaged AOT_REQUIRED bundles enable typed AOT by default; set\n"
       "    ARM64_METAL_INTERPRETER=0 to disable or =1 to opt in on source builds.\n"
       "  arm64-metal run BINARY SYMBOL [INPUT.json|-] [BLOCK_BUDGET]\n"
+      "  arm64-metal run-stream DYLIB SYMBOL\n"
       "  arm64-metal verify TRUSTED_DYLIB SYMBOL\n"
       "  arm64-metal translate BINARY SYMBOL\n"
       "  arm64-metal inspect-cache INSTALL_NAME SYMBOL\n"
@@ -180,6 +181,7 @@ void print_help() {
       "\n"
       "Input is a JSON array of {\"words\":[1,2,3],\"seed\":7} invocations.\n"
       "Run reads stdin when INPUT is omitted or '-'.\n"
+      "Run-stream reads one JSON batch per stdin line and keeps the Metal pipeline warm.\n"
       "Launch executes the guest process on Metal.\n";
 }
 
@@ -728,6 +730,10 @@ int run_command(const std::vector<std::string>& args,
     const std::string output = arm64metal::function_runner::run(
         args[1], args[2], read_input(input_path), budget);
     std::cout << output << '\n';
+    return 0;
+  }
+  if (args[0] == "run-stream" && args.size() == 3) {
+    arm64metal::function_runner::run_stream(args[1], args[2], std::cin, std::cout);
     return 0;
   }
   throw std::runtime_error("Unknown command or wrong arguments. See --help.");
