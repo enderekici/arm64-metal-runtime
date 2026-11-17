@@ -53,7 +53,11 @@ In `/tmp/metal-lifecycle-combined.qkAayK/`, build, regression, both interpreter 
 3. If a contract fails, localize the first divergent service/instruction from the trace; keep a small reusable fixture before replaying an unchanged binary.
 4. After contract gates, choose one representative unchanged holdout whose first dependency overlaps a validated boundary. Increase its input or thread complexity only after its smallest control passes; decompression is one useful workload family, not a required example list or gate prerequisite.
 5. Then qualify startup/cache/framework clients, JNI/JVM, and GUI independently. Record red, intentional architectural exclusion, and unverified separately; a later pass supersedes only the exact case/runtime it reruns.
-6. Acceptance milestones: prove CLI child I/O/status; run a minimal Objective-C `main` and timer within the measured budget; qualify one real workload per capability; then pass a full exact package gate.
+6. Acceptance milestones, in order:
+   1. **Scoped child wait — done:** the 22-case manifest includes exact native/guest output and status for `posix-spawn-cooperative-wait`; this does not qualify general child I/O/status or fork/exec.
+   2. **Scoped standard-descriptor pipeline — done:** runtime `35b59d9` with manifest `2ccd366` passed 23/23 exact on immutable runtime SHA-256 `5ab4eb4b556762ca5fb83ed157bbfeceed1b42f5c93863e27c093f59dee6ea2a`; receipt: `/tmp/metal-cli-pipeline.RUlFgw/components/run-20261117T012151Z-d36a68cd/summary.json`. The native run output matched exactly for the scoped `stdio` `dup2`/`close` case. This does not establish general descriptor inheritance or fork isolation. The promoted package identity above remains `66d6005`.
+   3. **Objective-C startup and timer — next:** run a minimal Objective-C `main` plus timer, with bootstrap milestones and runtime-compilation/cache evidence sufficient to locate time before the main marker.
+   4. **Unchanged application behavior and fork isolation — remaining:** qualify one unchanged CLI workload and one AppKit behavior, then test fork isolation explicitly. Do not infer any of these from fixture or pipeline results.
 
 ## Pointer-signing and parent context
 
