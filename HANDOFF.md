@@ -379,16 +379,17 @@ lanes; full applications are occasional holdouts, not the repeated test loop.
 These results qualify only the recorded artifacts, fixtures, flags, and OS
 build; full Azul/JNI startup and broad macOS compatibility remain open.
 
-## Promoted local package checkpoint: `27688b8`
+## Promoted local package checkpoint: `66d6005`
 
-Runtime SHA-256 `dfeb3e761eb838fe2351cdf40d3f09027e22dcc1c326aa36d3613f11bcace2f7`
-is the runtime in the promoted local package `.build/arm64-metal-cpp-macos.tar.gz`,
-SHA-256 `3d316f13be0fe6d0d5169683149a094896c3cc238e940cfb0496284145f87e13`.
-Its one-run component summary records 19 exact matches:
-`/tmp/metal-postcheckpoint.rpjADZ/components/run-20261117T000442Z-31552be9/summary.json`.
-The full launch, interpreter, demand-cache, and extracted-package gates each
-returned status 0. Later commit `66d6005` adds scoped Mach memory-entry, TLS,
-and workloop behavior; its combined gates are still running, so those changes
-are not covered by this package receipt. This does not establish general
-drop-in compatibility. See [COMPATIBILITY.md](COMPATIBILITY.md) for the
-component contract map.
+Runtime SHA-256 `8877627f32a918002cef03197314bcb9eee1982ef38c9359f2ff6c641b0084a4`
+is in the promoted `.build/arm64-metal-cpp-macos.tar.gz` (SHA-256
+`365186c907efd4b939c3748822e52a206d0ca198343d28e42e9edc641e089834`). The
+`f63f633` manifest produced 21 exact component matches in one immutable-runtime
+run: `/tmp/metal-lifecycle-combined.qkAayK/components/run-20261117T001217Z-b0847925/summary.json`.
+Build, regression (42 launch comparisons, 2,048 function matches), both
+interpreter gates, named Mach memory-entry, static TLS reopen, scoped workloop,
+and extracted-package AOT CSEL all returned status 0 under
+`/tmp/metal-lifecycle-combined.qkAayK/` (native and extracted CSEL both returned
+42). These results cover only the recorded contracts. Child spawn remains
+isolated; fork and GUI behavior remain open. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for the contract map and earlier receipts.
