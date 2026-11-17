@@ -6308,9 +6308,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         constexpr std::uint32_t kernNoSpace = 3;
         constexpr std::uint32_t kernInvalidArgument = 4;
         constexpr std::uint32_t kernNotSupported = 46;
+        constexpr std::uint32_t machSendInvalidDest = 0x1000000a;
         constexpr std::uint32_t vmFlagsAnywhere = 1;
+        const auto sendRight = guestSendRightUrefs.find(memoryEntryName);
+        if (sendRight == guestSendRightUrefs.end() || sendRight->second == 0) {
+            return machSendInvalidDest;
+        }
         const auto entry = guestVmMemoryEntries.find(memoryEntryName);
-        if (entry == guestVmMemoryEntries.end()) return kernInvalidArgument;
+        if (entry == guestVmMemoryEntries.end()) return machSendInvalidDest;
         if (copy) return kernNotSupported;
         if ((maximumProtection & ~entry->second.permission) != 0) return kernInvalidRight;
         if (flags != vmFlagsAnywhere || guestAddress != 0 || mask >= (1ULL << 62) ||

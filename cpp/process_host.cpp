@@ -4,6 +4,7 @@
 #include "guest_format.hpp"
 #include "guest_state.hpp"
 #include "host_service_registry.hpp"
+#include "image_loader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2593,6 +2594,7 @@ HostServiceResult dispatch_guest_host_service(
         case 114: {  // mach_vm_map (anonymous guest mapping only)
             constexpr std::uint32_t kernSuccess = 0;
             constexpr std::uint32_t kernNoSpace = 3;
+            constexpr std::uint32_t kernInvalidAddress = 1;
             constexpr std::uint32_t kernInvalidArgument = 4;
             constexpr std::uint32_t kernProtectionFailure = 2;
             const bool map = service == 114;
@@ -2705,6 +2707,12 @@ HostServiceResult dispatch_guest_host_service(
                         registers[0] = kernInvalidArgument;
                         break;
                     }
+                    if (registers[1] < ExecutableImage::minimum_image_address ||
+                        !memory.is_guest_readable(registers[1], sizeof(std::uint64_t)) ||
+                        memory.is_readonly(registers[1], sizeof(std::uint64_t))) {
+                        registers[0] = kernInvalidAddress;
+                        break;
+                    }
                     auto* addressStorage = memory.buffer(registers[1],
                                                           sizeof(std::uint64_t), true);
                     std::uint64_t address = 0;
@@ -2786,7 +2794,8 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = kernInvalidArgument;
                 break;
             }
-            if (registers[1] == 0 || registers[4] == 0 ||
+            if (registers[1] < ExecutableImage::minimum_image_address ||
+                registers[4] < ExecutableImage::minimum_image_address ||
                 !memory.is_guest_readable(registers[1], sizeof(std::uint64_t)) ||
                 !memory.is_guest_readable(registers[4], sizeof(std::uint32_t)) ||
                 memory.is_readonly(registers[1], sizeof(std::uint64_t)) ||

@@ -45,6 +45,10 @@ int main(void) {
     const kern_return_t port_release = entry == MACH_PORT_NULL
         ? KERN_INVALID_NAME : mach_port_deallocate(mach_task_self(), entry);
     const unsigned after_port_release = map == KERN_SUCCESS ? *(volatile unsigned *)alias : 0;
+    mach_vm_address_t stale_alias = 0;
+    const kern_return_t stale_map = entry == MACH_PORT_NULL ? KERN_INVALID_NAME
+        : map_readonly_entry(entry, page, &stale_alias);
+    if (stale_alias != 0) (void)mach_vm_deallocate(mach_task_self(), stale_alias, page);
     const kern_return_t alias_release = alias == 0 ? KERN_INVALID_ADDRESS
         : mach_vm_deallocate(mach_task_self(), alias, page);
 
@@ -78,12 +82,12 @@ int main(void) {
 
     printf("invalid_source=%d/%d entry=%d/%d valid=%d size=%llu map=%d before=%08x denied=%d shared=%08x "
            "release_source=%d after_source=%08x release_port=%d after_port=%08x "
-           "release_alias=%d remap=%d/%d release_source2=%d remapped=%08x "
+           "stale_map=%d release_alias=%d remap=%d/%d release_source2=%d remapped=%08x "
            "release_port2=%d after_port2=%08x release_alias3=%d\n",
            invalid_source, invalid_entry != MACH_PORT_NULL, create, make,
            entry != MACH_PORT_NULL, (unsigned long long)entry_size, map, before, denied,
            shared, source_release,
-           after_source_release, port_release, after_port_release, alias_release,
+           after_source_release, port_release, after_port_release, stale_map, alias_release,
            create2, make2, source2_release, remapped, port2_release,
            after_port2_release, alias3_release);
     return !(invalid_source == KERN_INVALID_ADDRESS && invalid_entry == MACH_PORT_NULL &&
@@ -91,7 +95,8 @@ int main(void) {
         map == KERN_SUCCESS && before == 0x12345678U && denied == KERN_INVALID_RIGHT &&
         shared == 0x87654321U && source_release == KERN_SUCCESS &&
         after_source_release == shared && port_release == KERN_SUCCESS &&
-        after_port_release == shared && alias_release == KERN_SUCCESS &&
+        after_port_release == shared && stale_map == 0x1000000a &&
+        alias_release == KERN_SUCCESS &&
         create2 == KERN_SUCCESS && make2 == KERN_SUCCESS && map2 == KERN_SUCCESS &&
         alias2_release == KERN_SUCCESS && source2_release == KERN_SUCCESS &&
         remap == KERN_SUCCESS && remapped == 0x0badc0deU &&
