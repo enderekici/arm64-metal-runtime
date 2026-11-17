@@ -5,6 +5,7 @@
 // interprets or executes guest instructions on the CPU.
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,9 @@ struct LaunchOptions {
     std::filesystem::path interpreterLibrary;
     // Used only when no AOT library was selected (development mode).
     std::filesystem::path interpreterSource;
+    std::filesystem::path runtimeExecutablePath;
+    std::optional<std::string> guestArgv0;
+    std::optional<std::vector<std::string>> guestEnvironment;
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;

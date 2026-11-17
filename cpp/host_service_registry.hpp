@@ -227,6 +227,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mkdtemp", 155, true, true},
     {"_unlink", 156, true, true},
     {"_rmdir", 177, true, true},
+    {"_posix_spawn", 248, true, true},
+    {"_waitpid", 249, true, true},
     {"_compat_mode", 157, true, true},
     {"_fgets", 158, true, true},
     {"_getline", 159, true, true},

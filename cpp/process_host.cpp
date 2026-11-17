@@ -23,6 +23,8 @@
 #include <fcntl.h>
 #include <libgen.h>
 #include <poll.h>
+#include <pthread.h>
+#include <spawn.h>
 #include <mach/mach_time.h>
 #include <mach/mach.h>
 #include <mach/vm_statistics.h>
@@ -33,6 +35,7 @@
 #include <sys/resource.h>
 #include <sys/param.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <sys/sysctl.h>
 #include <signal.h>
 #include <unistd.h>
@@ -43,6 +46,61 @@
 // Read-only libsystem_kernel queries; their private header is absent from the SDK.
 extern "C" int csr_check(std::uint32_t mask);
 extern "C" int csr_get_active_config(std::uint32_t* config);
+extern char** environ;
+
+namespace {
+
+int write_spawn_environment(int descriptor, const std::vector<std::string>& environment) {
+    constexpr std::uint32_t magic = 0x4556414dU;
+    if (environment.size() > 4096) return E2BIG;
+    std::size_t totalBytes = 0;
+    for (const auto& value : environment) {
+        if (value.size() > std::numeric_limits<std::uint32_t>::max() ||
+            value.size() > (1U << 20) - std::min<std::size_t>(totalBytes, 1U << 20)) {
+            return E2BIG;
+        }
+        totalBytes += value.size();
+    }
+
+    sigset_t pipeSet{};
+    sigset_t oldMask{};
+    sigemptyset(&pipeSet);
+    sigaddset(&pipeSet, SIGPIPE);
+    const auto maskError = ::pthread_sigmask(SIG_BLOCK, &pipeSet, &oldMask);
+    if (maskError != 0) return maskError;
+    sigset_t pending{};
+    bool pipeWasPending = ::sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) == 1;
+    const auto writeExact = [descriptor](const void* source, std::size_t length) {
+        const auto* bytes = static_cast<const std::uint8_t*>(source);
+        std::size_t written = 0;
+        while (written < length) {
+            const auto result = ::write(descriptor, bytes + written, length - written);
+            if (result < 0 && errno == EINTR) continue;
+            if (result <= 0) return result < 0 ? errno : EIO;
+            written += static_cast<std::size_t>(result);
+        }
+        return 0;
+    };
+    const std::array<std::uint32_t, 2> header{
+        magic, static_cast<std::uint32_t>(environment.size())};
+    auto error = writeExact(header.data(), sizeof(header));
+    for (const auto& value : environment) {
+        if (error != 0) break;
+        const auto length = static_cast<std::uint32_t>(value.size());
+        error = writeExact(&length, sizeof(length));
+        if (error == 0 && length != 0) error = writeExact(value.data(), length);
+    }
+    if (error == EPIPE && !pipeWasPending &&
+        sigismember(&oldMask, SIGPIPE) != 1 &&
+        ::sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) == 1) {
+        int receivedSignal = 0;
+        (void)::sigwait(&pipeSet, &receivedSignal);
+    }
+    const auto restoreError = ::pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
+    return error != 0 ? error : restoreError;
+}
+
+}  // namespace
 
 namespace arm64metal {
 namespace {
@@ -150,7 +208,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         launch_path = std::filesystem::current_path() / launch_path;
     }
     result.resolvedExecutablePath = launch_path.string();
-    argv.push_back(input.executablePath);
+    argv.push_back(input.argv0.value_or(input.executablePath));
     argv.insert(argv.end(), std::make_move_iterator(input.arguments.begin()),
                 std::make_move_iterator(input.arguments.end()));
 
@@ -1187,6 +1245,299 @@ HostServiceResult dispatch_guest_host_service(
             const auto result = service == 156 ? ::unlink(path.c_str()) : ::rmdir(path.c_str());
             registers[0] = result == 0 ? 0 : failure;
             if (result != 0) set_errno(errno);
+            break;
+        }
+        case 248: {  // posix_spawn through this same runtime, with no guest actions/attributes
+            const auto pidAddress = registers[0];
+            if ((pidAddress & kGuestTopByteMask) < bootstrap.pageSize ||
+                registers[1] == 0 || registers[4] == 0 ||
+                registers[5] == 0) {
+                registers[0] = EFAULT;
+                break;
+            }
+            try {
+                (void)memory.buffer(pidAddress, sizeof(pid_t), true);
+            } catch (const std::out_of_range&) {
+                registers[0] = EFAULT;
+                break;
+            }
+            if (registers[2] != 0 || registers[3] != 0) {
+                registers[0] = ENOTSUP;
+                break;
+            }
+            if (state.runtimeExecutablePath.empty()) {
+                registers[0] = ENOTSUP;
+                break;
+            }
+            std::string guestExecutable;
+            try {
+                guestExecutable = string_at(registers[1]);
+            } catch (const std::exception&) {
+                registers[0] = EFAULT;
+                break;
+            }
+            std::vector<std::string> guestArguments;
+            std::vector<std::string> guestEnvironment;
+            std::size_t guestTextBytes = guestExecutable.size() + 1;
+            const auto read_string_vector = [&](std::uint64_t vectorAddress,
+                                                std::vector<std::string>& values) {
+                constexpr std::size_t maximumCount = 4096;
+                for (std::size_t index = 0; index <= maximumCount; ++index) {
+                    if (index > (std::numeric_limits<std::uint64_t>::max() - vectorAddress) /
+                                    sizeof(std::uint64_t)) return EFAULT;
+                    std::uint64_t pointer = 0;
+                    try {
+                        std::memcpy(&pointer, memory.buffer(
+                            vectorAddress + index * sizeof(pointer), sizeof(pointer)),
+                            sizeof(pointer));
+                    } catch (const std::out_of_range&) {
+                        return EFAULT;
+                    }
+                    if (pointer == 0) return 0;
+                    if (index == maximumCount) return E2BIG;
+                    try {
+                        auto value = string_at(pointer);
+                        if (value.size() + 1 > (1U << 20) -
+                                                   std::min<std::size_t>(guestTextBytes, 1U << 20)) {
+                            return E2BIG;
+                        }
+                        guestTextBytes += value.size() + 1;
+                        values.push_back(std::move(value));
+                    } catch (const std::exception&) {
+                        return EFAULT;
+                    }
+                }
+                return E2BIG;
+            };
+            auto vectorError = read_string_vector(registers[4], guestArguments);
+            if (vectorError == 0 && guestArguments.empty()) vectorError = EFAULT;
+            if (vectorError == 0)
+                vectorError = read_string_vector(registers[5], guestEnvironment);
+            if (vectorError != 0) {
+                registers[0] = vectorError;
+                break;
+            }
+            struct stat executableStatus{};
+            if (::stat(guestExecutable.c_str(), &executableStatus) != 0) {
+                registers[0] = errno;
+                break;
+            }
+            if (S_ISDIR(executableStatus.st_mode)) {
+                registers[0] = EACCES;
+                break;
+            }
+            if (::access(guestExecutable.c_str(), X_OK) != 0) {
+                registers[0] = errno;
+                break;
+            }
+            try {
+                (void)MachImage(guestExecutable, true, ExecutableImage::minimum_image_address);
+            } catch (const std::exception&) {
+                registers[0] = ENOEXEC;
+                break;
+            }
+
+            const auto runtimePath = state.runtimeExecutablePath.string();
+            std::vector<std::string> childArguments;
+            childArguments.reserve(4 + guestArguments.size());
+            childArguments.emplace_back("__spawn_launch");
+            childArguments.push_back(guestExecutable);
+            childArguments.push_back(std::to_string(guestArguments.size()));
+            childArguments.insert(childArguments.end(), guestArguments.begin(),
+                                  guestArguments.end());
+
+            struct SpawnPipe {
+                int readDescriptor = -1;
+                int writeDescriptor = -1;
+                ~SpawnPipe() {
+                    if (readDescriptor >= 0) (void)::close(readDescriptor);
+                    if (writeDescriptor >= 0) (void)::close(writeDescriptor);
+                }
+            } environmentPipe;
+            int pipeDescriptors[2] = {-1, -1};
+            if (::pipe(pipeDescriptors) != 0) {
+                registers[0] = errno;
+                break;
+            }
+            environmentPipe.readDescriptor = pipeDescriptors[0];
+            environmentPipe.writeDescriptor = pipeDescriptors[1];
+            auto error = 0;
+            for (auto* descriptor : {&pipeDescriptors[0], &pipeDescriptors[1]}) {
+                if (*descriptor > STDERR_FILENO) continue;
+                const auto replacement = ::fcntl(*descriptor, F_DUPFD_CLOEXEC,
+                                                  STDERR_FILENO + 1);
+                if (replacement < 0) {
+                    error = errno;
+                    break;
+                }
+                (void)::close(*descriptor);
+                *descriptor = replacement;
+                environmentPipe.readDescriptor = pipeDescriptors[0];
+                environmentPipe.writeDescriptor = pipeDescriptors[1];
+            }
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            environmentPipe.readDescriptor = pipeDescriptors[0];
+            environmentPipe.writeDescriptor = pipeDescriptors[1];
+            for (const auto descriptor : pipeDescriptors) {
+                const auto flags = ::fcntl(descriptor, F_GETFD);
+                if (flags < 0 || ::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) < 0) {
+                    error = errno;
+                    break;
+                }
+            }
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            const auto environmentDescriptor = std::max(
+                {kGuestSpawnEnvironmentDescriptorFloor, pipeDescriptors[0] + 1,
+                 pipeDescriptors[1] + 1});
+            if (environmentDescriptor <= pipeDescriptors[0] ||
+                environmentDescriptor <= pipeDescriptors[1]) {
+                registers[0] = EMFILE;
+                break;
+            }
+            childArguments.push_back(std::to_string(environmentDescriptor));
+            std::vector<char*> childArgv;
+            childArgv.reserve(childArguments.size() + 2);
+            childArgv.push_back(const_cast<char*>(runtimePath.c_str()));
+            for (auto& value : childArguments) childArgv.push_back(value.data());
+            childArgv.push_back(nullptr);
+
+            struct SpawnObjects {
+                posix_spawn_file_actions_t actions{};
+                posix_spawnattr_t attributes{};
+                bool actionsInitialized = false;
+                bool attributesInitialized = false;
+                ~SpawnObjects() {
+                    if (actionsInitialized) (void)posix_spawn_file_actions_destroy(&actions);
+                    if (attributesInitialized) (void)posix_spawnattr_destroy(&attributes);
+                }
+            } spawnObjects;
+            error = posix_spawn_file_actions_init(&spawnObjects.actions);
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            spawnObjects.actionsInitialized = true;
+            error = posix_spawnattr_init(&spawnObjects.attributes);
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            spawnObjects.attributesInitialized = true;
+            for (const auto descriptor : {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO}) {
+                if (::fcntl(descriptor, F_GETFD) < 0) {
+                    if (errno == EBADF) continue;
+                    registers[0] = errno;
+                    error = errno;
+                    break;
+                }
+                error = posix_spawn_file_actions_adddup2(
+                    &spawnObjects.actions, descriptor, descriptor);
+                if (error != 0) break;
+            }
+            if (error == 0) {
+                error = posix_spawn_file_actions_adddup2(
+                    &spawnObjects.actions, environmentPipe.readDescriptor,
+                    environmentDescriptor);
+            }
+            if (error == 0) {
+                error = posix_spawn_file_actions_addclose(
+                    &spawnObjects.actions, environmentPipe.writeDescriptor);
+            }
+            if (error == 0) {
+                error = posix_spawn_file_actions_addclose(
+                    &spawnObjects.actions, environmentPipe.readDescriptor);
+            }
+            if (error == 0) {
+                error = posix_spawnattr_setflags(
+                    &spawnObjects.attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
+            }
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            try {
+                state.spawnedChildren.reserve(state.spawnedChildren.size() + 1);
+            } catch (const std::bad_alloc&) {
+                registers[0] = ENOMEM;
+                break;
+            }
+            pid_t child = -1;
+            error = ::posix_spawn(&child, runtimePath.c_str(), &spawnObjects.actions,
+                                  &spawnObjects.attributes, childArgv.data(), environ);
+            if (error != 0) {
+                registers[0] = error;
+                break;
+            }
+            (void)::close(environmentPipe.readDescriptor);
+            environmentPipe.readDescriptor = -1;
+            error = write_spawn_environment(environmentPipe.writeDescriptor, guestEnvironment);
+            (void)::close(environmentPipe.writeDescriptor);
+            environmentPipe.writeDescriptor = -1;
+            if (error != 0) {
+                (void)::kill(child, SIGKILL);
+                int childStatus = 0;
+                while (::waitpid(child, &childStatus, 0) < 0 && errno == EINTR) {}
+                registers[0] = error;
+                break;
+            }
+            state.spawnedChildren.push_back(child);
+            std::memcpy(memory.buffer(pidAddress, sizeof(child), true), &child, sizeof(child));
+            registers[0] = 0;
+            break;
+        }
+        case 249: {  // waitpid only reaps a child launched by this guest process
+            const auto requested = static_cast<pid_t>(static_cast<std::int32_t>(registers[0]));
+            const auto statusAddress = registers[1];
+            const auto options = static_cast<int>(registers[2]);
+            if ((options & ~WNOHANG) != 0) {
+                set_errno(EINVAL);
+                registers[0] = failure;
+                break;
+            }
+            const auto child = std::find(state.spawnedChildren.begin(),
+                                         state.spawnedChildren.end(), requested);
+            if (requested <= 0 || child == state.spawnedChildren.end()) {
+                set_errno(ECHILD);
+                registers[0] = failure;
+                break;
+            }
+            std::uint8_t* statusBytes = nullptr;
+            if (statusAddress != 0 &&
+                (statusAddress & kGuestTopByteMask) < bootstrap.pageSize) {
+                set_errno(EFAULT);
+                registers[0] = failure;
+                break;
+            }
+            if (statusAddress != 0) {
+                try {
+                    statusBytes = memory.buffer(statusAddress, sizeof(int), true);
+                } catch (const std::out_of_range&) {
+                    set_errno(EFAULT);
+                    registers[0] = failure;
+                    break;
+                }
+            }
+            int status = 0;
+            // A blocking host wait stalls the cooperative guest scheduler; this
+            // path is only qualified for parents without runnable guest siblings.
+            const auto waited = ::waitpid(requested, &status, options);
+            if (waited < 0) {
+                set_errno(errno);
+                registers[0] = failure;
+            } else {
+                if (waited > 0) {
+                    if (statusBytes != nullptr) std::memcpy(statusBytes, &status, sizeof(status));
+                    state.spawnedChildren.erase(child);
+                }
+                registers[0] = static_cast<std::uint64_t>(
+                    static_cast<std::int64_t>(waited));
+            }
             break;
         }
         case 157: {  // compat_mode

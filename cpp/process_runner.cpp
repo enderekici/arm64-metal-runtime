@@ -2119,7 +2119,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
     input.executablePath = executable.string();
     input.arguments = arguments;
-    input.environment = capture_environment();
+    input.argv0 = options.guestArgv0;
+    input.environment = options.guestEnvironment.value_or(capture_environment());
     input.mainQueue = image.cached_dispatch_main_queue.value_or(0);
     input.pageSize = static_cast<std::uint64_t>(getpagesize());
     input.kernelPageSize = input.pageSize;
@@ -2644,6 +2645,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     } previousDispatch;
     std::string lastHostTransition = "none";
     HostServiceState hostServiceState;
+    hostServiceState.runtimeExecutablePath = options.runtimeExecutablePath;
     if (performanceSummary.enabled()) {
         hostServiceState.recordPerformanceHostService = [&](double seconds) {
             performanceSummary.recordHostService(seconds);

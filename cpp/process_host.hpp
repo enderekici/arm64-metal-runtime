@@ -14,9 +14,12 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 namespace arm64metal {
+
+inline constexpr int kGuestSpawnEnvironmentDescriptorFloor = 198;
 
 inline constexpr std::size_t guestVectorStateStart = 806;
 inline constexpr std::size_t guestVectorRegisterCount = 64;
@@ -72,6 +75,7 @@ struct ProcessBootstrapInput {
     std::uint64_t heapBytes = 64U * 1024U * 1024U;
     std::size_t initialAuthenticationEntries = 4096;
     std::string executablePath;
+    std::optional<std::string> argv0;
     std::vector<std::string> arguments;
     std::vector<std::string> environment;
     std::uint64_t pageSize = 4096;
@@ -230,6 +234,8 @@ struct HostServiceState {
         std::int64_t direntAllocation = 0;
     };
     std::set<std::int32_t> openDescriptors;
+    std::filesystem::path runtimeExecutablePath;
+    std::vector<pid_t> spawnedChildren;
     std::map<std::uint64_t, GuestDirectory> guestDirectories;
     std::map<std::int32_t, std::uint64_t> guestDirectoryDescriptors;
     std::set<std::int32_t> socketDescriptors;

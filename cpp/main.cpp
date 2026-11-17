@@ -2,9 +2,13 @@
 #include "gpu_interpreter.hpp"
 #include "interpreter_assets.hpp"
 #include "process_runner.hpp"
+#include "process_host.hpp"
 #include "shared_cache.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -12,11 +16,13 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <mach-o/dyld.h>
+#include <unistd.h>
 #include <signal.h>
 
 namespace {
@@ -99,6 +105,62 @@ std::uint32_t parse_budget(const std::string& text) {
   return budget;
 }
 
+std::size_t parse_spawn_count(const std::string& text) {
+  std::size_t count = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), count);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || count > 32768) {
+    throw std::runtime_error("Invalid internal spawn vector size");
+  }
+  return count;
+}
+
+std::vector<std::string> read_spawn_environment(int descriptor) {
+  struct DescriptorGuard {
+    int value;
+    ~DescriptorGuard() { if (value >= 0) (void)::close(value); }
+  } guard{descriptor};
+  constexpr std::uint32_t magic = 0x4556414dU;
+  constexpr std::size_t maximumEntries = 4096;
+  constexpr std::size_t maximumBytes = 1U << 20;
+  const auto read_exact = [descriptor](void* destination, std::size_t length) {
+    auto* bytes = static_cast<std::uint8_t*>(destination);
+    std::size_t received = 0;
+    while (received < length) {
+      const auto result = ::read(descriptor, bytes + received, length - received);
+      if (result < 0 && errno == EINTR) continue;
+      if (result <= 0) throw std::runtime_error("Truncated spawn environment channel");
+      received += static_cast<std::size_t>(result);
+    }
+  };
+  std::array<std::uint32_t, 2> header{};
+  read_exact(header.data(), sizeof(header));
+  if (header[0] != magic || header[1] > maximumEntries) {
+    throw std::runtime_error("Invalid spawn environment channel header");
+  }
+  std::vector<std::string> environment;
+  environment.reserve(header[1]);
+  std::size_t totalBytes = 0;
+  for (std::uint32_t index = 0; index < header[1]; ++index) {
+    std::uint32_t length = 0;
+    read_exact(&length, sizeof(length));
+    if (length > maximumBytes - std::min(totalBytes, maximumBytes)) {
+      throw std::runtime_error("Spawn environment channel exceeds its size limit");
+    }
+    std::string value(length, '\0');
+    if (length != 0) read_exact(value.data(), length);
+    totalBytes += length;
+    environment.push_back(std::move(value));
+  }
+  std::uint8_t trailing = 0;
+  for (;;) {
+    const auto result = ::read(descriptor, &trailing, sizeof(trailing));
+    if (result < 0 && errno == EINTR) continue;
+    if (result != 0) throw std::runtime_error("Unexpected trailing spawn environment bytes");
+    break;
+  }
+  return environment;
+}
+
 bool environment_enabled(const char* name) {
   const char* value = std::getenv(name);
   return value != nullptr && std::string_view(value) == "1";
@@ -156,6 +218,17 @@ void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& opt
   options.interpreter = selected.enabled;
   options.interpreterLibrary = selected.library;
   options.interpreterSource = selected.source;
+}
+
+std::int32_t launch_with_signal_propagation(
+    const std::filesystem::path& guestExecutable,
+    const std::vector<std::string>& arguments,
+    const arm64metal::process_runner::LaunchOptions& options) {
+  std::int32_t terminatingSignal = 0;
+  const auto status = arm64metal::process_runner::launch_executable(
+      guestExecutable, arguments, options, &terminatingSignal);
+  if (terminatingSignal != 0) return re_terminate_with_guest_signal(terminatingSignal, status);
+  return status;
 }
 
 int run_command(const std::vector<std::string>& args,
@@ -573,12 +646,46 @@ int run_command(const std::vector<std::string>& args,
     options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
+    options.runtimeExecutablePath = executablePath;
     configure_interpreter_assets(options, executablePath);
-    std::int32_t terminatingSignal = 0;
-    const auto status = arm64metal::process_runner::launch_executable(
-        args[1], arguments, options, &terminatingSignal);
-    if (terminatingSignal != 0) return re_terminate_with_guest_signal(terminatingSignal, status);
-    return status;
+    return launch_with_signal_propagation(args[1], arguments, options);
+  }
+
+  if (args[0] == "__spawn_launch") {
+    if (args.size() < 4) throw std::runtime_error("Malformed internal spawn launch");
+    const auto argumentCount = parse_spawn_count(args[2]);
+    if (argumentCount == 0 || argumentCount > args.size() - 4) {
+      throw std::runtime_error("Malformed internal spawn argument vector");
+    }
+    std::size_t cursor = 3;
+    const auto guestArgv0 = args[cursor++];
+    std::vector<std::string> arguments;
+    arguments.reserve(argumentCount - 1);
+    for (std::size_t index = 1; index < argumentCount; ++index) {
+      arguments.push_back(args[cursor++]);
+    }
+    if (cursor + 1 != args.size()) {
+      throw std::runtime_error("Malformed internal spawn environment channel");
+    }
+    const auto environmentDescriptor = parse_spawn_count(args[cursor]);
+    if (environmentDescriptor < static_cast<std::size_t>(
+                                    arm64metal::kGuestSpawnEnvironmentDescriptorFloor) ||
+        environmentDescriptor > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error("Invalid internal spawn environment descriptor");
+    }
+    auto environment = read_spawn_environment(
+        static_cast<int>(environmentDescriptor));
+
+    arm64metal::process_runner::LaunchOptions options;
+    options.sharedCache = environment_enabled("ARM64_METAL_SHARED_CACHE");
+    options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
+    options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
+    options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
+    options.runtimeExecutablePath = executablePath;
+    options.guestArgv0 = guestArgv0;
+    options.guestEnvironment = std::move(environment);
+    configure_interpreter_assets(options, executablePath);
+    return launch_with_signal_propagation(args[1], arguments, options);
   }
 
   if (args[0] == "inspect-cache" && args.size() == 3) {
