@@ -113,6 +113,37 @@ verify-dynamic-import-stub: $(DYNAMIC_IMPORT_MAIN) $(DYNAMIC_IMPORT_PROVIDER)
 	  test "$$rc" -eq 0; \
 	  printf 'dynamic dylib host import binding and call match native\n'
 
+DYNAMIC_TLV_RUNTIME ?= $(APP_VERIFY_RUNTIME)
+DYNAMIC_TLV_BUILD := $(BUILD)/dynamic-tlv
+DYNAMIC_TLV_PROVIDER := $(DYNAMIC_TLV_BUILD)/libdynamic-tlv.dylib
+DYNAMIC_TLV_MAIN := $(DYNAMIC_TLV_BUILD)/dynamic-tlv-main
+.PHONY: verify-dynamic-tlv
+$(DYNAMIC_TLV_BUILD):
+	mkdir -p "$@"
+
+$(DYNAMIC_TLV_PROVIDER): fixtures/handoff/dynamic-tlv-provider.c | $(DYNAMIC_TLV_BUILD)
+	xcrun clang -arch arm64 -dynamiclib -fPIC -Wl,-fixup_chains \
+		-Wl,-install_name,@rpath/libdynamic-tlv.dylib -Wall -Wextra -Werror "$<" -o "$@"
+
+$(DYNAMIC_TLV_MAIN): fixtures/handoff/dynamic-tlv-main.c | $(DYNAMIC_TLV_BUILD)
+	xcrun clang -arch arm64 -Wl,-fixup_chains -Wall -Wextra -Werror -pedantic \
+		"$<" -o "$@"
+
+verify-dynamic-tlv: $(DYNAMIC_TLV_MAIN) $(DYNAMIC_TLV_PROVIDER)
+	@test -x "$(DYNAMIC_TLV_RUNTIME)" || { echo "Set DYNAMIC_TLV_RUNTIME to the C++ launcher" >&2; exit 2; }
+	@set -eu; \
+	  if "$(DYNAMIC_TLV_MAIN)" "$(DYNAMIC_TLV_PROVIDER)" \
+	    >"$(DYNAMIC_TLV_BUILD)/native.stdout" 2>"$(DYNAMIC_TLV_BUILD)/native.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$(DYNAMIC_TLV_BUILD)/native.status"; \
+	  if "$(DYNAMIC_TLV_RUNTIME)" launch "$(DYNAMIC_TLV_MAIN)" "$(DYNAMIC_TLV_PROVIDER)" \
+	    >"$(DYNAMIC_TLV_BUILD)/guest.stdout" 2>"$(DYNAMIC_TLV_BUILD)/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$(DYNAMIC_TLV_BUILD)/guest.status"; \
+	  cmp "$(DYNAMIC_TLV_BUILD)/native.stdout" "$(DYNAMIC_TLV_BUILD)/guest.stdout"; \
+	  cmp "$(DYNAMIC_TLV_BUILD)/native.stderr" "$(DYNAMIC_TLV_BUILD)/guest.stderr"; \
+	  cmp "$(DYNAMIC_TLV_BUILD)/native.status" "$(DYNAMIC_TLV_BUILD)/guest.status"; \
+	  test "$$rc" -eq 0; \
+	  printf 'dynamic dylib TLS template, per-thread isolation, and dlclose match native\n'
+
 THREAD_SERVICES_RUNTIME ?= $(APP_VERIFY_RUNTIME)
 THREAD_SERVICES_CASES ?= pthread8 condvar tsd async group timer mainq
 THREAD_SERVICES_TIMEOUT ?= 1200

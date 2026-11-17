@@ -1322,6 +1322,7 @@ void initialize_cached_globals(const ExecutableImage& image,
 }
 
 struct GuestTlvDescriptorOwner {
+    std::uint64_t header;
     std::uint64_t begin;
     std::uint64_t end;
     std::uint64_t templateSize;
@@ -1431,7 +1432,8 @@ std::vector<GuestTlvDescriptorOwner> initialize_local_thread_local_images(
             if (begin > std::numeric_limits<std::uint64_t>::max() - length) {
                 throw std::runtime_error("Guest TLV thunk range overflows");
             }
-            descriptors.push_back({begin, begin + length, metadata->template_size, key});
+            descriptors.push_back({header, begin, begin + length,
+                                   metadata->template_size, key});
         }
     }
     return descriptors;
@@ -2182,8 +2184,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::uint32_t, std::uint64_t> cachedStaticTlvOwners;
     auto occupiedTlvKeys = cached_tlv_static_keys(
         image, cachedV1TlvKeys, cachedStaticTlvOwners);
-    const auto guestTlvDescriptors = initialize_local_thread_local_images(
-        image, bootstrap, guestTlvRuntime, std::move(occupiedTlvKeys));
+    auto guestTlvDescriptors = initialize_local_thread_local_images(
+        image, bootstrap, guestTlvRuntime, occupiedTlvKeys);
+    for (const auto& descriptor : guestTlvDescriptors) occupiedTlvKeys.insert(descriptor.key);
+    std::map<std::pair<std::string, std::vector<std::uint8_t>>, std::uint32_t>
+        dynamicTlvKeys;
 
     std::vector<std::uint64_t> startup;
     // Image header owning each startup entry (0: libSystem/objc bootstrap).
@@ -4436,6 +4441,52 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     }
                 }
             }
+            if (staged.image.thread_locals) {
+                const auto& metadata = *staged.image.thread_locals;
+                if (metadata.thunk_ranges.empty() || metadata.template_size == 0 ||
+                    metadata.template_size > std::numeric_limits<std::size_t>::max() ||
+                    metadata.template_alignment == 0 ||
+                    (metadata.template_alignment & (metadata.template_alignment - 1)) != 0 ||
+                    !metadata.init_callbacks.empty() || !metadata.init_callback_ranges.empty() ||
+                    metadata.template_address > std::numeric_limits<std::uint64_t>::max() -
+                                                    metadata.template_size) {
+                    throw std::runtime_error("Unsupported or invalid named-image guest TLS metadata");
+                }
+                for (const auto& [range, length] : metadata.template_ranges) {
+                    if (range > staged.image.memory.size() ||
+                        length > staged.image.memory.size() - range ||
+                        range < metadata.template_address ||
+                        range - metadata.template_address > metadata.template_size ||
+                        length > metadata.template_size - (range - metadata.template_address)) {
+                        throw std::runtime_error("Named-image TLS template range is invalid");
+                    }
+                }
+                for (const auto& [begin, length] : metadata.thunk_ranges) {
+                    if (length % 24 != 0 || begin > staged.image.memory.size() ||
+                        length > staged.image.memory.size() - begin ||
+                        begin > staged.image_bytes || length > staged.image_bytes - begin ||
+                        staged.guest_header > std::numeric_limits<std::uint64_t>::max() - begin ||
+                        length > std::numeric_limits<std::uint64_t>::max() -
+                                     (staged.guest_header + begin)) {
+                        throw std::runtime_error("Named-image guest TLV thunk range is invalid");
+                    }
+                    for (std::uint64_t offset = 0; offset < length; offset += 24) {
+                        const auto descriptor = static_cast<std::size_t>(begin + offset);
+                        std::uint64_t target = 0;
+                        for (unsigned byte = 0; byte < 8; ++byte) {
+                            target |= static_cast<std::uint64_t>(
+                                staged.image.memory[descriptor + 16 + byte]) << (byte * 8);
+                        }
+                        const auto descriptorOffset = target >= metadata.template_address &&
+                                target - metadata.template_address <= metadata.template_size
+                            ? target - metadata.template_address : target;
+                        if (descriptorOffset >= metadata.template_size ||
+                            descriptorOffset > std::numeric_limits<std::uint32_t>::max()) {
+                            throw std::runtime_error("Named-image guest TLV offset is invalid");
+                        }
+                    }
+                }
+            }
             for (const auto& [offset, unused] : staged.image.authentication) {
                 (void)unused;
                 if (offset > staged.image_bytes || sizeof(std::uint64_t) >
@@ -4638,6 +4689,67 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto encoded = encode_guest_pointer(target, authentication.key, token);
                 for (unsigned byte = 0; byte < sizeof(encoded); ++byte) {
                     slotBytes[byte] = static_cast<std::uint8_t>(encoded >> (byte * 8U));
+                }
+            }
+            if (staged.image.thread_locals) {
+                const auto& metadata = *staged.image.thread_locals;
+                const auto identity = std::make_pair(staged.canonical_path, staged.image.uuid);
+                const auto existingKey = dynamicTlvKeys.find(identity);
+                const bool needsRegistration = existingKey == dynamicTlvKeys.end();
+                std::uint32_t key = needsRegistration ? 0 : existingKey->second;
+                if (needsRegistration) {
+                    for (std::uint32_t candidate = GuestTlvRuntime::guestTsdSlotCount;
+                         candidate > 512;) {
+                        --candidate;
+                        if (occupiedTlvKeys.find(candidate) == occupiedTlvKeys.end()) {
+                            key = candidate;
+                            break;
+                        }
+                    }
+                    if (key == 0) throw std::runtime_error("Guest TLV key space is exhausted");
+                }
+                std::vector<std::uint8_t> templateBytes(
+                    static_cast<std::size_t>(metadata.template_size), 0);
+                for (const auto& [range, length] : metadata.template_ranges) {
+                    std::copy_n(staged.image.memory.begin() + static_cast<std::ptrdiff_t>(range),
+                                static_cast<std::size_t>(length),
+                                templateBytes.begin() + static_cast<std::ptrdiff_t>(
+                                    range - metadata.template_address));
+                }
+                if (needsRegistration) {
+                    guestTlvRuntime.register_image(key, std::move(templateBytes), 0,
+                                                   metadata.template_alignment);
+                    dynamicTlvKeys.emplace(identity, key);
+                    occupiedTlvKeys.insert(key);
+                }
+                auto guestMetadata = metadata;
+                guestMetadata.template_address += staged.guest_header;
+                for (auto& range : guestMetadata.template_ranges)
+                    range.first += staged.guest_header;
+                for (auto& range : guestMetadata.thunk_ranges)
+                    range.first += staged.guest_header;
+                image.thread_local_images[staged.guest_header] = std::move(guestMetadata);
+                for (const auto& [begin, length] : metadata.thunk_ranges) {
+                    for (std::uint64_t offset = 0; offset < length; offset += 24) {
+                        const auto descriptor = static_cast<std::size_t>(begin + offset);
+                        std::uint64_t target = 0;
+                        for (unsigned byte = 0; byte < 8; ++byte) {
+                            target |= static_cast<std::uint64_t>(
+                                guestBytes[backing + descriptor + 16 + byte]) << (byte * 8);
+                        }
+                        const auto descriptorOffset = target >= metadata.template_address &&
+                                target - metadata.template_address <= metadata.template_size
+                            ? target - metadata.template_address : target;
+                        for (unsigned byte = 0; byte < 4; ++byte) {
+                            guestBytes[backing + descriptor + 8 + byte] =
+                                static_cast<std::uint8_t>(key >> (byte * 8));
+                            guestBytes[backing + descriptor + 12 + byte] =
+                                static_cast<std::uint8_t>(descriptorOffset >> (byte * 8));
+                        }
+                    }
+                    guestTlvDescriptors.push_back({staged.guest_header,
+                        staged.guest_header + begin, staged.guest_header + begin + length,
+                        metadata.template_size, key});
                 }
             }
             RuntimeLocalImageBytes runtimeImage;
@@ -7933,6 +8045,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     return item.guest_header == header;
                 }), image.loaded_image_graph.end());
             image.thread_local_images.erase(header);
+            guestTlvDescriptors.erase(std::remove_if(guestTlvDescriptors.begin(),
+                guestTlvDescriptors.end(), [header](const auto& owner) {
+                    return owner.header == header;
+                }), guestTlvDescriptors.end());
             for (auto iter = image.modeled_global_export_provenance.begin();
                  iter != image.modeled_global_export_provenance.end();) {
                 if (iter->second.guest_header == header)
