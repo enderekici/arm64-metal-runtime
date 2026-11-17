@@ -341,6 +341,21 @@
       "polarity": "positive-cooperative-wait-and-single-reap",
       "negative_control": "A sibling releases a waiting child; fixture asserts WNOHANG zero before release, exactly one waiter reaps exit 23, the other receives ECHILD, and emits cooperative-wait released=1 nohang_zero=1 waited_matches=1 single_reap=1 exited23=1.",
       "evidence_level": "native-and-guest exact stdout/stderr/status parity against the literal cooperative-wait result"
+    },
+    {
+      "id": "posix-spawn-pipeline",
+      "test_target": "posix-spawn-pipeline; native and guest stdin/stdout pipe handoff with ordered file actions",
+      "domain": "POSIX process spawn and pipe-backed standard streams",
+      "fixture": "fixtures/handoff/posix-spawn-pipeline.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-stdin-stdout-pipe-handoff-and-stale-source-rejection",
+      "negative_control": "Uses ordered dup2/close file actions, parent stdin EOF, child transformation, exact output, and exit 23; a closed pipe source must return EBADF without spawning. Expected stdout is exactly `posix_spawn pipeline ok\\n`.",
+      "evidence_level": "native-and-guest exact stdout/stderr/status parity against the expected pipeline marker"
     }
   ]
 }
