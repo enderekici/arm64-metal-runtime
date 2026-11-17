@@ -4374,6 +4374,19 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
         std::uint64_t synthetic = 0x80000000ULL;
         std::set<std::uint64_t> reservedSynthetic;
+        std::set<std::pair<std::string, std::vector<std::uint8_t>>> newTlvImages;
+        for (const auto& staged : plan.images) {
+            if (!staged.image.thread_locals) continue;
+            const auto identity = std::make_pair(staged.canonical_path, staged.image.uuid);
+            if (dynamicTlvKeys.find(identity) == dynamicTlvKeys.end())
+                newTlvImages.insert(identity);
+        }
+        std::size_t availableTlvKeys = 0;
+        for (std::uint32_t key = 512; key < GuestTlvRuntime::guestTsdSlotCount; ++key) {
+            if (occupiedTlvKeys.find(key) == occupiedTlvKeys.end()) ++availableTlvKeys;
+        }
+        if (newTlvImages.size() > availableTlvKeys)
+            throw std::runtime_error("Guest TLV key space is exhausted");
         for (std::size_t index = 0; index < plan.images.size(); ++index) {
             const auto& staged = plan.images[index];
             if (staged.image_bytes != staged.image.memory.size() ||
