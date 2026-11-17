@@ -379,18 +379,16 @@ lanes; full applications are occasional holdouts, not the repeated test loop.
 These results qualify only the recorded artifacts, fixtures, flags, and OS
 build; full Azul/JNI startup and broad macOS compatibility remain open.
 
-## Component-led candidate checkpoint: `2164127`
+## Promoted local package checkpoint: `27688b8`
 
-Runtime SHA-256 `19ac4947698a32c80096bbd49f6220e559775061cf3a3c134854c3170f609b00`
-passed the build, `make verify` (42 launch and 2,048 function matches),
-demand-cache gate, and extracted-package AOT CSEL status-42 smoke. Seventeen
-component contracts are exact across the original run and corrected BRK rerun;
-receipts are in `/tmp/metal-component-candidate.HTPlqw/components/`. The full
-interpreter rerun completed with status 0 (`/tmp/metal-component-candidate.HTPlqw/interpreter.status`).
-The local package for this checkpoint is published at
-`.build/arm64-metal-cpp-macos.tar.gz`, SHA-256
-`13b7ee3be5dfc5556bfd50ea93519c80b93f9c6ed03f66bcfa27df3d22cba8a9`.
-The later allocator (`bca9f6c`) and socketpair (`27688b8`) updates postdate this
-package. Azul/plutil and other full-app reruns were not performed; this is not a
-general drop-in compatibility claim. See [COMPATIBILITY.md](COMPATIBILITY.md)
-for the component contract map.
+Runtime SHA-256 `dfeb3e761eb838fe2351cdf40d3f09027e22dcc1c326aa36d3613f11bcace2f7`
+is the runtime in the promoted local package `.build/arm64-metal-cpp-macos.tar.gz`,
+SHA-256 `3d316f13be0fe6d0d5169683149a094896c3cc238e940cfb0496284145f87e13`.
+Its one-run component summary records 19 exact matches:
+`/tmp/metal-postcheckpoint.rpjADZ/components/run-20261117T000442Z-31552be9/summary.json`.
+The full launch, interpreter, demand-cache, and extracted-package gates each
+returned status 0. Later commit `66d6005` adds scoped Mach memory-entry, TLS,
+and workloop behavior; its combined gates are still running, so those changes
+are not covered by this package receipt. This does not establish general
+drop-in compatibility. See [COMPATIBILITY.md](COMPATIBILITY.md) for the
+component contract map.

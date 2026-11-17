@@ -5,7 +5,8 @@ builds basic blocks, and emits Metal in memory. It has a process launcher for
 supported executables and a separate function runner for independent batches.
 
 The current C++ build, verification commands, and open compatibility work are
-documented in [HANDOFF.md](HANDOFF.md). The bundled archive uses the Swift reference launcher.
+documented in [HANDOFF.md](HANDOFF.md). `make bundle-cpp` builds the C++ launcher;
+`make bundle` packages the Swift reference launcher.
 
 ## Launch an executable
 
