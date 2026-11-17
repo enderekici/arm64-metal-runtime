@@ -38,7 +38,7 @@ run_bounded() {
     shift
     marker=$run_dir/$run_label.timed-out
     rm -f "$marker"
-    "$@" >"$run_dir/$run_label.stdout" 2>"$run_dir/$run_label.stderr" &
+    (exec "$@") >"$run_dir/$run_label.stdout" 2>"$run_dir/$run_label.stderr" &
     run_command_pid=$!
     (
         sleep "$timeout_seconds"
