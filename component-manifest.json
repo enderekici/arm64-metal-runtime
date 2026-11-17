@@ -295,6 +295,37 @@
       "polarity": "positive-named-import-and-dylib-load",
       "negative_control": "None; provider exports dynamic_import_length and the executable verifies the resolved call, output length 16, and dlclose success.",
       "evidence_level": "native-and-guest stdout/stderr/status exact match plus provider source hash receipt"
+    },
+    {
+      "id": "dynamic-tlv-main-provider",
+      "test_target": "verify-dynamic-tlv build rules; explicit dylib import across pthread TLS isolation and close/reopen",
+      "domain": "dyld dynamic TLS and per-thread storage",
+      "fixture": "fixtures/handoff/dynamic-tlv-main.c",
+      "compile": ["make", "{executable}", "{case_dir}/libdynamic-tlv.dylib", "DYNAMIC_TLV_BUILD={case_dir}", "DYNAMIC_TLV_MAIN={executable}", "DYNAMIC_TLV_PROVIDER={case_dir}/libdynamic-tlv.dylib"],
+      "input_files": ["{repo}/fixtures/handoff/dynamic-tlv-provider.c"],
+      "native_args": ["{case_dir}/libdynamic-tlv.dylib"],
+      "guest_args": ["{case_dir}/libdynamic-tlv.dylib"],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "polarity": "positive-dynamic-tls-isolation-and-reopen",
+      "negative_control": "Asserts per-thread initial TLS, worker-local updates, main-thread isolation, and stored TLS state after dlclose/reopen.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match plus provider source hash receipt"
+    },
+    {
+      "id": "mach-vm-memory-entry",
+      "test_target": "cpp/Makefile MACH_VM_MEMORY_ENTRY_NATIVE exact clang rule; native and runtime launch",
+      "domain": "Mach VM read-only memory entries and mappings",
+      "fixture": "fixtures/handoff/mach-vm-memory-entry.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 30,
+      "expected_status": 0,
+      "polarity": "positive-with-invalid-source-and-writable-map-controls",
+      "negative_control": "Checks invalid source rejection, shared read-only alias updates, denied writable map, source/port release behavior, stale entry rejection, and remap after alias release.",
+      "evidence_level": "native-and-guest stdout/stderr/status exact match"
     }
   ]
 }
