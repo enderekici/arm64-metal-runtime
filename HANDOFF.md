@@ -386,9 +386,11 @@ passed the build, `make verify` (42 launch and 2,048 function matches),
 demand-cache gate, and extracted-package AOT CSEL status-42 smoke. Seventeen
 component contracts are exact across the original run and corrected BRK rerun;
 receipts are in `/tmp/metal-component-candidate.HTPlqw/components/`. The full
-interpreter rerun is still in flight. The archive remains a staged candidate at
-`/tmp/metal-component-candidate.HTPlqw/source/.build/arm64-metal-cpp-macos.tar.gz`
-(SHA-256 `13b7ee3be5dfc5556bfd50ea93519c80b93f9c6ed03f66bcfa27df3d22cba8a9`),
-not the promoted `.build` archive. Azul/plutil and other full-app reruns were
-not performed; this is not a general drop-in compatibility claim. See
-[COMPATIBILITY.md](COMPATIBILITY.md) for the component contract map.
+interpreter rerun completed with status 0 (`/tmp/metal-component-candidate.HTPlqw/interpreter.status`).
+The local package for this checkpoint is published at
+`.build/arm64-metal-cpp-macos.tar.gz`, SHA-256
+`13b7ee3be5dfc5556bfd50ea93519c80b93f9c6ed03f66bcfa27df3d22cba8a9`.
+The later allocator (`bca9f6c`) and socketpair (`27688b8`) updates postdate this
+package. Azul/plutil and other full-app reruns were not performed; this is not a
+general drop-in compatibility claim. See [COMPATIBILITY.md](COMPATIBILITY.md)
+for the component contract map.
