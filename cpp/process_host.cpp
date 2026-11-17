@@ -989,6 +989,66 @@ HostServiceResult dispatch_guest_host_service(
             ? &found->second : nullptr;
     };
     switch (service) {
+        case 253: {  // realpath$DARWIN_EXTSN
+            if (registers[0] == 0) {
+                set_errno(EINVAL);
+                registers[0] = 0;
+                break;
+            }
+            std::string path;
+            if (!guest_path(registers[0], path)) {
+                registers[0] = 0;
+                break;
+            }
+            std::uint8_t* callerBuffer = nullptr;
+            if (registers[1] != 0) {
+                if (registers[1] < bootstrap.pageSize) {
+                    set_errno(EFAULT);
+                    registers[0] = 0;
+                    break;
+                }
+                try {
+                    callerBuffer = memory.buffer(registers[1], PATH_MAX, true);
+                } catch (const std::exception&) {
+                    set_errno(EFAULT);
+                    registers[0] = 0;
+                    break;
+                }
+            }
+            char* resolved = ::realpath(path.c_str(), nullptr);
+            if (resolved == nullptr) {
+                set_errno(errno);
+                registers[0] = 0;
+                break;
+            }
+            const auto length = std::strlen(resolved) + 1;
+            if (callerBuffer != nullptr) {
+                std::memcpy(callerBuffer, resolved, length);
+                std::free(resolved);
+                registers[0] = registers[1];
+                break;
+            }
+            const auto guestBuffer = allocate_guest(length);
+            if (!guestBuffer) {
+                std::free(resolved);
+                set_errno(ENOMEM);
+                registers[0] = 0;
+                break;
+            }
+            try {
+                std::memcpy(memory.buffer(static_cast<std::uint64_t>(*guestBuffer), length, true),
+                            resolved, length);
+            } catch (const std::exception&) {
+                release_guest(*guestBuffer);
+                std::free(resolved);
+                set_errno(EFAULT);
+                registers[0] = 0;
+                break;
+            }
+            std::free(resolved);
+            registers[0] = static_cast<std::uint64_t>(*guestBuffer);
+            break;
+        }
         case 240: {  // chmod
             std::string path;
             if (!guest_path(registers[0], path)) {

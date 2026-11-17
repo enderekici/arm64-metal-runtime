@@ -318,6 +318,41 @@ verify-java:
 	@test -n "$(JDK_HOME)" || { echo "Set JDK_HOME to the Azul JDK being qualified" >&2; exit 2; }
 	./verify-java.sh "$(JDK_HOME)" "$(JAVA_VERIFY_RUNTIME)" "$(JAVA_VERIFY_RESULTS)"
 
+REALPATH_BUILD := $(BUILD)/realpath-contract
+REALPATH_FIXTURE := $(REALPATH_BUILD)/realpath-contract
+REALPATH_INVALID_FIXTURE := $(REALPATH_BUILD)/realpath-invalid-output
+REALPATH_RESULTS ?= $(REALPATH_BUILD)/results
+REALPATH_GPULOCK ?= $(ARM64_METAL_GPULOCK)
+.PHONY: verify-realpath
+$(REALPATH_BUILD):
+	mkdir -p "$@/dir"
+	printf 'fixture\n' > "$@/dir/file"
+	ln -sf dir/file "$@/link"
+
+$(REALPATH_FIXTURE): fixtures/handoff/realpath-contract.c | $(REALPATH_BUILD)
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
+$(REALPATH_INVALID_FIXTURE): fixtures/handoff/realpath-contract.c | $(REALPATH_BUILD)
+	xcrun clang -arch arm64 -Wall -Wextra -Werror -pedantic -DREALPATH_GUEST_INVALID_OUTPUT "$<" -o "$@"
+
+verify-realpath: $(REALPATH_FIXTURE) $(REALPATH_INVALID_FIXTURE)
+	@test -n "$(REALPATH_GPULOCK)" || { echo "Set REALPATH_GPULOCK to the shared GPU lock wrapper" >&2; exit 2; }
+	@test -x "$(RUNTIME)" || { echo "Set RUNTIME to the C++ launcher" >&2; exit 2; }
+	@set -eu; results="$(abspath $(REALPATH_RESULTS))"; mkdir -p "$$results"; \
+	  cd "$(abspath $(REALPATH_BUILD))"; \
+	  if ./realpath-contract link missing >"$$results/native.stdout" 2>"$$results/native.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$results/native.status"; \
+	  if env GPULOCK_SLOTS=2 "$(REALPATH_GPULOCK)" "$(abspath $(RUNTIME))" launch ./realpath-contract link missing >"$$results/guest.stdout" 2>"$$results/guest.stderr"; then rc=0; else rc=$$?; fi; \
+	  printf '%s\n' "$$rc" >"$$results/guest.status"; \
+	  cmp "$$results/native.status" "$$results/guest.status"; \
+	  cmp "$$results/native.stdout" "$$results/guest.stdout"; \
+	  cmp "$$results/native.stderr" "$$results/guest.stderr"; \
+	  test "$$rc" -eq 0; \
+	  if env GPULOCK_SLOTS=2 "$(REALPATH_GPULOCK)" "$(abspath $(RUNTIME))" launch ./realpath-invalid-output link missing >"$$results/invalid-output.stdout" 2>"$$results/invalid-output.stderr"; then invalid_rc=0; else invalid_rc=$$?; fi; \
+	  test "$$invalid_rc" -eq 0; \
+	  test "$$(cat "$$results/invalid-output.stdout")" = 'invalid_output_errno=14'; \
+	  printf 'realpath symlink, allocation, caller buffer, and ENOENT match native\n'
+
 verify-cache: $(RUNTIME) $(CACHE_CHECK) $(CACHE_ZLIB) $(CACHE_CONFORMANCE)
 	@set -e; for library in libbz2.1.0.dylib libz.1.dylib liblzma.5.dylib; do \
 		$(RUNTIME) inspect-cache-rebases "/usr/lib/$$library" >"$(BUILD)/$$library.rebases"; \

@@ -41,6 +41,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_memcmp", 11, true, true},
     {"_getcwd", 12, true, true},
     {"_stat", 13, true, true},
+    {"_realpath$DARWIN_EXTSN", 253, true, true},
     {"_fwrite", 14, true, true},
     {"_dirname", 15, true, true},
     {"_basename", 16, true, true},
