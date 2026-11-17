@@ -206,6 +206,16 @@ struct HostMachVmRegion {
 // Host resources with guest-process lifetime. Guest FILE* values are opaque
 // synthetic addresses and never expose host pointers to guest code.
 struct HostServiceState {
+    struct GuestSpawnFileAction {
+        enum class Kind { Duplicate, Close };
+        Kind kind = Kind::Close;
+        std::int32_t source = -1;
+        std::int32_t target = -1;
+    };
+    struct GuestSpawnFileActions {
+        std::uint64_t cookie = 0;
+        std::vector<GuestSpawnFileAction> actions;
+    };
     struct MappedFile {
         std::uint64_t size = 0;
         std::int64_t allocation = 0;
@@ -238,6 +248,8 @@ struct HostServiceState {
     std::set<std::int32_t> openDescriptors;
     std::filesystem::path runtimeExecutablePath;
     std::vector<pid_t> spawnedChildren;
+    std::map<std::uint64_t, GuestSpawnFileActions> guestSpawnFileActions;
+    std::uint64_t nextSpawnFileActionsCookie = 1;
     std::map<std::uint64_t, GuestDirectory> guestDirectories;
     std::map<std::int32_t, std::uint64_t> guestDirectoryDescriptors;
     std::set<std::int32_t> socketDescriptors;

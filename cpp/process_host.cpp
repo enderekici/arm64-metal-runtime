@@ -973,6 +973,21 @@ HostServiceResult dispatch_guest_host_service(
             return value;
         }, guest_string_reader);
     };
+    const auto guest_spawn_actions_for = [&](std::uint64_t address)
+        -> HostServiceState::GuestSpawnFileActions* {
+        if ((address & kGuestTopByteMask) < bootstrap.pageSize) return nullptr;
+        const auto canonicalAddress = address & kGuestTopByteMask;
+        std::uint64_t cookie = 0;
+        try {
+            std::memcpy(&cookie, memory.buffer(canonicalAddress, sizeof(cookie), true),
+                        sizeof(cookie));
+        } catch (const std::out_of_range&) {
+            return nullptr;
+        }
+        const auto found = state.guestSpawnFileActions.find(canonicalAddress);
+        return found != state.guestSpawnFileActions.end() && found->second.cookie == cookie
+            ? &found->second : nullptr;
+    };
     switch (service) {
         case 240: {  // chmod
             std::string path;
@@ -1247,7 +1262,93 @@ HostServiceResult dispatch_guest_host_service(
             if (result != 0) set_errno(errno);
             break;
         }
-        case 248: {  // posix_spawn through this same runtime, with no guest actions/attributes
+        case 264: {  // posix_spawn_file_actions_init
+            const auto address = registers[0];
+            if ((address & kGuestTopByteMask) < bootstrap.pageSize) {
+                registers[0] = EFAULT;
+                break;
+            }
+            const auto canonicalAddress = address & kGuestTopByteMask;
+            try {
+                (void)memory.buffer(canonicalAddress, sizeof(std::uint64_t), true);
+            } catch (const std::out_of_range&) {
+                registers[0] = EFAULT;
+                break;
+            }
+            if (state.guestSpawnFileActions.count(canonicalAddress) != 0) {
+                registers[0] = EINVAL;
+                break;
+            }
+            auto cookie = state.nextSpawnFileActionsCookie++;
+            if (cookie == 0) cookie = state.nextSpawnFileActionsCookie++;
+            try {
+                state.guestSpawnFileActions.emplace(
+                    canonicalAddress, HostServiceState::GuestSpawnFileActions{cookie, {}});
+            } catch (const std::bad_alloc&) {
+                registers[0] = ENOMEM;
+                break;
+            }
+            std::memcpy(memory.buffer(canonicalAddress, sizeof(cookie), true), &cookie,
+                        sizeof(cookie));
+            registers[0] = 0;
+            break;
+        }
+        case 265: {  // posix_spawn_file_actions_destroy
+            const auto address = registers[0];
+            auto* actions = guest_spawn_actions_for(address);
+            if (actions == nullptr) {
+                registers[0] = EINVAL;
+                break;
+            }
+            const auto canonicalAddress = address & kGuestTopByteMask;
+            state.guestSpawnFileActions.erase(canonicalAddress);
+            const std::uint64_t invalidCookie = 0;
+            std::memcpy(memory.buffer(canonicalAddress, sizeof(invalidCookie), true),
+                        &invalidCookie, sizeof(invalidCookie));
+            registers[0] = 0;
+            break;
+        }
+        case 266: {  // posix_spawn_file_actions_adddup2; only stdio targets are materialized
+            const auto address = registers[0];
+            auto* actions = guest_spawn_actions_for(address);
+            const auto source = static_cast<std::int32_t>(registers[1]);
+            const auto target = static_cast<std::int32_t>(registers[2]);
+            if (actions == nullptr) registers[0] = EINVAL;
+            else if (source < 0 || target < 0) registers[0] = EBADF;
+            else if (target > STDERR_FILENO) registers[0] = ENOTSUP;
+            else if (actions->actions.size() >= 4096) registers[0] = E2BIG;
+            else {
+                try {
+                    actions->actions.push_back({
+                        HostServiceState::GuestSpawnFileAction::Kind::Duplicate,
+                        source, target});
+                    registers[0] = 0;
+                } catch (const std::bad_alloc&) {
+                    registers[0] = ENOMEM;
+                }
+            }
+            break;
+        }
+        case 267: {  // posix_spawn_file_actions_addclose
+            const auto address = registers[0];
+            auto* actions = guest_spawn_actions_for(address);
+            const auto descriptor = static_cast<std::int32_t>(registers[1]);
+            if (actions == nullptr) registers[0] = EINVAL;
+            else if (descriptor < 0) registers[0] = EBADF;
+            else if (actions->actions.size() >= 4096) registers[0] = E2BIG;
+            else {
+                try {
+                    actions->actions.push_back({
+                        HostServiceState::GuestSpawnFileAction::Kind::Close,
+                        -1, descriptor});
+                    registers[0] = 0;
+                } catch (const std::bad_alloc&) {
+                    registers[0] = ENOMEM;
+                }
+            }
+            break;
+        }
+        case 248: {  // posix_spawn through this same runtime with scoped file actions
             const auto pidAddress = registers[0];
             if ((pidAddress & kGuestTopByteMask) < bootstrap.pageSize ||
                 registers[1] == 0 || registers[4] == 0 ||
@@ -1261,9 +1362,23 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = EFAULT;
                 break;
             }
-            if (registers[2] != 0 || registers[3] != 0) {
+            if (registers[3] != 0) {
                 registers[0] = ENOTSUP;
                 break;
+            }
+            std::vector<HostServiceState::GuestSpawnFileAction> guestActions;
+            if (registers[2] != 0) {
+                auto* actions = guest_spawn_actions_for(registers[2]);
+                if (actions == nullptr) {
+                    registers[0] = EINVAL;
+                    break;
+                }
+                try {
+                    guestActions = actions->actions;
+                } catch (const std::bad_alloc&) {
+                    registers[0] = ENOMEM;
+                    break;
+                }
             }
             if (state.runtimeExecutablePath.empty()) {
                 registers[0] = ENOTSUP;
@@ -1317,6 +1432,66 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = vectorError;
                 break;
             }
+            struct SimulatedDescriptor {
+                std::int32_t hostDescriptor = -1;
+                bool closeOnExec = false;
+            };
+            std::map<std::int32_t, SimulatedDescriptor> simulatedDescriptors;
+            const auto addOpenDescriptor = [&](std::int32_t descriptor) {
+                if (descriptor < 0 || ::fcntl(descriptor, F_GETFD) < 0) return;
+                const auto guestFlags = state.standardDescriptorFlags.find(descriptor);
+                const auto flags = guestFlags == state.standardDescriptorFlags.end()
+                    ? ::fcntl(descriptor, F_GETFD) : guestFlags->second;
+                if (flags >= 0) {
+                    simulatedDescriptors[descriptor] =
+                        {descriptor, (flags & FD_CLOEXEC) != 0};
+                }
+            };
+            try {
+                for (std::int32_t descriptor = STDIN_FILENO;
+                     descriptor <= STDERR_FILENO; ++descriptor) {
+                    if (standard_descriptor_open(descriptor)) addOpenDescriptor(descriptor);
+                }
+                for (const auto descriptor : state.openDescriptors) addOpenDescriptor(descriptor);
+                for (const auto& descriptor : state.guestDirectoryDescriptors)
+                    addOpenDescriptor(descriptor.first);
+                for (const auto& action : guestActions) {
+                    if (action.kind == HostServiceState::GuestSpawnFileAction::Kind::Duplicate) {
+                        if (action.target > STDERR_FILENO) {
+                            registers[0] = ENOTSUP;
+                            vectorError = ENOTSUP;
+                            break;
+                        }
+                        const auto source = simulatedDescriptors.find(action.source);
+                        if (source == simulatedDescriptors.end()) {
+                            registers[0] = EBADF;
+                            vectorError = EBADF;
+                            break;
+                        }
+                        if (action.source != action.target) {
+                            simulatedDescriptors[action.target] =
+                                {source->second.hostDescriptor, false};
+                        }
+                    } else {
+                        if (simulatedDescriptors.erase(action.target) == 0) {
+                            registers[0] = EBADF;
+                            vectorError = EBADF;
+                            break;
+                        }
+                    }
+                }
+            } catch (const std::bad_alloc&) {
+                registers[0] = ENOMEM;
+                break;
+            }
+            if (vectorError != 0) break;
+            std::array<std::optional<SimulatedDescriptor>, 3> finalStandardDescriptors{};
+            for (std::int32_t descriptor = STDIN_FILENO;
+                 descriptor <= STDERR_FILENO; ++descriptor) {
+                const auto found = simulatedDescriptors.find(descriptor);
+                if (found != simulatedDescriptors.end())
+                    finalStandardDescriptors[static_cast<std::size_t>(descriptor)] = found->second;
+            }
             struct stat executableStatus{};
             if (::stat(guestExecutable.c_str(), &executableStatus) != 0) {
                 registers[0] = errno;
@@ -1337,15 +1512,6 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
 
-            const auto runtimePath = state.runtimeExecutablePath.string();
-            std::vector<std::string> childArguments;
-            childArguments.reserve(4 + guestArguments.size());
-            childArguments.emplace_back("__spawn_launch");
-            childArguments.push_back(guestExecutable);
-            childArguments.push_back(std::to_string(guestArguments.size()));
-            childArguments.insert(childArguments.end(), guestArguments.begin(),
-                                  guestArguments.end());
-
             struct SpawnPipe {
                 int readDescriptor = -1;
                 int writeDescriptor = -1;
@@ -1354,6 +1520,18 @@ HostServiceResult dispatch_guest_host_service(
                     if (writeDescriptor >= 0) (void)::close(writeDescriptor);
                 }
             } environmentPipe;
+            struct SpawnCopies {
+                std::vector<int> descriptors;
+                ~SpawnCopies() {
+                    for (const auto descriptor : descriptors) (void)::close(descriptor);
+                }
+            } stagedDescriptors;
+            try {
+                stagedDescriptors.descriptors.reserve(5);
+            } catch (const std::bad_alloc&) {
+                registers[0] = ENOMEM;
+                break;
+            }
             int pipeDescriptors[2] = {-1, -1};
             if (::pipe(pipeDescriptors) != 0) {
                 registers[0] = errno;
@@ -1392,14 +1570,66 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = error;
                 break;
             }
-            const auto environmentDescriptor = std::max(
-                {kGuestSpawnEnvironmentDescriptorFloor, pipeDescriptors[0] + 1,
-                 pipeDescriptors[1] + 1});
-            if (environmentDescriptor <= pipeDescriptors[0] ||
-                environmentDescriptor <= pipeDescriptors[1]) {
+            if (pipeDescriptors[0] == std::numeric_limits<int>::max() ||
+                pipeDescriptors[1] == std::numeric_limits<int>::max()) {
                 registers[0] = EMFILE;
                 break;
             }
+            auto privateFloor = std::max(
+                {kGuestSpawnEnvironmentDescriptorFloor, pipeDescriptors[0] + 1,
+                 pipeDescriptors[1] + 1});
+            std::array<int, 3> stagedStandardDescriptors = {-1, -1, -1};
+            for (std::size_t index = 0; index < finalStandardDescriptors.size(); ++index) {
+                if (!finalStandardDescriptors[index] ||
+                    finalStandardDescriptors[index]->closeOnExec) continue;
+                if (privateFloor <= STDERR_FILENO) privateFloor = STDERR_FILENO + 1;
+                const auto staged = ::fcntl(finalStandardDescriptors[index]->hostDescriptor,
+                                            F_DUPFD_CLOEXEC, privateFloor);
+                if (staged < 0) {
+                    registers[0] = errno;
+                    error = errno;
+                    break;
+                }
+                stagedDescriptors.descriptors.push_back(staged);
+                stagedStandardDescriptors[index] = staged;
+                if (staged == std::numeric_limits<int>::max()) {
+                    registers[0] = EMFILE;
+                    error = EMFILE;
+                    break;
+                }
+                privateFloor = staged + 1;
+            }
+            if (error != 0) break;
+            if (privateFloor > std::numeric_limits<int>::max() - 1) {
+                registers[0] = EMFILE;
+                break;
+            }
+            const auto environmentDescriptor = ::fcntl(
+                environmentPipe.readDescriptor, F_DUPFD_CLOEXEC, privateFloor);
+            if (environmentDescriptor < 0) {
+                registers[0] = errno;
+                break;
+            }
+            stagedDescriptors.descriptors.push_back(environmentDescriptor);
+            if (environmentDescriptor == std::numeric_limits<int>::max()) {
+                registers[0] = EMFILE;
+                break;
+            }
+            const auto environmentSource = ::fcntl(
+                environmentPipe.readDescriptor, F_DUPFD_CLOEXEC, environmentDescriptor + 1);
+            if (environmentSource < 0) {
+                registers[0] = errno;
+                break;
+            }
+            stagedDescriptors.descriptors.push_back(environmentSource);
+            const auto runtimePath = state.runtimeExecutablePath.string();
+            std::vector<std::string> childArguments;
+            childArguments.reserve(5 + guestArguments.size());
+            childArguments.emplace_back("__spawn_launch");
+            childArguments.push_back(guestExecutable);
+            childArguments.push_back(std::to_string(guestArguments.size()));
+            childArguments.insert(childArguments.end(), guestArguments.begin(),
+                                  guestArguments.end());
             childArguments.push_back(std::to_string(environmentDescriptor));
             std::vector<char*> childArgv;
             childArgv.reserve(childArguments.size() + 2);
@@ -1429,21 +1659,20 @@ HostServiceResult dispatch_guest_host_service(
                 break;
             }
             spawnObjects.attributesInitialized = true;
-            for (const auto descriptor : {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO}) {
-                if (::fcntl(descriptor, F_GETFD) < 0) {
-                    if (errno == EBADF) continue;
-                    registers[0] = errno;
-                    error = errno;
-                    break;
-                }
+            for (std::size_t index = 0; index < stagedStandardDescriptors.size(); ++index) {
+                if (stagedStandardDescriptors[index] < 0) continue;
                 error = posix_spawn_file_actions_adddup2(
-                    &spawnObjects.actions, descriptor, descriptor);
+                    &spawnObjects.actions, stagedStandardDescriptors[index],
+                    static_cast<int>(index));
                 if (error != 0) break;
             }
             if (error == 0) {
                 error = posix_spawn_file_actions_adddup2(
-                    &spawnObjects.actions, environmentPipe.readDescriptor,
-                    environmentDescriptor);
+                    &spawnObjects.actions, environmentSource, environmentDescriptor);
+            }
+            if (error == 0) {
+                error = posix_spawn_file_actions_addclose(
+                    &spawnObjects.actions, environmentSource);
             }
             if (error == 0) {
                 error = posix_spawn_file_actions_addclose(
@@ -1474,6 +1703,8 @@ HostServiceResult dispatch_guest_host_service(
                 registers[0] = error;
                 break;
             }
+            for (const auto descriptor : stagedDescriptors.descriptors) (void)::close(descriptor);
+            stagedDescriptors.descriptors.clear();
             (void)::close(environmentPipe.readDescriptor);
             environmentPipe.readDescriptor = -1;
             error = write_spawn_environment(environmentPipe.writeDescriptor, guestEnvironment);
