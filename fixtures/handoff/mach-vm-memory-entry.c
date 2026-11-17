@@ -95,7 +95,7 @@ int main(void) {
         map == KERN_SUCCESS && before == 0x12345678U && denied == KERN_INVALID_RIGHT &&
         shared == 0x87654321U && source_release == KERN_SUCCESS &&
         after_source_release == shared && port_release == KERN_SUCCESS &&
-        after_port_release == shared && stale_map == 0x1000000a &&
+        after_port_release == shared && stale_map == MACH_SEND_INVALID_RIGHT &&
         alias_release == KERN_SUCCESS &&
         create2 == KERN_SUCCESS && make2 == KERN_SUCCESS && map2 == KERN_SUCCESS &&
         alias2_release == KERN_SUCCESS && source2_release == KERN_SUCCESS &&

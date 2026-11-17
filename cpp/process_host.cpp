@@ -2591,7 +2591,7 @@ HostServiceResult dispatch_guest_host_service(
             state.jitWriteProtected = registers[0] != 0;
             break;
         case 112:  // mach_vm_allocate / vm_allocate
-        case 114: {  // mach_vm_map (anonymous guest mapping only)
+        case 114: {  // mach_vm_map (anonymous or supported memory-entry guest mapping)
             constexpr std::uint32_t kernSuccess = 0;
             constexpr std::uint32_t kernNoSpace = 3;
             constexpr std::uint32_t kernInvalidAddress = 1;
