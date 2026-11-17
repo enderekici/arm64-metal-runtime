@@ -11,6 +11,8 @@ inline constexpr int kMemcpyChkFailureService = 184;
 inline constexpr int kMemsetChkFailureService = 198;
 inline constexpr int kJitWriteStateService = 244;
 inline constexpr int kDyldConformanceOnDiskService = 245;
+inline constexpr int kMachMakeMemoryEntryService = 251;
+inline constexpr int kMachPortDeallocateService = 252;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -160,6 +162,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mach_vm_deallocate", 113, true, true},
     {"_vm_deallocate", 113, true, true},
     {"_mach_vm_map", 114, true, true},
+    {"_mach_make_memory_entry_64", kMachMakeMemoryEntryService, true, true},
+    {"_mach_port_deallocate", kMachPortDeallocateService, true, true},
     {"_mach_vm_protect", 200, true, true},
     {"_mach_vm_read_overwrite", 197, true, true},
     {"_mach_vm_region", 199, true, true},

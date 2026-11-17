@@ -3573,6 +3573,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         bool sparseAddressSpace = false;
         std::vector<VmBackingLease> ownedBackings;
     };
+    struct GuestVmMemoryEntry {
+        std::uint64_t guestAddress;
+        std::uint64_t size;
+        std::uint32_t permission;
+        std::uint64_t backingOffset;
+        VmBackingLease backing;
+    };
+    std::map<std::uint32_t, GuestVmMemoryEntry> guestVmMemoryEntries;
     struct VmReservation {
         std::uint64_t begin;
         std::uint64_t end;
@@ -3961,6 +3969,88 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             std::numeric_limits<std::uint64_t>::max() - nanoseconds);
     };
     std::uint32_t nextGuestReceiveName = 0x80000003U;
+    const auto allocateGuestVmMemoryEntryName = [&]() -> std::uint32_t {
+        while (nextGuestReceiveName < std::numeric_limits<std::uint32_t>::max() - 4 &&
+               (guestReceiveRights.count(nextGuestReceiveName) != 0 ||
+                guestSendRightUrefs.count(nextGuestReceiveName) != 0 ||
+                guestVmMemoryEntries.count(nextGuestReceiveName) != 0)) {
+            nextGuestReceiveName += 4;
+        }
+        if (nextGuestReceiveName >= std::numeric_limits<std::uint32_t>::max() - 4) return 0;
+        const auto name = nextGuestReceiveName;
+        nextGuestReceiveName += 4;
+        guestSendRightUrefs.emplace(name, 0U);
+        return name;
+    };
+    const auto makeGuestVmMemoryEntry = [&](std::uint64_t guestAddress,
+                                            std::uint64_t& size,
+                                            std::uint32_t permission,
+                                            std::uint32_t parentEntry,
+                                            std::uint32_t& memoryEntry) {
+        constexpr std::uint32_t kernInvalidAddress = 1;
+        constexpr std::uint32_t kernProtectionFailure = 2;
+        constexpr std::uint32_t kernNoSpace = 3;
+        constexpr std::uint32_t kernInvalidArgument = 4;
+        constexpr std::uint32_t kernInvalidRight = 17;
+        const auto page = bootstrap.pageSize;
+        if (parentEntry != MACH_PORT_NULL) return kernInvalidRight;
+        if (permission != VM_PROT_READ) return kernProtectionFailure;
+        if (page == 0 || (page & (page - 1)) != 0 || size == 0 ||
+            size > std::numeric_limits<std::uint64_t>::max() - (page - 1) ||
+            guestAddress % page != 0) {
+            return kernInvalidArgument;
+        }
+        const auto entrySize = (size + page - 1) & ~(page - 1);
+        if (guestAddress > std::numeric_limits<std::uint64_t>::max() - entrySize) {
+            return kernInvalidAddress;
+        }
+        const auto guestEnd = guestAddress + entrySize;
+        const VmRegion* sourceRegion = nullptr;
+        const VmAllocation* sourceAllocation = nullptr;
+        for (const auto& [unused, allocation] : vmAllocations) {
+            (void)unused;
+            const auto region = std::find_if(allocation.regions.begin(), allocation.regions.end(),
+                [&](const VmRegion& candidate) {
+                    return guestAddress >= candidate.begin && guestEnd <= candidate.end;
+                });
+            if (region == allocation.regions.end()) continue;
+            sourceRegion = &*region;
+            sourceAllocation = &allocation;
+            break;
+        }
+        if (sourceRegion == nullptr || sourceAllocation == nullptr || !sourceRegion->readable ||
+            (sourceRegion->maximumProtection & VM_PROT_READ) == 0) {
+            return kernInvalidAddress;
+        }
+        const auto sourceBacking = sourceRegion->backing +
+            static_cast<std::size_t>(guestAddress - sourceRegion->begin);
+        const auto lease = std::find_if(sourceAllocation->ownedBackings.begin(),
+            sourceAllocation->ownedBackings.end(), [&](const VmBackingLease& candidate) {
+                if (candidate.backing < 0 || sourceBacking <
+                        static_cast<std::size_t>(candidate.backing)) return false;
+                const auto relative = sourceBacking - static_cast<std::size_t>(candidate.backing);
+                return relative <= candidate.size && entrySize <= candidate.size - relative;
+            });
+        if (lease == sourceAllocation->ownedBackings.end()) return kernInvalidAddress;
+        const auto name = allocateGuestVmMemoryEntryName();
+        if (name == 0) return kernNoSpace;
+        try {
+            const auto [unused, inserted] = guestVmMemoryEntries.emplace(name,
+                GuestVmMemoryEntry{guestAddress, entrySize, permission,
+                    sourceBacking - static_cast<std::size_t>(lease->backing), *lease});
+            (void)unused;
+            if (!inserted) {
+                guestSendRightUrefs.erase(name);
+                return kernNoSpace;
+            }
+        } catch (...) {
+            guestSendRightUrefs.erase(name);
+            return kernNoSpace;
+        }
+        size = entrySize;
+        memoryEntry = name;
+        return static_cast<std::uint32_t>(KERN_SUCCESS);
+    };
     std::optional<std::uint32_t> guestTaskNamePort;
     const auto getGuestTaskNamePort = [&]() -> std::optional<std::uint32_t> {
         if (guestTaskNamePort.has_value()) return guestTaskNamePort;
@@ -4125,6 +4215,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 guestPortGuards.erase(name);
             }
             if (send != guestSendRightUrefs.end()) guestSendRightUrefs.erase(send);
+            guestVmMemoryEntries.erase(name);
             guestDeadPortNames.erase(name);
             hostServiceState.guestBootstrapSendRights.erase(name);
             return KERN_SUCCESS;
@@ -6159,6 +6250,138 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         syncResidentTable();
         guestAddress = address;
         return kernSuccess;
+    };
+    hostServiceState.machVmMakeMemoryEntry = [&](std::uint64_t guestAddress,
+                                                  std::uint64_t& size,
+                                                  std::uint32_t permission,
+                                                  std::uint32_t parentEntry,
+                                                  std::uint32_t& memoryEntry) {
+        const auto result = makeGuestVmMemoryEntry(
+            guestAddress, size, permission, parentEntry, memoryEntry);
+        if (result == KERN_SUCCESS) guestSendRightUrefs[memoryEntry] = 1;
+        return result;
+    };
+    hostServiceState.machPortDeallocate = [&](std::uint32_t target, std::uint32_t name) {
+        constexpr std::uint32_t kernSuccess = 0;
+        constexpr std::uint32_t kernInvalidName = 15;
+        constexpr std::uint32_t kernInvalidRight = 17;
+        constexpr std::uint32_t kernInvalidCapability = 20;
+        constexpr std::uint32_t machSendInvalidDest = 0x10000003;
+        const auto taskRight = guestSendRightUrefs.find(target);
+        if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
+            taskRight->second == 0) return machSendInvalidDest;
+        if (name == 0 || name == std::numeric_limits<std::uint32_t>::max()) return kernSuccess;
+        const auto sendRight = guestSendRightUrefs.find(name);
+        if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
+            if (sendRight->second == maxGuestPortUrefs) return kernSuccess;
+            if (name == guestMachTaskPort && sendRight->second == 1) {
+                return kernInvalidCapability;
+            }
+            if (--sendRight->second == 0) {
+                const auto hostRight = hostServiceState.guestBootstrapSendRights.find(name);
+                if (hostRight != hostServiceState.guestBootstrapSendRights.end()) {
+                    (void)mach_port_deallocate(mach_task_self(), hostRight->second);
+                    hostServiceState.guestBootstrapSendRights.erase(hostRight);
+                }
+                guestVmMemoryEntries.erase(name);
+                guestSendRightUrefs.erase(sendRight);
+                guestDeadPortNames.erase(name);
+            }
+            return kernSuccess;
+        }
+        return guestReceiveRights.find(name) != guestReceiveRights.end()
+            ? kernInvalidRight : kernInvalidName;
+    };
+    hostServiceState.machVmMapEntry = [&](std::uint64_t& guestAddress,
+                                           std::uint64_t size,
+                                           std::uint64_t mask,
+                                           std::uint32_t flags,
+                                           std::uint32_t memoryEntryName,
+                                           std::uint64_t offset,
+                                           bool copy,
+                                           std::uint32_t currentProtection,
+                                           std::uint32_t maximumProtection,
+                                           std::uint32_t inheritance,
+                                           std::uint32_t tag) -> std::uint32_t {
+        constexpr std::uint32_t kernInvalidAddress = 1;
+        constexpr std::uint32_t kernInvalidRight = 17;
+        constexpr std::uint32_t kernNoSpace = 3;
+        constexpr std::uint32_t kernInvalidArgument = 4;
+        constexpr std::uint32_t kernNotSupported = 46;
+        constexpr std::uint32_t vmFlagsAnywhere = 1;
+        const auto entry = guestVmMemoryEntries.find(memoryEntryName);
+        if (entry == guestVmMemoryEntries.end()) return kernInvalidArgument;
+        if (copy) return kernNotSupported;
+        if ((maximumProtection & ~entry->second.permission) != 0) return kernInvalidRight;
+        if (flags != vmFlagsAnywhere || guestAddress != 0 || mask >= (1ULL << 62) ||
+            (mask & (mask + 1)) != 0 || size == 0 || offset % bootstrap.pageSize != 0 ||
+            size % bootstrap.pageSize != 0 || offset > entry->second.size ||
+            size > entry->second.size - offset || inheritance > 2U ||
+            (currentProtection & ~maximumProtection) != 0 || tag != 0) {
+            return kernInvalidArgument;
+        }
+        if ((currentProtection & ~7U) != 0 || (maximumProtection & ~7U) != 0) {
+            return kernInvalidArgument;
+        }
+        if (entry->second.backingOffset > entry->second.backing.size ||
+            offset > entry->second.backing.size - entry->second.backingOffset ||
+            size > entry->second.backing.size - entry->second.backingOffset - offset) {
+            return kernInvalidAddress;
+        }
+        const auto backingOffset = entry->second.backingOffset + offset;
+        if (backingOffset > std::numeric_limits<std::uint64_t>::max() -
+                                static_cast<std::uint64_t>(entry->second.backing.backing)) {
+            return kernInvalidAddress;
+        }
+        const auto backing = static_cast<std::size_t>(
+            static_cast<std::uint64_t>(entry->second.backing.backing) + backingOffset);
+        if (backing > memoryBuffer.size() || size > memoryBuffer.size() - backing ||
+            resident[0] >= residentCapacity) {
+            return kernNoSpace;
+        }
+        const auto page = bootstrap.pageSize;
+        const auto result = hostServiceState.machVmAllocate(
+            size, std::max(page, mask + 1), 0, maximumProtection, guestAddress, false,
+            inheritance, tag);
+        if (result != KERN_SUCCESS) return result;
+        const auto begin = guestAddress;
+        if (begin > std::numeric_limits<std::uint64_t>::max() - size) {
+            vmReservations.erase(begin);
+            return kernInvalidAddress;
+        }
+        const auto end = begin + size;
+        const VmRegion region{begin, end, backing,
+            (currentProtection & 1U) != 0, (currentProtection & 2U) != 0,
+            (currentProtection & 4U) != 0, maximumProtection, false,
+            inheritance, tag};
+        try {
+            auto stagedAllocations = vmAllocations;
+            const auto [unused, inserted] = stagedAllocations.emplace(begin,
+                VmAllocation{begin, end, backing, {region}, true, {entry->second.backing}});
+            (void)unused;
+            if (!inserted) throw std::runtime_error("Duplicate guest VM alias address");
+            auto stagedReservations = vmReservations;
+            const auto reservation = stagedReservations.find(begin);
+            if (reservation == stagedReservations.end() ||
+                reservation->second.end != end || reservation->second.currentProtection != 0) {
+                throw std::runtime_error("Missing guest VM alias reservation");
+            }
+            stagedReservations.erase(reservation);
+            auto stagedResident = resident;
+            appendVmRegionToResident(stagedResident, region);
+            auto stagedCodeRegions = prepareDynamicCodeRegions(begin, end, {region});
+            guestMemory.replace_mappings({}, {{region.begin, region.end, region.backing,
+                                               region.writable, region.readable}});
+            vmAllocations.swap(stagedAllocations);
+            vmReservations.swap(stagedReservations);
+            resident.swap(stagedResident);
+            commitDynamicCodeRegions(std::move(stagedCodeRegions));
+        } catch (...) {
+            vmReservations.erase(begin);
+            return kernNoSpace;
+        }
+        syncResidentTable();
+        return static_cast<std::uint32_t>(KERN_SUCCESS);
     };
     hostServiceState.machVmOverwrite = [&](std::uint64_t& guestAddress,
                                             std::uint64_t size,
@@ -13307,6 +13530,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             constexpr std::int32_t kernInvalidValue = 18;
                             std::int32_t replyCode = inRoutineRange ? kernNotSupported : migBadId;
                             std::vector<std::uint8_t> replyExtra;
+                            bool modelComplex = false;
+                            std::vector<std::uint32_t> modelRights;
                             bool modeled = false;
                             std::vector<std::uint8_t> requestBytes;
                             if (guestMemory.is_guest_readable(registers[0], sendSize)) {
@@ -13374,10 +13599,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 }
                                 modeled = true;
                             }
+
                             std::uint32_t modelSendResult = 0;
-                            bool modelComplex = false;
                             bool modelRaw = false;
-                            std::vector<std::uint32_t> modelRights;
                             if (!modeled) {
                                 mach_models::Request modelRequest;
                                 modelRequest.object = remote == guestMachTaskPort
@@ -14579,45 +14803,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-18))) {
-                constexpr std::uint64_t kernSuccess = 0;
-                constexpr std::uint64_t kernInvalidName = 15;
-                constexpr std::uint64_t kernInvalidRight = 17;
-                constexpr std::uint64_t kernInvalidCapability = 20;
-                constexpr std::uint64_t machSendInvalidDest = 0x10000003;
                 const auto target = static_cast<std::uint32_t>(registers[0]);
                 const auto name = static_cast<std::uint32_t>(registers[1]);
-                std::uint64_t result = kernSuccess;
-                const auto taskRight = guestSendRightUrefs.find(target);
-                if (target != guestMachTaskPort || taskRight == guestSendRightUrefs.end() ||
-                    taskRight->second == 0) {
-                    result = machSendInvalidDest;
-                } else if (name == 0 || name == std::numeric_limits<std::uint32_t>::max()) {
-                    result = kernSuccess;
-                } else {
-                    const auto sendRight = guestSendRightUrefs.find(name);
-                    if (sendRight != guestSendRightUrefs.end() && sendRight->second != 0) {
-                        if (sendRight->second == maxGuestPortUrefs) {
-                            // Saturated rights remain pegged until explicitly released by
-                            // a MACH_PORT_UREFS_MAX delta through -19.
-                        } else if (name == guestMachTaskPort && sendRight->second == 1) {
-                            result = kernInvalidCapability;
-                        } else if (--sendRight->second == 0) {
-                            const auto hostRight =
-                                hostServiceState.guestBootstrapSendRights.find(name);
-                            if (hostRight != hostServiceState.guestBootstrapSendRights.end()) {
-                                (void)mach_port_deallocate(mach_task_self(), hostRight->second);
-                                hostServiceState.guestBootstrapSendRights.erase(hostRight);
-                            }
-                            guestSendRightUrefs.erase(sendRight);
-                            guestDeadPortNames.erase(name);
-                        }
-                    } else if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
-                        result = kernInvalidRight;
-                    } else {
-                        result = kernInvalidName;
-                    }
-                }
-                registers[0] = result;
+                registers[0] = hostServiceState.machPortDeallocate
+                    ? hostServiceState.machPortDeallocate(target, name) : 4;
                 registers[34] = 0;
                 continue;
             }
@@ -14672,6 +14861,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                             if (guestReceiveRights.find(name) != guestReceiveRights.end()) {
                                 sendRight->second = 0;
                             } else {
+                                guestVmMemoryEntries.erase(name);
                                 guestSendRightUrefs.erase(sendRight);
                                 guestDeadPortNames.erase(name);
                             }

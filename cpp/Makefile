@@ -223,6 +223,7 @@ MEMSET_CHK_SIGINFO_NATIVE := $(BUILD_DIR)/memset-chk-siginfo-native
 MEMSET_CHK_DECODE_TEST := $(BUILD_DIR)/memset-chk-decode-test
 MACH_VM_OVERWRITE_NATIVE := $(BUILD_DIR)/mach-vm-map-overwrite-native
 MACH_VM_DEFERRED_RECLAMATION_NATIVE := $(BUILD_DIR)/mach-vm-deferred-reclamation-native
+MACH_VM_MEMORY_ENTRY_NATIVE := $(BUILD_DIR)/mach-vm-memory-entry-native
 GUEST_HEAP_ALLOCATE_AT_TEST := $(BUILD_DIR)/guest-heap-allocate-at-test
 CACHE_BACKING_LEASES_TEST := $(BUILD_DIR)/cache-backing-leases-test
 VM_BACKING_LEASE_TEST := $(BUILD_DIR)/vm-backing-lease-test
@@ -1320,6 +1321,14 @@ $(BUILD_DIR)/mach-vm-region-native: ../fixtures/handoff/mach-vm-region.c
 $(MACH_VM_DEFERRED_RECLAMATION_NATIVE): ../fixtures/handoff/mach-vm-deferred-reclamation.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+$(MACH_VM_MEMORY_ENTRY_NATIVE): ../fixtures/handoff/mach-vm-memory-entry.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-mach-vm-memory-entry-native
+verify-mach-vm-memory-entry-native: $(MACH_VM_MEMORY_ENTRY_NATIVE)
+	"$(MACH_VM_MEMORY_ENTRY_NATIVE)"
 $(GUEST_HEAP_ALLOCATE_AT_TEST): ../fixtures/handoff/guest-heap-allocate-at.cpp guest_state.cpp guest_state.hpp
 	@mkdir -p "$(BUILD_DIR)"
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG "$<" guest_state.cpp -o "$@"

@@ -259,6 +259,17 @@ struct HostServiceState {
                                 std::uint32_t maximumProtection,
                                 std::uint64_t& guestAddress, bool jitMapping,
                                 std::uint32_t inheritance, std::uint32_t tag)> machVmAllocate;
+    std::function<std::uint32_t(std::uint64_t& guestAddress, std::uint64_t size,
+                                std::uint64_t mask, std::uint32_t flags,
+                                std::uint32_t memoryEntry, std::uint64_t offset,
+                                bool copy, std::uint32_t currentProtection,
+                                std::uint32_t maximumProtection,
+                                std::uint32_t inheritance, std::uint32_t tag)>
+        machVmMapEntry;
+    std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t& size,
+                                std::uint32_t permission, std::uint32_t parentEntry,
+                                std::uint32_t& memoryEntry)> machVmMakeMemoryEntry;
+    std::function<std::uint32_t(std::uint32_t task, std::uint32_t name)> machPortDeallocate;
     std::function<std::uint32_t(std::uint64_t guestAddress, std::uint64_t size,
                                 std::uint32_t currentProtection,
                                 std::uint32_t maximumProtection,
