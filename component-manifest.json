@@ -326,6 +326,21 @@
       "polarity": "positive-with-invalid-source-and-writable-map-controls",
       "negative_control": "Checks invalid source rejection, shared read-only alias updates, denied writable map, source/port release behavior, stale entry rejection, and remap after alias release.",
       "evidence_level": "native-and-guest stdout/stderr/status exact match"
+    },
+    {
+      "id": "posix-spawn-cooperative-wait",
+      "test_target": "posix-spawn-cooperative-wait; native and guest cooperative child wait/reap lifecycle",
+      "domain": "POSIX process spawn and waitpid synchronization",
+      "fixture": "fixtures/handoff/posix-spawn-cooperative-wait.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-Wall", "-Wextra", "-Werror", "-O2", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 45,
+      "expected_status": 0,
+      "polarity": "positive-cooperative-wait-and-single-reap",
+      "negative_control": "A sibling releases a waiting child; fixture asserts WNOHANG zero before release, exactly one waiter reaps exit 23, the other receives ECHILD, and emits cooperative-wait released=1 nohang_zero=1 waited_matches=1 single_reap=1 exited23=1.",
+      "evidence_level": "native-and-guest exact stdout/stderr/status parity against the literal cooperative-wait result"
     }
   ]
 }
