@@ -255,7 +255,11 @@ verify-workloop-delivery:
 	  cat "$$out/guest.stdout"; cat "$$out/guest.stderr"; \
 	  test "$$rc" = 0; \
 	  test "$$(cat "$$out/guest.stdout")" = 'workloop delivery and owner return ok'; \
-	  printf 'Dynamic workloop worker delivery and return observed (status 0)\n'
+	  printf 'Dynamic workloop worker delivery and return observed (status 0)\n'; \
+	  /usr/bin/timeout "$(WORKLOOP_TIMEOUT)" "$(WORKLOOP_RUNTIME)" launch \
+	    "$$out/workloop-delivery" --poll-timer >"$$out/poll.stdout" 2>"$$out/poll.stderr"; \
+	  test "$$(cat "$$out/poll.stdout")" = 'workq-timer delivered'; \
+	  printf 'Workqueue timer delivered while the guest remained runnable (status 0)\n'
 
 .PHONY: verify-workloop-missing-trampoline
 verify-workloop-missing-trampoline:

@@ -10,6 +10,9 @@
 #define EV_DELETE 0x0002
 #define EV_ENABLE 0x0004
 #define EV_CLEAR 0x0020
+#define EV_ONESHOT 0x0010
+#define EVFILT_TIMER (-7)
+#define WQOPS_THREAD_KEVENT_RETURN 0x040
 #define NOTE_WL_THREAD_REQUEST 0x001
 #define WQOPS_THREAD_WORKLOOP_RETURN 0x100
 #define WQ_FLAG_THREAD_PRIO_QOS 0x00004000U
@@ -66,6 +69,13 @@ static struct trap_result darwin_syscall(uint64_t number, uint64_t a0, uint64_t 
 
 __attribute__((noinline)) static void worker_start(void *self, uint32_t port,
     void *stack_low, void *list, uint32_t flags, int count) {
+  if (!(flags & WQ_FLAG_THREAD_WORKLOOP)) {
+    const struct event_qos *timer = list;
+    if (timer && count == 1 && timer->filter == EVFILT_TIMER && timer->ident == 17 &&
+        timer->data >= 1) atomic_fetch_add_explicit(&deliveries, 1, memory_order_release);
+    (void)darwin_syscall(368, WQOPS_THREAD_KEVENT_RETURN, 0, 0, 0, 0, 0, 0, 0);
+    __builtin_trap();
+  }
   unsigned bits = self != NULL && port != 0 && (uintptr_t)stack_low < (uintptr_t)self;
   if (list != NULL && count == 1) {
     const struct event_qos *event = (const struct event_qos *)list;
@@ -95,7 +105,24 @@ __attribute__((noinline)) static void worker_start(void *self, uint32_t port,
   __builtin_trap();
 }
 
-int main(void) {
+static int timer_while_runnable(void) {
+  struct event_qos timer = {.ident = 17, .filter = EVFILT_TIMER, .flags = EV_ADD | EV_ONESHOT,
+                            .qos = (int32_t)0x800008ffU, .data = 5};
+  struct trap_result result = darwin_syscall(374, -1, (uintptr_t)&timer, 1, 0, 0, 0, 0, 0x21);
+  if (result.carry || result.value) return 14;
+  // A running thread must receive the asynchronous upcall without yielding or entering the kernel.
+  for (unsigned retry = 0; retry < 1000000; ++retry) {
+    if (atomic_load_explicit(&deliveries, memory_order_acquire)) {
+      const char marker[] = "workq-timer delivered\n";
+      return write(1, marker, sizeof(marker) - 1) == sizeof(marker) - 1 ? 0 : 16;
+    }
+  }
+  return 15;
+}
+
+int main(int argc, char **argv) {
+  const int timer_mode = argc == 2 && strcmp(argv[1], "--poll-timer") == 0;
+  if (argc != 1 && !timer_mode) return 64;
   struct registration_data registration_data = {
     sizeof(registration_data), 160, 0, 224, 40, 24, 0, 0, 392, 960,
   };
@@ -111,6 +138,7 @@ int main(void) {
   if (result.carry) return 12;
   result = darwin_syscall(367, 0, 0, 0, 0, 0, 0, 0, 0);
   if (result.carry) return 13;
+  if (timer_mode) return timer_while_runnable();
 
   struct event_qos change;
   memset(&change, 0, sizeof(change));

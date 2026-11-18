@@ -129,6 +129,7 @@
     };
     const auto pollWorkqKevents = [&]() {
         if (guestWorkqHostKq < 0 || !guestWorkqueueDispatchConfig) return;
+        nextWorkqPollNanoseconds = monotonicNanoseconds() + 1'000'000ULL;
         if (guestWorkqKeventWorker != 0) {
             if (guestScheduler.find(guestWorkqKeventWorker) != nullptr) return;
             guestWorkqKeventWorker = 0;
@@ -181,8 +182,8 @@
         auto deadline = previousEarliestMachTimer ? previousEarliestMachTimer()
                                                   : std::nullopt;
         if (guestWorkqHostKq >= 0 && guestWorkqueueDispatchConfig) {
-            const auto poll = monotonicNanoseconds() + 1'000'000ULL;
-            if (!deadline || poll < *deadline) deadline = poll;
+            if (!deadline || nextWorkqPollNanoseconds < *deadline)
+                deadline = nextWorkqPollNanoseconds;
         }
         return deadline;
     };

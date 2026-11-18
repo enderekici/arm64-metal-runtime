@@ -3524,6 +3524,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
     std::function<bool(std::uint64_t)> beginThreadTsdCleanup;
     int guestWorkqHostKq = -1;
+    std::uint64_t nextWorkqPollNanoseconds = 0;
     std::map<std::pair<std::int16_t, std::uint64_t>, std::uint32_t> guestWorkqKeventQos;
     std::uint64_t guestWorkqKeventWorker = 0;
     std::function<bool(const std::vector<std::uint8_t>&, int, std::uint64_t,
