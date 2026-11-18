@@ -159,7 +159,7 @@ Unmodified `/usr/bin/bzip2 -dc` matches native on 64-byte and 37,000-byte
 named inputs and on the small stdin case. The metadata probe verifies the
 copied extended attribute. `make verify-cache` repeats both system decoders.
 Run `make verify-apps APP_VERIFY_CASES=cli-tools APP_VERIFY_RUNTIME=/path/to/arm64-metal`
-for native/Metal comparisons of 16 unchanged tools, including matched and missing
+for native/Metal comparisons of 17 unchanged tools, including matched and missing
 paths, same-length binary differences, sorting, filtering, and field selection.
 The gate uses the packaged AOT interpreter and the C locale, plus en_US.UTF-8
 for paste column alignment and malformed input. Commands using
@@ -167,9 +167,11 @@ shared-cache libc run its ARM64 code with demand paging and startup initializers
 disabled. The cache-off `cmp` tests use modeled read-only `fdopen` on guest-owned
 descriptors and libc-owned input buffering. The sort test uses the existing
 locale conversion service, and reverse tail maps regular stdin read-only.
-The gate also checks the missing-input diagnostic from `diff -u` and the renamed
-`strlcat` cache export. Unified comparison of two regular files reaches guest
-libc's `flockfile`, which expects a guest-addressable FILE structure.
+The gate checks the renamed `strlcat` cache export and compares file positioning
+through `fseek`, `fseeko`, `ftell` and `ftello` on modeled streams, including
+signed 64-bit offsets and pipe errors. Unchanged `diff -u` matches native for
+equal files, a multi-line difference with timestamped path headers, and a
+missing input, with exit statuses 0, 1 and 2 respectively.
 The Azul JDK 25.0.3 `java -version` launch resolves local `libjli` but stops
 at `_strdup`.
 See `LEDGER.md` for exact probe boundaries and remaining work.

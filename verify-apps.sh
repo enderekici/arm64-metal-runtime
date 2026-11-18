@@ -205,6 +205,9 @@ PLIST
                 xcrun clang -arch arm64 -Wall -Wextra -Werror fixtures/handoff/fdopen-lifecycle.c \
                     -o "$probe_dir/fdopen-lifecycle"
                 compare fdopen-lifecycle 0 "$probe_dir/fdopen-lifecycle" "$run_input"
+                xcrun clang -arch arm64 -Wall -Wextra -Werror fixtures/handoff/stdio-seek.c \
+                    -o "$probe_dir/stdio-seek"
+                compare stdio-seek 0 "$probe_dir/stdio-seek" "$run_input"
                 compare head-default 0 /usr/bin/head
                 compare head-absent 1 /usr/bin/head "$probe_dir/missing"
                 compare basename-paths 0 /usr/bin/basename -a /one/two three/// /
@@ -225,7 +228,14 @@ PLIST
                 xcrun clang -arch arm64 -D_FORTIFY_SOURCE=0 -fno-builtin-strlcat -Wall -Werror \
                     fixtures/handoff/cache-strlcat.c -o "$probe_dir/cache-strlcat"
                 compare cache-strlcat 0 "$probe_dir/cache-strlcat"
-                compare diff-missing 2 /usr/bin/diff -u "$run_input" "$probe_dir/missing"
+                cp "$run_input" "$probe_dir/diff-equal"
+                printf 'amber\nbirch\ncedar\ndogwood\n' > "$probe_dir/diff-left"
+                printf 'amber\nbeech\ncedar\nelm\n' > "$probe_dir/diff-changed"
+                TZ=UTC touch -t 200001010000.00 "$run_input" "$probe_dir/diff-left"
+                TZ=UTC touch -t 200001020000.00 "$probe_dir/diff-equal" "$probe_dir/diff-changed"
+                TZ=UTC compare diff-equal 0 /usr/bin/diff -u "$run_input" "$probe_dir/diff-equal"
+                TZ=UTC compare diff-missing 2 /usr/bin/diff -u "$run_input" "$probe_dir/missing"
+                TZ=UTC compare diff-unified 1 /usr/bin/diff -u "$probe_dir/diff-left" "$probe_dir/diff-changed"
                 run_input=$probe_dir/delimited-rows
                 printf 'zeta:3\nalpha:1\nalpha:1\nbeta:2\n' > "$run_input"
                 compare head-limit 0 /usr/bin/head -n 2
@@ -250,7 +260,8 @@ PLIST
                     /usr/bin/tr /usr/bin/grep /usr/bin/sed /usr/bin/readlink /usr/bin/expand /usr/bin/paste \
                     /usr/bin/diff "$probe_dir/tool-input" "$probe_dir/cmp-input" "$probe_dir/different" "$probe_dir/dictionary" \
                     "$probe_dir/delimited-rows" "$probe_dir/tabs" "$probe_dir/utf-left" \
-                    "$probe_dir/utf-right" "$probe_dir/utf-invalid" > "$run_dir/cli-tools.sha256"
+                    "$probe_dir/utf-right" "$probe_dir/utf-invalid" "$probe_dir/diff-left" \
+                    "$probe_dir/diff-equal" "$probe_dir/diff-changed" > "$run_dir/cli-tools.sha256"
             )
             ;;
         compression)

@@ -3031,6 +3031,22 @@ HostServiceResult dispatch_guest_host_service(
             if (result < 0) set_errno(errno);
             break;
         }
+        case 274:  // fseek / fseeko
+        case 275: {  // ftell / ftello
+            auto* file = stream_file(registers[0]);
+            if (file == nullptr) {
+                set_errno(EBADF);
+                registers[0] = failure;
+                break;
+            }
+            const auto offset = static_cast<off_t>(static_cast<std::int64_t>(registers[1]));
+            const auto result = service == 274
+                ? ::fseeko(file, offset, static_cast<int>(registers[2]))
+                : ::ftello(file);
+            if (result < 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
         case 273: {  // getwc / fgetwc using the same guest FILE handles as fgetc
             auto* file = stream_file(registers[0]);
             if (file == nullptr) throw std::runtime_error("Guest getwc stream unsupported");
