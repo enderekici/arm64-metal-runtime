@@ -77,16 +77,18 @@ void sme_smopa8(device ulong *state, uint tile, uint pn, uint pm,
     }
 }
 
-void sme_mova_za0h_s_w12(device ulong *state) {
-    uint slice = uint(state[12]) % 16u;
-    uint physical_row = 4u * slice;
-    ulong pred = state[1076u];
-    device ulong *za = state + 1092u + physical_row * 8u;
+void sme_mova_s(device ulong *state, uint zd, uint pred_reg, uint tile,
+                uint slice_reg, uint offset, bool vertical) {
+    uint slice = (uint(state[12u + slice_reg]) + offset) % 16u;
+    ulong pred = state[1076u + pred_reg];
     for (uint lane = 0; lane < 16u; ++lane) {
         if (((pred >> (lane * 4u)) & 1ul) == 0ul) continue;
-        uint value = uint(za[lane / 2u] >> ((lane & 1u) * 32u));
+        uint physical_row = vertical ? 4u * lane + tile : 4u * slice + tile;
+        uint column = vertical ? slice : lane;
+        device ulong *za = state + 1092u + physical_row * 8u;
+        uint value = uint(za[column / 2u] >> ((column & 1u) * 32u));
         for (uint byte = 0; byte < 4u; ++byte)
-            sme_set_z_byte(state, 0u, lane * 4u + byte,
+            sme_set_z_byte(state, zd, lane * 4u + byte,
                            uchar(value >> (byte * 8u)));
     }
 }
