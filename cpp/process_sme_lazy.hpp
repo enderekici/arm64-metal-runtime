@@ -14,7 +14,7 @@ inline std::optional<Instruction> decode_sme_lazy(uint32_t bits, int64_t pc,
   const auto next = pc + 4;
   const auto signExtend = [](uint32_t value, unsigned width) -> int64_t {
     const auto sign = uint32_t{1} << (width - 1);
-    return static_cast<int64_t>((value ^ sign) - sign);
+    return static_cast<int64_t>(value ^ sign) - static_cast<int64_t>(sign);
   };
   const auto emit = [&](std::vector<std::string> code) {
     return std::optional<Instruction>(Instruction{std::move(code), {next}});
@@ -38,16 +38,20 @@ inline std::optional<Instruction> decode_sme_lazy(uint32_t bits, int64_t pc,
     const auto status = load ? guestReadAlignmentFaultStatus
                              : guestWriteAlignmentFaultStatus;
     const auto access = load ? "false" : "true";
+    const std::string spAlignment = rn == 31
+        ? "if ((x[31] & 15ul) != 0ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); x[" +
+              std::to_string(guestFaultAddress) + "] = x[31]; x[33] = " +
+              std::to_string(pc) + "ul; x[34] = " +
+              std::to_string(status) + "; return; } "
+        : "";
     const std::string code =
         "{ if ((x[" + std::to_string(guestSMESVCR) + "] & 2ul) == 0ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); x[33] = " + std::to_string(pc) +
         "ul; x[34] = 14; return; } "
         "ulong address = " + address + "; "
-        "if ((address & 15ul) != 0ul) { x[" + std::to_string(guestFaultAddress) + "] = address; x[33] = " +
-        std::to_string(pc) + "ul; x[34] = " + std::to_string(status) +
-        "; return; } "
+        + spAlignment +
         "ulong offset = guest_offset(address, x[" + std::to_string(guestSMESVLBytes) + "], size, writable, " +
         access + ", x, resident, config); "
-        "if (offset == ~0ul) { x[" + std::to_string(guestFaultAddress) + "] = address; x[33] = " +
+        "if (offset == ~0ul) { x[" + std::to_string(guestFaultAddress) + "] = address; x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); x[33] = " +
         std::to_string(pc) + "ul; x[34] = 2; return; } "
         "uint vector = (uint(x[" + std::to_string(wv) + "]) + " +
         std::to_string(imm) + "u) % uint(x[" + std::to_string(guestSMESVLBytes) + "]); "
@@ -70,7 +74,7 @@ inline std::optional<Instruction> decode_sme_lazy(uint32_t bits, int64_t pc,
   // ADDSVL Xd|SP, Xn|SP, #imm and RDSVL Xd, #imm.
   if ((bits & 0xffe0f800u) == 0x04205800u) {
     const auto rd = bits & 31u;
-    const auto rn = (bits >> 5) & 31u;
+    const auto rn = (bits >> 16) & 31u;
     const auto imm = signExtend((bits >> 5) & 63u, 6);
     const std::string rhs = reg(rn, true) + " + (" + std::to_string(imm) +
                             "l * x[" + std::to_string(guestSMESVLBytes) + "])";
