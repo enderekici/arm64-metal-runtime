@@ -1331,6 +1331,8 @@ Instruction make_operation_instruction(Operation operation,
           "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }");
       code.push_back("x[30] = " + std::to_string(guest_pc + 4) + "ul;");
     }
+    code.push_back(
+        "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
     code.push_back("if (x[33] == 0ul || x[33] >= " +
                    std::to_string(guest_code_limit) +
                    "ul || (x[33] & 3ul) != 0ul) { x[874] = x[33]; x[33] = " +

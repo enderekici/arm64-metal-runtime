@@ -158,6 +158,7 @@ INTERPRETER_BL_NATIVE := $(BUILD_DIR)/interpreter-bl-nested-native
 INTERPRETER_BL_UNPLANNED_MAIN := $(BUILD_DIR)/interpreter-bl-unplanned-main
 INTERPRETER_BL_UNPLANNED_NATIVE := $(BUILD_DIR)/interpreter-bl-unplanned-native
 INTERPRETER_BRANCH_REGISTER_MAIN := $(BUILD_DIR)/interpreter-branch-register-main
+INTERPRETER_BRANCH_REGISTER_NZCV_MAIN := $(BUILD_DIR)/interpreter-branch-register-nzcv-main
 INTERPRETER_BRANCH_REGISTER_NATIVE := $(BUILD_DIR)/interpreter-branch-register-native
 INTERPRETER_BRANCH_REGISTER_IMPORT_MAIN := $(BUILD_DIR)/interpreter-branch-register-import-main
 INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE := $(BUILD_DIR)/interpreter-branch-register-import-native
@@ -1215,6 +1216,28 @@ $(INTERPRETER_BRANCH_REGISTER_NATIVE): ../fixtures/interpreter/branch-register-m
 $(INTERPRETER_BRANCH_REGISTER_MAIN): ../fixtures/interpreter/branch-register-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main -x assembler-with-cpp "$<" -lSystem -o "$@"
+
+$(INTERPRETER_BRANCH_REGISTER_NZCV_MAIN): ../fixtures/interpreter/branch-register-nzcv-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+.PHONY: verify-interpreter-branch-register-nzcv
+verify-interpreter-branch-register-nzcv: $(APP) $(INTERPRETER_BRANCH_REGISTER_NZCV_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/branch-register-nzcv.XXXXXX"); \
+	set +e; \
+	"$(INTERPRETER_BRANCH_REGISTER_NZCV_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+	"$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_NZCV_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 \
+		"$(APP)" launch "$(INTERPRETER_BRANCH_REGISTER_NZCV_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+	set -e; \
+	test "$$native_rc" -eq 42 && test "$$translated_rc" -eq "$$native_rc" && \
+		test "$$interpreter_rc" -eq "$$native_rc" && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
+	echo "BLR NZCV handoff native/translated/AOT passed; receipts=$$run_dir"
 
 $(INTERPRETER_BRANCH_REGISTER_IMPORT_NATIVE): ../fixtures/interpreter/branch-register-import-main.s ../fixtures/interpreter/branch-register-import-native-main.c
 	@mkdir -p "$(BUILD_DIR)"
