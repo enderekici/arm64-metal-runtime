@@ -88,10 +88,14 @@ inline std::optional<Instruction> lower_sme_instruction(std::uint32_t bits,
                         (is_signed ? "true" : "false") + ");", true);
   }
 
-  // PTRUE Pn.S, all lanes, the form emitted by the original ACLE probe.
-  if ((bits & 0xfffffff0U) == 0x2598e3e0U) {
-    return one(pc, "sme_ptrue_s(x, " + std::to_string(bits & 15U) + "u);",
-               false);
+  // PTRUE Pn.<T>, supporting the architectural predicate-count patterns.
+  constexpr std::uint32_t ptrue_mask = 0xff3ffc10U;
+  constexpr std::uint32_t ptrue_base = 0x2598e3e0U & ptrue_mask;
+  if ((bits & ptrue_mask) == ptrue_base) {
+    const auto element_bytes = 1U << ((bits >> 22) & 3U);
+    return one(pc, "sme_ptrue(x, " + std::to_string(bits & 15U) + "u, " +
+                   std::to_string((bits >> 5) & 31U) + "u, " +
+                   std::to_string(element_bytes) + "u);", false);
   }
 
   // MOV Zb,#imm8 and the MOV Zs,#0 canonical zeroing form.
@@ -122,18 +126,23 @@ inline std::optional<Instruction> lower_sme_instruction(std::uint32_t bits,
                         (vertical ? "true" : "false") + ");", true);
   }
 
-  // STR/LDR Zt,[Xn], no vector-length-scaled offset.
+  // STR/LDR Zt,[Xn, #imm, MUL VL] with signed vector-length offsets.
   if (auto lowered = sme_ops_detail::memory(bits, pc, cached, false))
     return lowered;
   if (auto lowered = sme_ops_detail::memory(bits, pc, cached, true))
     return lowered;
 
-  // CNTW Xd, the all-lanes, multiplier-one form.
-  if ((bits & 0xfff0fc00U) == 0x04a0e000U) {
+  // CNTB/H/W/D Xd with the architectural predicate-count patterns.
+  if ((bits & 0xff20fc00U) == 0x0420e000U) {
     const auto rd = bits & 31U;
+    const auto element_bytes = 1U << ((bits >> 22) & 3U);
+    const auto pattern = (bits >> 5) & 31U;
+    const auto multiplier = ((bits >> 16) & 15U) + 1U;
+    const std::string value = "sme_decode_pred_count(uint(x[883]) / " +
+        std::to_string(element_bytes) + "u, " + std::to_string(pattern) +
+        "u) * " + std::to_string(multiplier) + "u";
     return one(pc, rd == 31U ? std::string{} :
-               "x[" + std::to_string(rd) + "] = x[883] / 4ul;",
-               false);
+               "x[" + std::to_string(rd) + "] = " + value + ";", false);
   }
   return std::nullopt;
 }

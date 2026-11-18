@@ -25,9 +25,26 @@ void sme_set_z_byte(device ulong *state, uint reg, uint byte_index, uchar value)
     *word = (*word & ~mask) | (ulong(value) << shift);
 }
 
-void sme_ptrue_s(device ulong *state, uint pred) {
+uint sme_decode_pred_count(uint vl_elements, uint pattern) {
+    if (pattern == 0u) {
+        uint count = 1u;
+        while ((count << 1u) <= vl_elements) count <<= 1u;
+        return count;
+    }
+    if (pattern <= 8u) return pattern;
+    if (pattern <= 13u) return 1u << (pattern - 5u);
+    if (pattern == 29u) return (vl_elements / 4u) * 4u;
+    if (pattern == 30u) return (vl_elements / 3u) * 3u;
+    if (pattern == 31u) return vl_elements;
+    return 0u;
+}
+
+void sme_ptrue(device ulong *state, uint pred, uint pattern, uint element_bytes) {
     ulong bits = 0ul;
-    for (uint lane = 0; lane < uint(state[883]); lane += 4u) bits |= 1ul << lane;
+    const uint lanes = uint(state[883]) / element_bytes;
+    const uint count = min(sme_decode_pred_count(lanes, pattern), lanes);
+    for (uint lane = 0u; lane < count; ++lane)
+        bits |= 1ul << (lane * element_bytes);
     state[1076u + pred] = bits;
 }
 

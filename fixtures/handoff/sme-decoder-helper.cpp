@@ -33,7 +33,14 @@ int main() {
   const auto ldr_z_offset = lower_sme_instruction(0x85804bffU, 0x3015);
   const auto cntw = lower_sme_instruction(0x04a0e3e8U, 0x3018);
   const auto cntw_zr = lower_sme_instruction(0x04a0e3ffU, 0x3019);
-  if (!ptrue || ptrue->code[1] != "sme_ptrue_s(x, 0u);" ||
+  const auto cntb_scaled = lower_sme_instruction(0x0421e3e8U, 0x301a);
+  const auto cntd_vl16 = lower_sme_instruction(0x04e2e128U, 0x301b);
+  const auto cnth_unknown = lower_sme_instruction(0x0461e1c8U, 0x301e);
+  const auto cntw_pow2 = lower_sme_instruction(0x04a0e008U, 0x301f);
+  const auto cntb_mul4 = lower_sme_instruction(0x0420e3a8U, 0x3020);
+  const auto ptrue_h_vl4 = lower_sme_instruction(0x2558e081U, 0x301c);
+  const auto ptrue_b_mul3 = lower_sme_instruction(0x2518e3c2U, 0x301d);
+  if (!ptrue || ptrue->code[1] != "sme_ptrue(x, 0u, 31u, 4u);" ||
       !mov_imm || mov_imm->code[1] != "sme_mov_imm_b(x, 0u, 9u);" ||
       !mov_zero || mov_zero->code[1] != "sme_mov_zero_s(x, 0u);" ||
       !mova || mova->code[1] != "sme_mova_s(x, 0u, 0u, 0u, 0u, 0u, false);" ||
@@ -53,7 +60,25 @@ int main() {
                     std::string::npos ||
       !ldr_z_offset ||
       ldr_z_offset->code[1].find("x[31] + (128ul)") == std::string::npos ||
-      !cntw || cntw->code[1] != "x[8] = x[883] / 4ul;") {
+      !cntw || cntw->code[1] !=
+          "x[8] = sme_decode_pred_count(uint(x[883]) / 4u, 31u) * 1u;" ||
+      !cntb_scaled || cntb_scaled->code[1].find(
+          "sme_decode_pred_count(uint(x[883]) / 1u, 31u) * 2u") ==
+          std::string::npos ||
+      !cntd_vl16 || cntd_vl16->code[1].find(
+          "sme_decode_pred_count(uint(x[883]) / 8u, 9u) * 3u") ==
+          std::string::npos ||
+      !cnth_unknown || cnth_unknown->code[1].find(
+          "sme_decode_pred_count(uint(x[883]) / 2u, 14u) * 2u") ==
+          std::string::npos ||
+      !cntw_pow2 || cntw_pow2->code[1].find(
+          "sme_decode_pred_count(uint(x[883]) / 4u, 0u) * 1u") ==
+          std::string::npos ||
+      !cntb_mul4 || cntb_mul4->code[1].find(
+          "sme_decode_pred_count(uint(x[883]) / 1u, 29u) * 1u") ==
+          std::string::npos ||
+      !ptrue_h_vl4 || ptrue_h_vl4->code[1] != "sme_ptrue(x, 1u, 4u, 2u);" ||
+      !ptrue_b_mul3 || ptrue_b_mul3->code[1] != "sme_ptrue(x, 2u, 30u, 1u);") {
     std::cerr << "original ACLE path instruction decoding mismatch\n";
     return 1;
   }
