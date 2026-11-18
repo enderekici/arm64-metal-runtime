@@ -365,6 +365,22 @@ verify-amfi-self-policy: $(BUILD_DIR)/amfi-self-policy $(APP) $(INTERPRETER_META
 		grep -qx 'arm64-metal: Unsupported guest MAC policy or call' "$$run_dir/$$mode.err"; \
 	done; echo "Guest self-policy denial and refusal controls passed in $$run_dir"
 
+$(BUILD_DIR)/bank-voucher-traps: ../fixtures/handoff/voucher-traps.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O2 -fno-builtin -fno-stack-protector "$<" -o "$@"
+
+.PHONY: verify-bank-voucher
+verify-bank-voucher: $(BUILD_DIR)/bank-voucher-traps $(APP) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/bank-voucher-verify.XXXXXX"); \
+	probe="$(abspath $(BUILD_DIR)/bank-voucher-traps)"; launcher="$(abspath $(APP))"; \
+	export ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))"; \
+	"$$probe" k >"$$run_dir/native"; \
+	"$$launcher" launch "$$probe" k >"$$run_dir/guest"; \
+	cmp "$$run_dir/native" "$$run_dir/guest"; \
+	"$$launcher" launch "$$probe" kg >"$$run_dir/guest-refusals"; \
+	cmp "$$run_dir/native" "$$run_dir/guest-refusals"; \
+	echo "Default bank voucher lifetime and IPC refusals passed in $$run_dir"
+
 $(OPEN_APPEND_NATIVE): ../fixtures/handoff/open-append.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"

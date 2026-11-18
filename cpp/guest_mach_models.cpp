@@ -5,6 +5,8 @@
 #include <mach/mach_host.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace arm64metal::mach_models {
@@ -21,6 +23,7 @@ constexpr std::uint32_t machSendInvalidDest = 0x10000003U;
 constexpr std::uint32_t machSendInvalidRight = 0x1000000aU;
 constexpr std::uint32_t kernMemoryError = 10U;
 constexpr std::uint32_t machMsgTypeMoveSend = 0x11U;
+constexpr std::uint32_t voucherCommandBankCreate = 610;
 constexpr std::uint32_t voucherKeyUserData = 7;
 constexpr std::uint32_t voucherCommandUserDataStore = 211;
 constexpr std::uint32_t machMsgTypeCopySend = 19;
@@ -97,6 +100,11 @@ bool GuestMachModels::is_voucher_port(std::uint32_t name) const {
     return voucher_for(name) != 0;
 }
 
+bool GuestMachModels::is_default_bank_voucher(std::uint32_t name) const {
+    return name != 0 && defaultBankVoucher_ != 0 && vouchers_[defaultBankVoucher_].name == name &&
+           env_.holdsSendRight(name);
+}
+
 std::size_t GuestMachModels::voucher_for(std::uint32_t name) const {
     if (name == 0) return 0;
     for (std::size_t index = 1; index < vouchers_.size(); ++index) {
@@ -109,8 +117,7 @@ std::size_t GuestMachModels::voucher_for(std::uint32_t name) const {
 }
 
 // Parses a raw recipe array the way the voucher attribute managers do for a
-// user-created voucher. Only the user-data manager stores content; the others
-// accept the no-op commands and reject the rest. Index 0 is the null voucher.
+// user-created voucher. Index 0 is the null voucher.
 std::int32_t GuestMachModels::create_voucher(const std::uint8_t* data, std::size_t size,
                                              std::size_t& index) {
     index = 0;
@@ -128,7 +135,18 @@ std::int32_t GuestMachModels::create_voucher(const std::uint8_t* data, std::size
         if (content > size - offset) return kernInvalidArgument;
         const std::uint8_t* bytes = data + offset;
         offset += content;
-        (void)previous;
+        if (key == MACH_VOUCHER_ATTR_KEY_BANK && command == voucherCommandBankCreate &&
+            size == recipeHeader && previous == 0 && content == 0) {
+            // XNU uses a persistent default-task value until IPC send preprocessing.
+            if (defaultBankVoucher_ == 0) {
+                vouchers_.emplace_back();
+                defaultBankVoucher_ = vouchers_.size() - 1;
+            }
+            index = defaultBankVoucher_;
+            return kernSuccess;
+        }
+        if (previous != 0 && defaultBankVoucher_ != 0 &&
+            voucher_for(previous) == defaultBankVoucher_) return kernNotSupported;
         if (key == voucherKeyUserData && command == voucherCommandUserDataStore) {
             candidate.userData[key].assign(bytes, bytes + content);
             continue;
@@ -223,8 +241,15 @@ TrapOutcome GuestMachModels::trap(std::int64_t number, std::uint64_t* regs) {
             return TrapOutcome::Handled;
         }
         const auto name = voucher_name(index);
+        if (index != 0 && name == 0) {
+            regs[0] = KERN_RESOURCE_SHORTAGE;
+            return TrapOutcome::Handled;
+        }
         if (name != 0) env_.acquire(name);
         std::memcpy(output, &name, sizeof(name));
+        if (is_default_bank_voucher(name) && std::getenv("ARM64_METAL_TRACE_VOUCHER") != nullptr) {
+            std::fprintf(stderr, "arm64-metal trace guest-default-bank-voucher name=0x%x\n", name);
+        }
         regs[0] = kernSuccess;
         return TrapOutcome::Handled;
     }
@@ -241,7 +266,12 @@ TrapOutcome GuestMachModels::trap(std::int64_t number, std::uint64_t* regs) {
         }
         std::uint32_t capacity = 0;
         std::memcpy(&capacity, sizeSource, sizeof(capacity));
-        const auto bytes = recipe(index, static_cast<std::uint32_t>(regs[1]));
+        const auto key = static_cast<std::uint32_t>(regs[1]);
+        if (index == defaultBankVoucher_ && key == MACH_VOUCHER_ATTR_KEY_BANK) {
+            regs[0] = kernNotSupported;
+            return TrapOutcome::Handled;
+        }
+        const auto bytes = recipe(index, key);
         if (bytes.size() > capacity) {
             regs[0] = static_cast<std::uint32_t>(kernNoSpace);
             return TrapOutcome::Handled;
@@ -311,6 +341,13 @@ bool GuestMachModels::handle_voucher(const Request& request, Reply& reply) {
     const auto index = voucher_for(request.remote);
     if (index == 0) return false;
     const auto key = word(request, 32);
+    // Bank extraction reports task identity. Keep unmodelled bank data unavailable.
+    if (index == defaultBankVoucher_ &&
+        (request.id == 5402 || (key == MACH_VOUCHER_ATTR_KEY_BANK &&
+         (request.id == 5400 || request.id == 5401 || request.id == 5403)))) {
+        reply.code = kernNotSupported;
+        return true;
+    }
     switch (request.id) {
     case 5400: {  // mach_voucher_extract_attr_content(key, capacity)
         const auto found = vouchers_[index].userData.find(key);
@@ -697,7 +734,12 @@ bool GuestMachModels::handle_host(const Request& request, Reply& reply) {
             reply.code = status;
             return true;
         }
-        port_reply(reply, voucher_name(index));
+        const auto name = voucher_name(index);
+        if (index != 0 && name == 0) {
+            reply.code = KERN_RESOURCE_SHORTAGE;
+        } else {
+            port_reply(reply, name);
+        }
         return true;
     }
     default:

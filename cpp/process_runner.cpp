@@ -12859,6 +12859,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == static_cast<std::uint64_t>(static_cast<std::int64_t>(-47))) {
                 const auto reply = static_cast<std::uint32_t>(registers[3] >> 32);
                 const auto messageId = static_cast<std::uint32_t>(registers[4] >> 32);
+                // A local default-bank handle has no IPC bank-accounting representation.
+                if ((registers[1] & MACH_SEND_MSG) != 0 &&
+                    machModels.is_default_bank_voucher(static_cast<std::uint32_t>(registers[4]))) {
+                    registers[0] = MACH_SEND_INVALID_VOUCHER;
+                    registers[34] = 0;
+                    continue;
+                }
                 if (messageId == 3405 &&
                     std::getenv("ARM64_METAL_TRACE_TASK_INFO") != nullptr) {
                     constexpr std::uint32_t requestSize = 40;

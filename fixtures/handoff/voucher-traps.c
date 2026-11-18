@@ -586,6 +586,68 @@ static void bootstrap_lookup(const char *name) {
   TRAP(19, task, reply, 1, (u64)(i32)-1);
 }
 
+// libdispatch creates one default bank-task voucher and holds its send right.
+static int bank_voucher_lifetime(int check_unsupported) {
+  u32 recipe[4] = {MACH_VOUCHER_ATTR_KEY_BANK, 610, 0, 0};
+  u32 first = 0, second = 0, type = 0;
+  const u32 created = (u32)TRAP(70, host, recipe, sizeof(recipe), &first);
+  if (created != KERN_SUCCESS || !first) {
+    ps("bank-create"); pk("kr", created); pk("nonnull", first != 0); nl(); flush();
+    return 2;
+  }
+  if (TRAP(70, host, recipe, sizeof(recipe), &second) != KERN_SUCCESS ||
+      second != first || TRAP(76, task, first, &type, 0) != KERN_SUCCESS ||
+      type != MACH_PORT_TYPE_SEND) return 3;
+  u32 mig_recipe[] = {0, 1, sizeof(recipe), MACH_VOUCHER_ATTR_KEY_BANK, 610, 0, 0};
+  if (rpc(host, 222, mig_recipe, 7) != KERN_SUCCESS || !(rep[0] >> 31) ||
+      rep[6] != 1 || rep[7] != first || TRAP(18, task, first, 0, 0) != KERN_SUCCESS)
+    return 8;
+  if (check_unsupported) {
+    u32 bytes[128] = {0xfeed}, size = sizeof(bytes);
+    if (TRAP(72, first, (1ull << 32) | MACH_VOUCHER_ATTR_KEY_BANK, bytes, &size) !=
+        KERN_NOT_SUPPORTED || bytes[0] != 0xfeed || size != sizeof(bytes)) return 9;
+    u32 a[] = {0, 1, MACH_VOUCHER_ATTR_KEY_BANK, sizeof(bytes)};
+    for (i32 id = 5400; id <= 5401; id++)
+      if (rpc(first, id, a, 4) || (i32)rep[8] != KERN_NOT_SUPPORTED) return 10;
+    u32 all[] = {0, 1, sizeof(bytes)};
+    u32 command[] = {0, 1, MACH_VOUCHER_ATTR_KEY_BANK, 1, 0, sizeof(bytes)};
+    if (rpc(first, 5402, all, 3) || (i32)rep[8] != KERN_NOT_SUPPORTED ||
+        rpc(first, 5403, command, 6) || (i32)rep[8] != KERN_NOT_SUPPORTED) return 10;
+    u32 composed[] = {MACH_VOUCHER_ATTR_KEY_BANK, 1, first, 0};
+    u32 other = 0;
+    if (TRAP(70, host, composed, sizeof(composed), &other) != KERN_NOT_SUPPORTED || other)
+      return 11;
+    u32 local = (u32)TRAP(26, 0, 0, 0, 0);
+    if (!local || TRAP(21, task, local, local, MACH_MSG_TYPE_MAKE_SEND)) return 12;
+    u32 destinations[] = {local, host};
+    for (u32 i = 0; i < 2; i++) {
+      u32 bits = MACH_MSGH_BITS_SET(MACH_MSG_TYPE_COPY_SEND, 0, MACH_MSG_TYPE_COPY_SEND, 0);
+      u32 msg[] = {bits, 24, destinations[i], 0, first, 222};
+      if ((u32)sys(-47, (u64)msg, OPT_SEND | (i ? OPT_KOBJ : 0x800000000ull),
+                   ((u64)24 << 32) | bits, destinations[i], ((u64)222 << 32) | first,
+                   0, 0, 0) != MACH_SEND_INVALID_VOUCHER) return 12;
+    }
+    u32 received[32];
+    if ((u32)sys(-47, (u64)received, OPT_RCV | OPT_TIMEOUT, 0, 0, 0,
+                 (u64)local << 32, sizeof(received), 0) != MACH_RCV_TIMED_OUT) return 13;
+    TRAP(19, task, local, 1, (u64)(i32)-1);
+  }
+  if (TRAP(18, task, first, 0, 0) != KERN_SUCCESS ||
+      TRAP(76, task, second, &type, 0) != KERN_SUCCESS || type != MACH_PORT_TYPE_SEND)
+    return 4;
+  if (TRAP(18, task, second, 0, 0) != KERN_SUCCESS ||
+      TRAP(76, task, second, &type, 0) != KERN_INVALID_NAME) return 5;
+  u32 third = 0;
+  if (TRAP(70, host, recipe, sizeof(recipe), &third) != KERN_SUCCESS ||
+      !third || TRAP(76, task, third, &type, 0) != KERN_SUCCESS ||
+      type != MACH_PORT_TYPE_SEND || TRAP(18, task, third, 0, 0) != KERN_SUCCESS) return 6;
+  recipe[1] = 999;
+  if (TRAP(70, host, recipe, sizeof(recipe), &third) != KERN_INVALID_ARGUMENT) return 7;
+  ps("bank-create=nonnull trap-and-rpc=same-send-right repeated=same-send-right first-release=live last-release=invalid "
+     "recreate=send-right unknown-command=rejected"); nl(); flush();
+  return 0;
+}
+
 // Mach traps with no kernel implementation raise SIGSYS; verified through the exit status of a
 // child process only natively, so here only the in-range numbers that return are checked.
 int main(int argc, char **argv) {
@@ -596,6 +658,7 @@ int main(int argc, char **argv) {
   const char *section = argc > 1 ? argv[1] : "traps";
   if (section[0] == 't' && section[1] == 'r') { voucher_traps(); vouchers(); }
   else if (section[0] == 't' && section[1] == 'h') thread_rpcs();
+  else if (section[0] == 'k') return bank_voucher_lifetime(section[1] == 'g');
   else if (section[0] == 'e') task_set_exception_rpcs();
   else if (section[0] == 't') task_rpcs();
   else if (section[0] == 'h') host_rpcs();

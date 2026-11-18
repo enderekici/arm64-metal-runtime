@@ -78,6 +78,8 @@ public:
 
     [[nodiscard]] bool is_voucher_port(std::uint32_t name) const;
 
+    [[nodiscard]] bool is_default_bank_voucher(std::uint32_t name) const;
+
     // Returns true when the request was modelled and `reply` is filled in.
     [[nodiscard]] bool handle(const Request& request, Reply& reply);
 
@@ -126,6 +128,7 @@ private:
     Environment env_;
     // Voucher index 0 is the null voucher.
     std::vector<Voucher> vouchers_ = std::vector<Voucher>(1);
+    std::size_t defaultBankVoucher_ = 0;
     std::map<std::uint64_t, std::size_t> threadVoucher_;
     std::map<std::uint64_t, ThreadPolicy> threadPolicy_;
     std::map<std::uint64_t, std::vector<std::uint8_t>> threadNames_;
