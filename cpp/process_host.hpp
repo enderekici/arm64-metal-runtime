@@ -40,6 +40,8 @@ inline constexpr std::uint64_t guestMappingBase = std::uint64_t{1} << 44U;
 inline constexpr std::uint64_t guestMappingLimit = std::uint64_t{1} << 45U;
 static_assert(guestMappingBase < guestMappingLimit);
 inline constexpr std::uint64_t guestInitialTokenCapacity = 4096;
+inline constexpr int guestQsortAdapterStatus = 17;
+inline constexpr int guestTokenTableFullStatus = 18;
 inline constexpr std::uint64_t guestMachTaskPort = 0x103;
 inline constexpr std::uint64_t guestMachHostPort = 0x104;
 inline constexpr std::uint64_t guestMachBootstrapPort = 0x105;

@@ -3,6 +3,20 @@
   "description": "Focused native-versus-Metal process ABI conformance. Passing entries prove only the named fixture and recorded configuration.",
   "cases": [
     {
+      "id": "pac-signing-table-growth",
+      "domain": "ARM64e pointer authentication",
+      "fixture": "fixtures/handoff/pac-signing-growth.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64e", "-march=armv8.3-a", "-O2", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
+      "required_launch_flags": {"ARM64_METAL_INTERPRETER": "1"},
+      "timeout_seconds": 90,
+      "expected_status": 0,
+      "expected_returncode": 0,
+      "expected_stdout_lines": 1,
+      "polarity": "positive",
+      "negative_control": "The fixture checks NZCV and authenticates the first and last of 4097 signatures. Its optional wrong-modifier argument exercises authentication rejection.",
+      "evidence_level": "Exact native and strict Metal stdout, stderr and exit status."
+    },
+    {
       "id": "raw-kevent-qos-two-events",
       "test_target": "component-manifest case; freestanding executable is compiled and run natively and through runtime launch",
       "domain": "Darwin event queue",

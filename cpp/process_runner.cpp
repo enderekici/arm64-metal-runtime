@@ -94,7 +94,6 @@ namespace {
 
 constexpr std::uint64_t kNoFault = std::numeric_limits<std::uint64_t>::max();
 constexpr std::uint64_t kQsortAdapterMarker = 0x51534f5254414249ULL;
-constexpr std::uint32_t kQsortAdapterStatus = 17;
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
@@ -305,7 +304,7 @@ void decode_reachable(const ExecutableImage& image,
                     "x[35] != " + std::to_string(kQsortAdapterMarker) +
                     "ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | "
                     "(uint(c) << 3); x[33] = " + std::to_string(pc) + "ul; x[34] = " +
-                    std::to_string(kQsortAdapterStatus) + "u; return; } x[35] = 0ul;");
+                    std::to_string(guestQsortAdapterStatus) + "u; return; } x[35] = 0ul;");
             } else {
                 instruction = decode_process(selectorWord ? *selectorWord : image.instruction(pc),
                                              pc, imports,
@@ -8279,6 +8278,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         options.forkResume->acknowledged = true;
     }
     std::uint64_t dispatchSequence = 0;
+    std::optional<std::uint64_t> signingRetryBudget;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;
     while (true) {
@@ -8304,7 +8304,8 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         registers[guestThreadPointer] = static_cast<std::uint64_t>(currentThread.tsdAddress);
         bootstrap.errnoSlot = static_cast<std::uint64_t>(currentThread.errnoAddress);
         syncWritableTable(bootstrap.errnoSlot);
-        registers[36] = options.dispatchBlocks;
+        registers[36] = signingRetryBudget.value_or(options.dispatchBlocks);
+        signingRetryBudget.reset();
         registers[guestJitWriteState] = guestScheduler.current().jitWriteProtect ? 0ULL : 0x200000ULL;
         registers[guestFaultAddress] = kNoFault;
         registers[guestCacheFaultAddress] = kNoFault;
@@ -8544,7 +8545,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             return exitStatus;
         }
         if (status == 1 || status == 8) continue;
-        if (status == kQsortAdapterStatus) {
+        if (status == guestQsortAdapterStatus) {
             const auto entry = registers[33];
             if (entry > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
                 qsortEntries.count(static_cast<std::int64_t>(entry)) == 0) {
@@ -11223,6 +11224,16 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 continue;
             }
             throw std::runtime_error("Guest authentication fault signal was not delivered");
+        }
+        if (status == guestTokenTableFullStatus) {
+            const auto retryPC = static_cast<std::int64_t>(registers[33]);
+            // The Metal kernel charged the interrupted block before executing
+            // it. Retry only the PAC instruction and its remaining block budget.
+            signingRetryBudget = registers[36] + 1;
+            ensureTokenCapacity(1, "guest pointer signing");
+            static_cast<std::uint64_t*>(stateBuffer.data())[34] = 0;
+            selectKernel(retryPC);
+            continue;
         }
         if (status == 9 || status == 10 || status == 12) {
             if (std::getenv("ARM64_METAL_TRACE_FATAL_SIGNAL") != nullptr) {

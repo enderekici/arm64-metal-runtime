@@ -509,7 +509,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto operation = authenticate ? (std::string("authenticate_guest_pointer"))
                                   : (std::string("sign_guest_pointer"));
     auto key = authIP ? field(6, 1) : field(10, 2);
-    auto failure = key >= 2 ? 9 : 12;
+    auto failure = authenticate ? (key >= 2 ? 9 : 12) : guestTokenTableFullStatus;
     auto result = authenticate ? (std::string("~0ul")) : (std::string("0ul"));
     auto modifier =
         authIP ? (std::string("x[16]"))
@@ -520,7 +520,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         (std::string("if (result == ") + str(result) + ") { x[" +
          str(guestFaultAddress) + "] = x[" + str(destination) + "]; x[" +
          str(guestCacheFaultAddress) + "] = " + str(modifier) + "; x[33] = " +
-         str(pc) + "ul; x[34] = " + str(failure) + "; return; }"),
+         str(pc) + "ul; x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); " +
+         "x[34] = " + str(failure) + "; return; }"),
         (std::string("x[") + str(destination) + "] = result; }"));
   }
   auto authZero = bits & 0xfffff81f;
