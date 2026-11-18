@@ -612,6 +612,18 @@ int main() {
              .find("x[31]") == std::string::npos);
   assert(!decode_operation(0x8bc20c20U).has_value());  // ROR is reserved.
   assert(!decode_operation(0x0b028020U).has_value());  // W shift amount 32.
+  assert(!decode_operation(0x4e82a420U).has_value());  // SMMLA is unsupported.
+  assert(!decode_operation(0x6e41fc20U).has_value());  // BFDOT is unsupported.
+  assert(!decode_operation(0x6e818420U).has_value());  // SQRDMLAH is unsupported.
+  const auto dotFull = decode_operation(0x4e829420U);
+  const auto dotIndexed = decode_operation(0x4f82e020U);
+  assert(dotFull.has_value() && dotFull->opcode == Opcode::VectorDot &&
+         dotIndexed.has_value() && dotIndexed->opcode == Opcode::VectorDot);
+  for (const std::uint32_t invalidSize : {0U, 1U, 3U}) {
+    const auto sizeBits = invalidSize << 22U;
+    assert(!decode_operation((0x4e829420U & ~(3U << 22U)) | sizeBits).has_value());
+    assert(!decode_operation((0x4f82e020U & ~(3U << 22U)) | sizeBits).has_value());
+  }
   const auto shiftedDiscard = decode_operation(0x8b02003fU);
   assert(shiftedDiscard.has_value() && shiftedDiscard->destination == 31);
   assert(make_operation_instruction(*shiftedDiscard, {0x1004},

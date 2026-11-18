@@ -475,18 +475,18 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::VectorReduceSum, field(bits, 0, 5),
                      field(bits, 5, 5), elementWidth, 0U, vectorWidth};
   }
-  const auto dotFull = bits & 0xbf20fc00U;
-  const auto dotIndexed = bits & 0xbf00e400U;
-  if ((dotFull == 0x0e009400U || dotFull == 0x2e009400U) &&
+  const auto dotFull = bits & 0xbfe0fc00U;
+  const auto dotIndexed = bits & 0xbfc0f400U;
+  if ((dotFull == 0x0e809400U || dotFull == 0x2e809400U) &&
       (bits & (1U << 30)) != 0U) {
-    const auto signedLanes = dotFull == 0x0e009400U ? 1U : 0U;
+    const auto signedLanes = dotFull == 0x0e809400U ? 1U : 0U;
     return Operation{Opcode::VectorDot, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5),
                      signedLanes, 128U};
   }
-  if ((dotIndexed == 0x0f00e000U || dotIndexed == 0x2f00e000U) &&
+  if ((dotIndexed == 0x0f80e000U || dotIndexed == 0x2f80e000U) &&
       (bits & (1U << 30)) != 0U) {
-    const auto signedLanes = dotIndexed == 0x0f00e000U ? 1U : 0U;
+    const auto signedLanes = dotIndexed == 0x0f80e000U ? 1U : 0U;
     const auto lane = field(bits, 21, 1) | (field(bits, 11, 1) << 1U);
     return Operation{Opcode::VectorDot, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5),
