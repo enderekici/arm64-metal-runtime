@@ -511,11 +511,11 @@ Result Interpreter::dispatch(const Backend& backend,
             hasMemoryAccess = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
-                operation[4] > 1 || (operation[5] != 32 && operation[5] != 64) ||
+                operation[4] > 3 || (operation[5] != 32 && operation[5] != 64) ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
                 throw std::invalid_argument(
-                    "Interpreter unsigned min/max packet metadata is invalid");
+                    "Interpreter load min/max packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorCompareEqualZero) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;

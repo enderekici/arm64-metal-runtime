@@ -153,8 +153,9 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // UDIV/SDIV use destination=Rd, source=Rn, immediate=Rm, shift=0 for UDIV
 // or 1 for SDIV, and width=32 or 64. Register 31 reads as zero and discards
 // writes.
-// LDUMIN/LDUMAX use destination=Rt, source=Rn, immediate=Rs, shift=0 for
-// LDUMIN or 1 for LDUMAX, and width=32 or 64. Register 31 reads as zero for
+// LDUMIN/LDUMAX/LDSMIN/LDSMAX use destination=Rt, source=Rn, immediate=Rs,
+// shift=0/1 for unsigned min/max or 2/3 for signed min/max, and width=32 or 64.
+// Register 31 reads as zero for
 // the source and discards the old-value result. Only unordered variants are
 // typed in this slice.
 // Scalar FP uses destination=Fd, source=Rn/Fn, immediate=FMOV imm8 or FCMP Rm,

@@ -86,6 +86,52 @@ _main:
     cmp w13, w9
     csel w15, w15, wzr, eq
 
+    mov w9, #0x80000000
+    str w9, [sp, #24]
+    add x14, sp, #24
+    mov w10, #0x7fffffff
+    ldsmax w10, w11, [x14]
+    mov w12, #0x80000000
+    cmp w11, w12
+    csel w15, w15, wzr, eq
+    ldr w13, [sp, #24]
+    cmp w13, w10
+    csel w15, w15, wzr, eq
+
+    mov w9, #0x7fffffff
+    str w9, [sp, #24]
+    mov w10, #0x80000000
+    ldsmin w10, w11, [x14]
+    mov w12, #0x7fffffff
+    cmp w11, w12
+    csel w15, w15, wzr, eq
+    ldr w13, [sp, #24]
+    cmp w13, w10
+    csel w15, w15, wzr, eq
+
+    mov x9, #0x8000000000000000
+    str x9, [sp, #8]
+    add x14, sp, #8
+    mov x10, #0x7fffffffffffffff
+    ldsmax x10, x11, [x14]
+    mov x12, #0x8000000000000000
+    cmp x11, x12
+    csel x15, x15, xzr, eq
+    ldr x13, [sp, #8]
+    cmp x13, x10
+    csel x15, x15, xzr, eq
+
+    mov x9, #0x7fffffffffffffff
+    str x9, [sp, #8]
+    mov x10, #0x8000000000000000
+    ldsmin x10, x11, [x14]
+    mov x12, #0x7fffffffffffffff
+    cmp x11, x12
+    csel x15, x15, xzr, eq
+    ldr x13, [sp, #8]
+    cmp x13, x10
+    csel x15, x15, xzr, eq
+
     add sp, sp, #32
     mov x0, x15
     ret

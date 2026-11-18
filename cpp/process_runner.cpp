@@ -740,7 +740,7 @@ ProcessKernelPlan plan_process_kernel(
             const bool validUnsignedMinMaxMemoryOperation =
                 !unsignedMinMaxMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
-                 operation.immediate <= 31 && operation.shift <= 1 &&
+                 operation.immediate <= 31 && operation.shift <= 3 &&
                  (operation.width == 32 || operation.width == 64));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||

@@ -980,7 +980,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const uint width = instruction.operation[5];
                 const uint bytes = width / 8u;
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
-                if (rt > 31u || rn > 31u || rs > 31u || isMax > 1u ||
+                if (rt > 31u || rn > 31u || rs > 31u || isMax > 3u ||
                     (width != 32u && width != 64u) ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
@@ -1009,9 +1009,17 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     : (rs == 31u ? 0ul : state[rs]);
                 const ulong oldWidthValue = width == 32u
                     ? ulong(uint(oldValue)) : oldValue;
-                const ulong newValue = isMax != 0u
-                    ? (oldWidthValue < sourceValue ? sourceValue : oldWidthValue)
-                    : (oldWidthValue < sourceValue ? oldWidthValue : sourceValue);
+                const bool signedCompare = isMax >= 2u;
+                const bool maximum = (isMax & 1u) != 0u;
+                const long oldSigned = width == 32u ? long(as_type<int>(uint(oldWidthValue)))
+                                                     : as_type<long>(oldWidthValue);
+                const long sourceSigned = width == 32u ? long(as_type<int>(uint(sourceValue)))
+                                                        : as_type<long>(sourceValue);
+                const bool oldLess = signedCompare ? oldSigned < sourceSigned
+                                                   : oldWidthValue < sourceValue;
+                const ulong newValue = maximum
+                    ? (oldLess ? sourceValue : oldWidthValue)
+                    : (oldLess ? oldWidthValue : sourceValue);
                 store_guest_word(memory + offset, newValue, bytes);
                 if (rt != 31u) state[rt] = oldWidthValue;
                 if (blockEnd) {

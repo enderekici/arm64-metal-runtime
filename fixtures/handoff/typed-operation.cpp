@@ -2042,6 +2042,16 @@ int main() {
          ldumaxX->width == 64U);
   assert(!decode_operation(0xb8a17040U));  // LDUMIN with acquire ordering.
   assert(!decode_operation(0xb8617040U));  // LDUMIN with release ordering.
+  const auto ldsmaxW = decode_operation(0xb8214040U);
+  assert(ldsmaxW && ldsmaxW->opcode == Opcode::LoadUnsignedMinMax &&
+         ldsmaxW->destination == 0U && ldsmaxW->source == 2U &&
+         ldsmaxW->immediate == 1U && ldsmaxW->shift == 3U &&
+         ldsmaxW->width == 32U);
+  const auto ldsminX = decode_operation(0xf82150a3U);
+  assert(ldsminX && ldsminX->opcode == Opcode::LoadUnsignedMinMax &&
+         ldsminX->destination == 3U && ldsminX->source == 5U &&
+         ldsminX->immediate == 1U && ldsminX->shift == 2U &&
+         ldsminX->width == 64U);
   const auto processLdumin = arm64metal::decode_process(
       0xb8217040U, 0x1000, {}, {}, false);
   std::string processLduminSource;
@@ -2063,6 +2073,12 @@ int main() {
          processLdumax.operation->opcode == Opcode::LoadUnsignedMinMax &&
          processLdumaxSource.find("old < x[4] ? x[4] : old") !=
              std::string::npos);
+  const auto processLdsmax = arm64metal::decode_process(
+      0xb8214040U, 0x1000, {}, {}, false);
+  std::string processLdsmaxSource;
+  for (const auto& line : processLdsmax.code) processLdsmaxSource += line;
+  assert(processLdsmax.operation && processLdsmax.operation->shift == 3U &&
+         processLdsmaxSource.find("int(old) >= int(x[1])") != std::string::npos);
   std::uint64_t atomicWord = 0xffffffffULL;
   assert(native_load_unsigned_minmax(&atomicWord, 0x80000000ULL, false, 32) ==
          0xffffffffULL);

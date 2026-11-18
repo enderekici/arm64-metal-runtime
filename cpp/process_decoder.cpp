@@ -1885,6 +1885,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                        {0x38201000, (std::string("& ~"))},
                        {0x38202000, (std::string("^"))},
                        {0x38203000, (std::string("|"))},
+                       {0x38204000, (std::string("smax"))},
+                       {0x38205000, (std::string("smin"))},
                        {0x38206000, (std::string("umax"))},
                        {0x38207000, (std::string("umin"))}}[bits & 0x3f20fc00];
   auto atomicSwap = (bits & 0x3f20fc00) == 0x38208000;
@@ -1960,6 +1962,17 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         operation = Strings{get,
                             store((std::string("old < ") + operand +
                                    " ? old : " + operand)),
+                            save(rd)};
+      } else if (atomicOperation.value == "smax" || atomicOperation.value == "smin") {
+        const auto signedType = width == 4 ? std::string("int") : std::string("long");
+        const auto signedOld = signedType + "(old)";
+        const auto signedOperand = signedType + "(" + str(source) + ")";
+        const auto chooseOld = atomicOperation.value == "smax"
+            ? signedOld + " >= " + signedOperand
+            : signedOld + " <= " + signedOperand;
+        operation = Strings{get,
+                            store((std::string("(") + chooseOld + ") ? old : " +
+                                   operand)),
                             save(rd)};
       } else {
         operation = Strings{get,

@@ -1021,7 +1021,7 @@ verify-interpreter-ldumin-ldumax: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INT
 		awk '/event=interpreter-block-ready/ { blocks++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { block=$$i; sub(/^detail=/,"",block) } } \
 		     /event=interpreter-dispatch/ { dispatches++; for (i=1; i<=NF; ++i) if ($$i ~ /^detail=/) { dispatch=$$i; sub(/^detail=/,"",dispatch) } } \
 		     /event=interpreter-packet/ { packets++; for (i=1; i<=NF; ++i) if ($$i == "detail=37") atomics++ } \
-		     END { exit !(blocks == 1 && dispatches == 1 && block > 0 && dispatch == block && packets == block && atomics == 7) }' \
+		     END { exit !(blocks == 1 && dispatches == 1 && block > 0 && dispatch == block && packets == block && atomics == 11) }' \
 			"$$run_dir/interpreter.err" && \
 		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
 	echo "LDUMIN/LDUMAX native/translated/AOT fixture passed; sha256=$$binary_sha receipts=$$run_dir"
