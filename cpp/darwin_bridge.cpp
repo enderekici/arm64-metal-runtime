@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/random.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
@@ -246,35 +247,36 @@ int guest_feature_enabled(const char* domain, const char* feature) {
     return _os_feature_enabled_impl(domain, feature) ? 1 : 0;
 }
 
-int guest_sandbox_check_path(const char* operation, const char* path, std::uint64_t* result) {
+namespace {
+int check_sandbox(std::int64_t pid, const char* operation, std::uint64_t filter,
+                  std::uintptr_t argument, std::uint64_t flags, std::uint64_t* result) {
     std::uint64_t reply[5] = {};
     struct Request {
         std::uint64_t* reply;
         std::int64_t pid;
         const char* operation;
         std::uint64_t filter;
-        const char* path;
+        std::uintptr_t argument;
         std::uint64_t flags;
-    } request{reply, getpid(), operation, 1, path, 0};
+    } request{reply, pid, operation, filter, argument, flags};
     if (__mac_syscall("Sandbox", 2, &request) == -1) return errno;
     *result = reply[0];
     return 0;
 }
+}  // namespace
+
+int guest_sandbox_check_persona(std::uint64_t* result) {
+    return check_sandbox(getpid(), "syscall-unix", sandboxSyscallNumberFilter, SYS_persona, 0, result);
+}
+
+int guest_sandbox_check_path(const char* operation, const char* path, std::uint64_t* result) {
+    return check_sandbox(getpid(), operation, 1, reinterpret_cast<std::uintptr_t>(path), 0, result);
+}
 
 int guest_sandbox_check_write_data_status(bool emptyArgument, std::uint64_t* result) {
-    std::uint64_t reply[5] = {};
-    struct Request {
-        std::uint64_t* reply;
-        std::int64_t pid;
-        const char* operation;
-        std::uint64_t filter;
-        const char* path;
-        std::uint64_t flags;
-    } request{reply, 1, "file-write-data", 240,
-              emptyArgument ? "" : nullptr, 0x20000005};
-    if (__mac_syscall("Sandbox", 2, &request) == -1) return errno;
-    *result = reply[0];
-    return 0;
+    return check_sandbox(1, "file-write-data", 240,
+                         reinterpret_cast<std::uintptr_t>(emptyArgument ? "" : nullptr),
+                         0x20000005, result);
 }
 
 }  // namespace arm64metal

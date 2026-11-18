@@ -321,6 +321,32 @@ $(OPEN_NOCANCEL_NATIVE): ../fixtures/handoff/open-nocancel.c \
 verify-open-nocancel-native: $(OPEN_NOCANCEL_NATIVE)
 	"$(OPEN_NOCANCEL_NATIVE)" "$(abspath ../fixtures/handoff/open-nocancel-input.txt)"
 
+$(BUILD_DIR)/sandbox-persona-query: ../fixtures/handoff/sandbox-persona-query.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -O2 -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-sandbox-persona
+verify-sandbox-persona: $(BUILD_DIR)/sandbox-persona-query $(APP) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/sandbox-persona-verify.XXXXXX"); \
+	probe="$(abspath $(BUILD_DIR)/sandbox-persona-query)"; launcher="$(abspath $(APP))"; \
+	export ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))"; \
+	export ARM64_METAL_DEV_CPU_FALLBACK=0; \
+	for mode in persona null-reply path; do \
+		"$$probe" "$$mode" >"$$run_dir/$$mode.native"; \
+		"$$launcher" launch "$$probe" "$$mode" >"$$run_dir/$$mode.guest"; \
+		cmp "$$run_dir/$$mode.native" "$$run_dir/$$mode.guest"; \
+	done; \
+	policy='(version 1)(allow default)(deny syscall-unix (syscall-number 494))'; \
+	/usr/bin/sandbox-exec -p "$$policy" "$$probe" >"$$run_dir/deny.native"; \
+	/usr/bin/sandbox-exec -p "$$policy" "$$launcher" launch "$$probe" >"$$run_dir/deny.guest"; \
+	cmp "$$run_dir/deny.native" "$$run_dir/deny.guest"; \
+	grep -qx 'decision=0' "$$run_dir/persona.native"; grep -qx 'decision=1' "$$run_dir/deny.native"; \
+	for mode in other-number other-operation other-subject other-flags; do \
+		status=0; "$$launcher" launch "$$probe" "$$mode" >"$$run_dir/$$mode.out" 2>"$$run_dir/$$mode.err" || status=$$?; \
+		test "$$status" -eq 1 && test ! -s "$$run_dir/$$mode.out" || exit 1; \
+		grep -Eq '^arm64-metal: Unsupported guest sandbox (status )?query shape$$' "$$run_dir/$$mode.err"; \
+	done; echo "Sandbox persona parity and refusal controls passed in $$run_dir"
+
 $(OPEN_APPEND_NATIVE): ../fixtures/handoff/open-append.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"

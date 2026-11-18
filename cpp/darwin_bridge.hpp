@@ -40,7 +40,9 @@ int guest_cached_pointer_lookup(std::uint64_t table, const std::uint64_t* keys,
 
 int guest_entropy(void* buffer, std::uint64_t size);
 int guest_feature_enabled(const char* domain, const char* feature);
+inline constexpr std::uint64_t sandboxSyscallNumberFilter = 65;
 // Returns 0 on success or the errno value from the host sandbox check.
+int guest_sandbox_check_persona(std::uint64_t* result);
 int guest_sandbox_check_path(const char* operation, const char* path,
                              std::uint64_t* result);
 int guest_sandbox_check_write_data_status(bool emptyArgument, std::uint64_t* result);

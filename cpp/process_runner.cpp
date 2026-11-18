@@ -12740,15 +12740,18 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto pid = static_cast<std::int64_t>(fields[1]);
                 const auto operationAddress = fields[2];
                 const auto filter = fields[3];
-                const auto pathAddress = fields[4];
+                const auto filterArgument = fields[4];
                 const auto flags = fields[5];
                 const auto pidIsHostSelf = pid == static_cast<std::int64_t>(::getpid());
                 const bool pathQuery = pidIsHostSelf && filter == 1 && flags == 0;
+                const bool personaQuery = pidIsHostSelf && filter == sandboxSyscallNumberFilter &&
+                                         filterArgument == SYS_persona && flags == 0;
                 const bool writeDataStatus = pid == 1 && filter == 240 &&
                                              flags == 0x20000005;
-                if (!pathQuery && !writeDataStatus) {
-                    const char* traceSandbox = std::getenv("ARM64_METAL_TRACE_SANDBOX");
-                    if (traceSandbox != nullptr && std::strcmp(traceSandbox, "1") == 0) {
+                const char* traceSandbox = std::getenv("ARM64_METAL_TRACE_SANDBOX");
+                const bool sandboxTraceEnabled = traceSandbox != nullptr && std::strcmp(traceSandbox, "1") == 0;
+                if (!pathQuery && !personaQuery && !writeDataStatus) {
+                    if (sandboxTraceEnabled) {
                         std::string operation;
                         if (operationAddress != 0) {
                             try {
@@ -12759,7 +12762,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                         }
                         std::cerr << "arm64-metal sandbox-query mismatch pid=" << pid
                                   << " self=" << ::getpid() << " filter=" << filter
-                                  << " flags=" << flags << " path-null=" << (pathAddress == 0)
+                                  << " flags=" << flags << " path-null=" << (filterArgument == 0)
                                   << " operation=" << operation << " lr=0x" << std::hex
                                   << registers[30] << std::dec << '\n';
                     }
@@ -12778,26 +12781,34 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     try {
                         const auto operation = guest_cstring(guestMemory, operationAddress);
                         std::string argument;
-                        if (writeDataStatus && pathAddress != 0) {
-                            argument = guest_cstring(guestMemory, pathAddress);
+                        if (writeDataStatus && filterArgument != 0) {
+                            argument = guest_cstring(guestMemory, filterArgument);
                         }
-                        if (writeDataStatus &&
-                            (operation != "file-write-data" ||
-                             (pathAddress != 0 && !argument.empty()))) {
+                        if ((personaQuery && operation != "syscall-unix") ||
+                            (writeDataStatus && (operation != "file-write-data" ||
+                                                 (filterArgument != 0 && !argument.empty())))) {
                             unsupportedQuery = true;
                         }
                         if (!unsupportedQuery) {
                             auto* output = guestMemory.buffer(resultAddress,
                                 sizeof(std::uint64_t), true);
                             std::uint64_t resultValue = 0;
-                            const auto error = pathQuery
-                                ? [&] {
-                                      const auto path = guest_cstring(guestMemory, pathAddress);
-                                      return guest_sandbox_check_path(operation.c_str(),
-                                          path.c_str(), &resultValue);
-                                  }()
-                                : guest_sandbox_check_write_data_status(pathAddress != 0,
-                                                                        &resultValue);
+                            int error;
+                            if (personaQuery) {
+                                error = guest_sandbox_check_persona(&resultValue);
+                                if (sandboxTraceEnabled) {
+                                    std::cerr << "arm64-metal sandbox-query operation=syscall-unix"
+                                              << " subject=self syscall=" << SYS_persona
+                                              << " error=" << error << " decision=" << resultValue << '\n';
+                                }
+                            } else if (pathQuery) {
+                                const auto path = guest_cstring(guestMemory, filterArgument);
+                                error = guest_sandbox_check_path(operation.c_str(), path.c_str(),
+                                                                 &resultValue);
+                            } else {
+                                error = guest_sandbox_check_write_data_status(filterArgument != 0,
+                                                                              &resultValue);
+                            }
                             registers[0] = static_cast<std::uint64_t>(error);
                             if (error == 0) {
                                 std::memcpy(output, &resultValue, sizeof(resultValue));
