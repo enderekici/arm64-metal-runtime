@@ -412,6 +412,6 @@ release. An earlier pre-fix wait run returned status 1 despite printing
 delivery may defer. The later `6682a34` candidate passed imported `fork()` for
 one single-threaded, cache-off guest: inherited pipes, matching child PID, and
 isolated private stack, global and heap writes. Raw fork and general fork/exec
-remain open. The `062bbb6` package passed both Objective-C framework fixtures;
-the guest AppKit window gate remains open. See
+remain open. The combined `de9a916` package passed the scoped fork fixture and
+both Objective-C framework fixtures. The guest AppKit window gate remains open. See
 [COMPATIBILITY.md](COMPATIBILITY.md) for the contract map and receipts.
