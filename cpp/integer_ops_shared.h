@@ -146,9 +146,9 @@ inline ulong2 vector_reduce_sum_apply(
 }
 inline ulong2 vector_dot_apply(
     ulong2 accumulator, ulong2 left, ulong2 right,
-    uint signedLanes, uint indexed, uint selectedLane) {
+    uint signedLanes, uint indexed, uint selectedLane, uint vectorWidth) {
     ulong2 result = ulong2(0ul);
-    for (uint group = 0u; group < 4u; ++group) {
+    for (uint group = 0u; group < vectorWidth / 32u; ++group) {
         uint sum = uint((accumulator[group >> 1u] >> ((group & 1u) * 32u)) &
                         0xfffffffful);
         for (uint byte = 0u; byte < 4u; ++byte) {
@@ -973,8 +973,8 @@ inline constexpr char typed_integer_msl_source[] =
     "sum += (source[bit >> 6u] >> (bit & 63u)) & laneMask; } "
     "return ulong2(sum & laneMask, 0ul); }\n"
     "inline ulong2 vector_dot_apply(ulong2 accumulator, ulong2 left, ulong2 right, "
-    "uint signedLanes, uint indexed, uint selectedLane) { ulong2 result = ulong2(0ul); "
-    "for (uint group = 0u; group < 4u; ++group) { "
+    "uint signedLanes, uint indexed, uint selectedLane, uint vectorWidth) { ulong2 result = ulong2(0ul); "
+    "for (uint group = 0u; group < vectorWidth / 32u; ++group) { "
     "uint sum = uint((accumulator[group >> 1u] >> ((group & 1u) * 32u)) & 0xfffffffful); "
     "for (uint byte = 0u; byte < 4u; ++byte) { "
     "uint leftIndex = group * 4u + byte; uint leftBit = leftIndex * 8u; "

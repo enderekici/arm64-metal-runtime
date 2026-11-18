@@ -617,8 +617,13 @@ int main() {
   assert(!decode_operation(0x6e818420U).has_value());  // SQRDMLAH is unsupported.
   const auto dotFull = decode_operation(0x4e829420U);
   const auto dotIndexed = decode_operation(0x4f82e020U);
+  const auto dotShortFull = decode_operation(0x0e829420U);
+  const auto dotShortIndexed = decode_operation(0x2fa2e020U);
   assert(dotFull.has_value() && dotFull->opcode == Opcode::VectorDot &&
-         dotIndexed.has_value() && dotIndexed->opcode == Opcode::VectorDot);
+         dotIndexed.has_value() && dotIndexed->opcode == Opcode::VectorDot &&
+         dotShortFull.has_value() && dotShortFull->width == 64U &&
+         dotShortIndexed.has_value() && dotShortIndexed->width == 64U);
+  assert(!decode_operation(0x0f80e820U).has_value());  // Q=0, lane 2 is reserved.
   for (const std::uint32_t invalidSize : {0U, 1U, 3U}) {
     const auto sizeBits = invalidSize << 22U;
     assert(!decode_operation((0x4e829420U & ~(3U << 22U)) | sizeBits).has_value());

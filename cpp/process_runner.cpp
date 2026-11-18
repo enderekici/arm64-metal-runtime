@@ -879,7 +879,9 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 31 && operation.shift <= 15U &&
                  (vectorDotIndexed != 0U || vectorDotLane == 0U) &&
-                 operation.width == 128U);
+                 (operation.width == 64U || operation.width == 128U) &&
+                 (operation.width != 64U || vectorDotIndexed == 0U ||
+                  vectorDotLane <= 1U));
             if ((!moveWideOpcode && !authenticatedStep && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&

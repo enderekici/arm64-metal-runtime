@@ -478,20 +478,20 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   }
   const auto dotFull = bits & 0xbfe0fc00U;
   const auto dotIndexed = bits & 0xbfc0f400U;
-  if ((dotFull == 0x0e809400U || dotFull == 0x2e809400U) &&
-      (bits & (1U << 30)) != 0U) {
+  if (dotFull == 0x0e809400U || dotFull == 0x2e809400U) {
     const auto signedLanes = dotFull == 0x0e809400U ? 1U : 0U;
     return Operation{Opcode::VectorDot, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5),
-                     signedLanes, 128U};
+                     signedLanes, field(bits, 30, 1) != 0U ? 128U : 64U};
   }
-  if ((dotIndexed == 0x0f80e000U || dotIndexed == 0x2f80e000U) &&
-      (bits & (1U << 30)) != 0U) {
+  if (dotIndexed == 0x0f80e000U || dotIndexed == 0x2f80e000U) {
     const auto signedLanes = dotIndexed == 0x0f80e000U ? 1U : 0U;
     const auto lane = field(bits, 21, 1) | (field(bits, 11, 1) << 1U);
+    const auto vectorWidth = field(bits, 30, 1) != 0U ? 128U : 64U;
+    if (vectorWidth == 64U && lane > 1U) return std::nullopt;
     return Operation{Opcode::VectorDot, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5),
-                     signedLanes | 2U | (lane << 2U), 128U};
+                     signedLanes | 2U | (lane << 2U), vectorWidth};
   }
   const auto vectorReverseEncoding = bits & 0xbf3ffc00U;
   const auto reverseGroupWidth = vectorReverseEncoding == 0x0e201800U ? 16U
@@ -790,7 +790,9 @@ Instruction make_operation_instruction(Operation operation,
     const auto lane = (operation.shift >> 2U) & 3U;
     if (operation.destination > 31 || operation.source > 31 ||
         operation.immediate > 31 || operation.shift > 15U ||
-        (indexed == 0U && lane != 0U) || operation.width != 128U ||
+        (indexed == 0U && lane != 0U) ||
+        (operation.width != 64U && operation.width != 128U) ||
+        (operation.width == 64U && indexed != 0U && lane > 1U) ||
         next.size() != 1U) {
       throw std::invalid_argument("Typed vector dot operands are invalid");
     }
@@ -806,7 +808,8 @@ Instruction make_operation_instruction(Operation operation,
                    std::to_string(right + 1U) + "]), " +
                    std::to_string(signedLanes) + "u, " +
                    std::to_string(indexed) + "u, " +
-                   std::to_string(lane) + "u); x[" +
+                   std::to_string(lane) + "u, " +
+                   std::to_string(operation.width) + "u); x[" +
                    std::to_string(destination) + "] = value[0]; x[" +
                    std::to_string(destination + 1U) + "] = value[1]; }");
   } else if (operation.opcode == Opcode::VectorReduceExtreme) {

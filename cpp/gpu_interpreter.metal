@@ -1351,7 +1351,9 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const uint lane = (dotFlags >> 2u) & 3u;
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
                 if (vd > 31u || vn > 31u || vm > 31u || dotFlags > 15u ||
-                    (indexed == 0u && lane != 0u) || instruction.operation[5] != 128u ||
+                    (indexed == 0u && lane != 0u) ||
+                    (instruction.operation[5] != 64u && instruction.operation[5] != 128u) ||
+                    (instruction.operation[5] == 64u && indexed != 0u && lane > 1u) ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
                     state[33] = pc;
@@ -1366,7 +1368,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const ulong2 left = ulong2(state[leftSlot], state[leftSlot + 1u]);
                 const ulong2 right = ulong2(state[rightSlot], state[rightSlot + 1u]);
                 const ulong2 result = vector_dot_apply(
-                    accumulator, left, right, dotFlags & 1u, indexed, lane);
+                    accumulator, left, right, dotFlags & 1u, indexed, lane,
+                    instruction.operation[5]);
                 state[destinationSlot] = result[0];
                 state[destinationSlot + 1u] = result[1];
                 if (blockEnd) {
