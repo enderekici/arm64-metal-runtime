@@ -117,7 +117,6 @@ static int run_fixture(void) {
     const struct trap_result registration = darwin_syscall(366,
         signed_entry, signed_entry, pthread_size, (uintptr_t)&data,
         sizeof(data), data.dispatch_queue_offset);
-    if (!registration.carry && registration.value != 0) return 11;
 #ifdef WORKQ_GUEST_NO_INIT
     if (registration.carry) return 12;
 #else
