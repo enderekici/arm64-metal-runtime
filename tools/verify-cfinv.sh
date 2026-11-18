@@ -56,9 +56,32 @@ check_positive() {
     ' "$receipts/$name-aot.err"
 }
 
+check_flagm2_without_native_feature() {
+    fixture=$1
+    opcode=$2
+    packets=$3
+    echo 'NOTICE: FEAT_FlagM2 is unavailable; skipping only native FlagM2 execution and checking Metal against the architectural fixture result.'
+    expect_exit 0 flagm2-function "$runtime" run "$fixture" main "$receipts/input"
+    cmp "$receipts/expected" "$receipts/flagm2-function.out"
+    test ! -s "$receipts/flagm2-function.err"
+    expect_exit 42 flagm2-aot env ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 "$runtime" launch "$fixture"
+    test ! -s "$receipts/flagm2-aot.out"
+    awk -v opcode="detail=$opcode" -v expected="$packets" '
+        /event=interpreter-packet / && $NF == opcode { matched++ }
+        /event=dispatch-start / { dispatches++ }
+        /event=interpreter-dispatch / { interpreted++ }
+        /event=compile-start / { compiled++ }
+        END { exit !(matched == expected && dispatches == 1 && interpreted == 1 && !compiled) }
+    ' "$receipts/flagm2-aot.err"
+}
+
 check_positive "$cfinv" cfinv 45 2
 check_positive "$flagm" flagm 46 19
-check_positive "$flagm2" flagm2 45 2
+if [ "$(sysctl -n hw.optional.arm.FEAT_FlagM2 2>/dev/null || echo 0)" = 1 ]; then
+    check_positive "$flagm2" flagm2 45 2
+else
+    check_flagm2_without_native_feature "$flagm2" 45 2
+fi
 
 check_reserved() {
     name=$1

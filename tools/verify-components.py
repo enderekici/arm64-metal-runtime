@@ -313,7 +313,8 @@ def main():
     if gpulock and (not gpulock.is_file() or not os.access(gpulock, os.X_OK)):
         parser.error(f"shared GPU lock wrapper is unavailable: {gpulock}")
 
-    wanted = set(args.cases or [case["id"] for case in available])
+    wanted = set(args.cases or [case["id"] for case in available
+                                if case.get("default_enabled", True)])
     unknown = wanted - {case["id"] for case in available}
     if unknown:
         parser.error(f"unknown cases: {', '.join(sorted(unknown))}")

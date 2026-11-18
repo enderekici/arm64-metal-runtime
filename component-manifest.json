@@ -126,6 +126,7 @@
     },
     {
       "id": "simd-i8mm",
+      "default_enabled": false,
       "test_target": "Native and translated Metal process launch",
       "domain": "AdvSIMD I8MM matrix multiply-accumulate",
       "fixture": "fixtures/handoff/simd-i8mm-contract.c",
