@@ -157,6 +157,9 @@ PLIST
             mkdir -p "$probe_dir/tar-input/subdir"
             printf 'metal runtime\n' > "$probe_dir/tar-input/readme.txt"
             printf '\000\001\377\n' > "$probe_dir/tar-input/subdir/payload.bin"
+            chmod 0751 "$probe_dir/tar-input/subdir"
+            chmod 0740 "$probe_dir/tar-input/readme.txt"
+            chmod 0600 "$probe_dir/tar-input/subdir/payload.bin"
             (cd "$probe_dir" && "$tar" -cf "$probe_dir/input.tar" tar-input)
             test -s "$probe_dir/input.tar"
             compare tar-list 0 "$tar" -tf "$probe_dir/input.tar"
@@ -170,16 +173,15 @@ PLIST
             test "$(cat "$run_dir/tar-extract.guest.status")" = 0
             cmp "$run_dir/tar-extract.native.stdout" "$run_dir/tar-extract.guest.stdout"
             cmp "$run_dir/tar-extract.native.stderr" "$run_dir/tar-extract.guest.stderr"
-            cmp "$probe_dir/tar-input/readme.txt" "$probe_dir/native-extract/tar-input/readme.txt"
-            cmp "$probe_dir/tar-input/readme.txt" "$probe_dir/guest-extract/tar-input/readme.txt"
-            cmp "$probe_dir/tar-input/subdir/payload.bin" \
-                "$probe_dir/native-extract/tar-input/subdir/payload.bin"
-            cmp "$probe_dir/tar-input/subdir/payload.bin" \
-                "$probe_dir/guest-extract/tar-input/subdir/payload.bin"
-            cmp "$probe_dir/native-extract/tar-input/readme.txt" "$probe_dir/guest-extract/tar-input/readme.txt"
-            cmp "$probe_dir/native-extract/tar-input/subdir/payload.bin" \
-                "$probe_dir/guest-extract/tar-input/subdir/payload.bin"
-            printf 'tar extracted file contents match native\n'
+            for extraction in native-extract guest-extract; do
+                (cd "$probe_dir/$extraction" && find . -mindepth 1 \
+                    -exec stat -f '%Sp %N' {} + | LC_ALL=C sort) > "$run_dir/$extraction.tree"
+                cmp "$probe_dir/tar-input/readme.txt" "$probe_dir/$extraction/tar-input/readme.txt"
+                cmp "$probe_dir/tar-input/subdir/payload.bin" \
+                    "$probe_dir/$extraction/tar-input/subdir/payload.bin"
+            done
+            cmp "$run_dir/native-extract.tree" "$run_dir/guest-extract.tree"
+            printf 'tar extracted paths, types, modes and file contents match native\n'
             ;;
         tee)
             tee=/usr/bin/tee
