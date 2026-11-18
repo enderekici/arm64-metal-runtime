@@ -4,6 +4,12 @@
 
 This is a local Apple Silicon runtime for unmodified ARM64 and arm64e Mach-O binaries. Guest instructions are decoded to Metal and execute on the GPU. The CPU builds kernels, manages guest state, maps images, and services modeled macOS boundaries. There is no native guest-execution fallback. General application compatibility remains open.
 
+## Current priority and measured checkpoint
+
+Work first on full ARM64 instruction coverage on Metal and unchanged CLI compatibility; leave AppKit for last. The 2026-11-18 release package was built at `311195a0fe686733babcd3877396ab43aa3f4c0c`; test-only child `3662a175145861b84675ff046fb85688ba162ebe` produced byte-identical launcher and metallib. Build and bundle passed; 27 default and 3 optional component cases passed; 28 CLI comparisons passed, including tee side effects and exact gzip/bzip2 output with malformed gzip rejection. Static inventory contains 4,429 A64 instruction records, while five formerly rejected instructions now match native in interpreter and AOT. Focused interpreter and demand-cache gates also passed, including 240 RCpc2 cases and min/max alignment. This is not full ISA coverage: rejected instruction families and broader CLI cases remain. AppKit guest startup/window acceptance also remains open.
+
+Release artifacts and receipts are at `/Users/ender/code/evamcep/arm64-metal-work/logs/isa-cli-jQDAPM/release/`; hashes and the measured boundary are in `COMPATIBILITY.md`. On the older `03874a6` voucher package, an untraced run also matched native `plutil` valid input, malformed input, and 72-byte binary conversion. On frozen package source `d2899490de0e42de66a64c07af8cd44ce072a4ff`, a separate tar listing/extraction check matched paths, types, permissions, and bytes; guest listing took 1,155.55 s and extraction 585.77 s. Guest archive creation remains unverified. These separate checks are not part of the current release package.
+
 The C++ implementation is under `cpp/`. The default root `make` target builds
 the C++ launcher and native fixtures, `make verify` runs the default gates, and
 `make bundle` verifies and packages the C++ launcher at the original archive
