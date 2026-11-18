@@ -141,6 +141,7 @@ INTERPRETER_LITERAL_LOAD_MAIN := $(BUILD_DIR)/interpreter-literal-load-main
 INTERPRETER_LDUMIN_LDUMAX_MAIN := $(BUILD_DIR)/interpreter-ldumin-ldumax-main
 INTERPRETER_CMEQ_ZERO_MAIN := $(BUILD_DIR)/interpreter-cmeq-zero-main
 INTERPRETER_VECTOR_EXTREME_MAIN := $(BUILD_DIR)/interpreter-vector-extreme-main
+INTERPRETER_VECTOR_REDUCE_MAIN := $(BUILD_DIR)/interpreter-vector-reduce-main
 INTERPRETER_VECTOR_MEMORY_MAIN := $(BUILD_DIR)/interpreter-vector-memory-main
 INTERPRETER_VECTOR_MEMORY_UNMAPPED_MAIN := $(BUILD_DIR)/interpreter-vector-memory-unmapped-main
 INTERPRETER_LOGICAL_IMMEDIATE_MAIN := $(BUILD_DIR)/interpreter-logical-immediate-main
@@ -911,6 +912,29 @@ verify-interpreter-vector-extreme: $(APP) $(INTERPRETER_VECTOR_EXTREME_MAIN) $(I
 			"$$run_dir/interpreter.err"; \
 		if grep -q 'event=compile-start' "$$run_dir/interpreter.err"; then exit 1; fi; \
 	echo "Vector min/max native/translated/AOT fixture passed; sha256=$$binary_sha receipts=$$run_dir"
+
+$(INTERPRETER_VECTOR_REDUCE_MAIN): ../fixtures/interpreter/vector-reduce-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+verify-interpreter-vector-reduce-native: $(INTERPRETER_VECTOR_REDUCE_MAIN)
+	@set -eu; set +e; "$(INTERPRETER_VECTOR_REDUCE_MAIN)"; rc=$$?; set -e; \
+		test "$$rc" -eq 42; echo "Advanced SIMD reductions native guest exit=$$rc"
+
+.PHONY: verify-interpreter-vector-reduce-native verify-interpreter-vector-reduce
+verify-interpreter-vector-reduce: $(APP) $(INTERPRETER_VECTOR_REDUCE_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/vector-reduce.XXXXXX"); \
+	set +e; \
+	"$(INTERPRETER_VECTOR_REDUCE_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+		"$(APP)" launch "$(INTERPRETER_VECTOR_REDUCE_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+	set -e; \
+	test "$$native_rc" -eq 42 && test "$$interpreter_rc" -eq "$$native_rc" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		test "$$(grep -c 'event=interpreter-packet.*detail=42' "$$run_dir/interpreter.err")" -eq 6 && \
+		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
+	echo "Advanced SIMD reductions native/AOT passed; exit=$$interpreter_rc receipts=$$run_dir"
 
 verify-interpreter-vector-memory-native: $(INTERPRETER_VECTOR_MEMORY_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_VECTOR_MEMORY_MAIN)"; rc=$$?; set -e; \

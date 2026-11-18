@@ -52,6 +52,7 @@ enum class Opcode : std::uint32_t {
   VectorCompareEqualZero = 39,
   VectorReduceExtreme = 40,
   VectorReverse = 41,
+  VectorReduceSum = 42,
   LoadVectorMemory = 43,
   StoreVectorMemory = 44,
   SystemFlags = 45,  // immediate selects CFINV (0), XAFLAG (1) or AXFLAG (2)
@@ -168,6 +169,8 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // width in bits, shift=0, and width=64 or 128 vector bits.
 // VectorReduceExtreme uses destination=Vd, source=Vn, immediate=element width,
 // shift=(signed << 1) | minimum, and width=64 or 128 vector bits.
+// VectorReduceSum uses destination=Vd, source=Vn, immediate=element width,
+// shift=0, and width=64 or 128 vector bits.
 // VectorReverse uses destination=Vd, source=Vn, immediate=element width,
 // shift=reverse group width (16, 32, or 64), and width=64 or 128 vector bits.
 struct Operation {

@@ -600,6 +600,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::VectorCompareEqualZero;
             const bool vectorReduceExtremeOpcode =
                 opcode == translate_core::Opcode::VectorReduceExtreme;
+            const bool vectorReduceSumOpcode =
+                opcode == translate_core::Opcode::VectorReduceSum;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !unsignedMemoryOpcode ||
@@ -859,6 +861,13 @@ ProcessKernelPlan plan_process_kernel(
                   operation.immediate == 32U) && operation.shift <= 3U &&
                  (operation.width == 64U || operation.width == 128U) &&
                  (operation.immediate != 32U || operation.width == 128U));
+            const bool validVectorReduceSum =
+                !vectorReduceSumOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 (operation.immediate == 8U || operation.immediate == 16U ||
+                  operation.immediate == 32U) && operation.shift == 0U &&
+                 (operation.width == 64U || operation.width == 128U) &&
+                 (operation.immediate != 32U || operation.width == 128U));
             if ((!moveWideOpcode && !authenticatedStep && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
@@ -867,8 +876,10 @@ ProcessKernelPlan plan_process_kernel(
                  !bitfieldOpcode && !scalarFPOpcode &&
                  !integerBitOperationOpcode && !integerDivideOpcode &&
                  !adrOpcode && !vectorCompareEqualZeroOpcode &&
-                 !vectorReduceExtremeOpcode && opcode != translate_core::Opcode::SystemFlags &&
-                 opcode != translate_core::Opcode::FlagManipulation) ||
+                 !vectorReduceExtremeOpcode && !vectorReduceSumOpcode &&
+                 opcode != translate_core::Opcode::SystemFlags &&
+                 opcode != translate_core::Opcode::FlagManipulation &&
+                 opcode != translate_core::Opcode::InvertCarry) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -883,6 +894,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validBitfield || !validScalarFP ||
                 !validIntegerBitOperation || !validIntegerDivide || !validAdr ||
                 !validVectorCompareEqualZero || !validVectorReduceExtreme ||
+                !validVectorReduceSum ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

@@ -133,6 +133,17 @@ inline ulong2 vector_reduce_extreme_apply(
     }
     return ulong2(best, 0ul);
 }
+inline ulong2 vector_reduce_sum_apply(
+    ulong2 source, uint elementWidth, uint vectorWidth) {
+    const ulong laneMask = ~0ul >> (64u - elementWidth);
+    ulong sum = 0ul;
+    const uint laneCount = vectorWidth / elementWidth;
+    for (uint lane = 0u; lane < laneCount; ++lane) {
+        const uint bit = lane * elementWidth;
+        sum += (source[bit >> 6u] >> (bit & 63u)) & laneMask;
+    }
+    return ulong2(sum & laneMask, 0ul);
+}
 inline ulong2 vector_reverse_apply(
     ulong2 source, uint elementWidth, uint vectorWidth, uint groupWidth) {
     ulong2 result = ulong2(0ul);
@@ -931,6 +942,13 @@ inline constexpr char typed_integer_msl_source[] =
     "if ((minimum != 0u && (value ^ signBit) < (best ^ signBit)) || "
     "(minimum == 0u && (value ^ signBit) > (best ^ signBit))) best = value; } "
     "return ulong2(best, 0ul); }\n"
+    "inline ulong2 vector_reduce_sum_apply(ulong2 source, uint elementWidth, "
+    "uint vectorWidth) { ulong laneMask = ~0ul >> (64u - elementWidth); "
+    "ulong sum = 0ul; uint laneCount = vectorWidth / elementWidth; "
+    "for (uint lane = 0u; lane < laneCount; ++lane) { "
+    "uint bit = lane * elementWidth; "
+    "sum += (source[bit >> 6u] >> (bit & 63u)) & laneMask; } "
+    "return ulong2(sum & laneMask, 0ul); }\n"
     "inline ulong2 vector_reverse_apply(ulong2 source, uint elementWidth, "
     "uint vectorWidth, uint groupWidth) { ulong2 result = ulong2(0ul); "
     "ulong laneMask = ~0ul >> (64u - elementWidth); "

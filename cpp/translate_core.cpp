@@ -439,6 +439,16 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
                      field(bits, 5, 5), elementWidth,
                      (signedLanes << 1U) | minimum, vectorWidth};
   }
+  if ((bits & 0x9f3ffc00U) == 0x0e31b800U) {
+    const auto elementWidth = 8U << field(bits, 22, 2);
+    const auto vectorWidth = field(bits, 30, 1) != 0U ? 128U : 64U;
+    if (elementWidth >= 64U ||
+        (elementWidth == 32U && vectorWidth != 128U)) {
+      return std::nullopt;
+    }
+    return Operation{Opcode::VectorReduceSum, field(bits, 0, 5),
+                     field(bits, 5, 5), elementWidth, 0U, vectorWidth};
+  }
   const auto vectorReverseEncoding = bits & 0xbf3ffc00U;
   const auto reverseGroupWidth = vectorReverseEncoding == 0x0e201800U ? 16U
       : vectorReverseEncoding == 0x2e200800U ? 32U
@@ -698,6 +708,25 @@ Instruction make_operation_instruction(Operation operation,
     const auto destination = 806U + 2U * operation.destination;
     const auto source = 806U + 2U * operation.source;
     code.push_back("{ ulong2 value = vector_compare_equal_zero_apply(ulong2(x[" +
+                   std::to_string(source) + "], x[" +
+                   std::to_string(source + 1U) + "]), " +
+                   std::to_string(operation.immediate) + "u, " +
+                   std::to_string(operation.width) +
+                   "u); x[" + std::to_string(destination) +
+                   "] = value[0]; x[" + std::to_string(destination + 1U) +
+                   "] = value[1]; }");
+  } else if (operation.opcode == Opcode::VectorReduceSum) {
+    if (operation.destination > 31 || operation.source > 31 ||
+        (operation.immediate != 8U && operation.immediate != 16U &&
+         operation.immediate != 32U) || operation.shift != 0U ||
+        (operation.width != 64U && operation.width != 128U) ||
+        (operation.immediate == 32U && operation.width != 128U) ||
+        next.size() != 1U) {
+      throw std::invalid_argument("Typed vector sum reduction operands are invalid");
+    }
+    const auto destination = 806U + 2U * operation.destination;
+    const auto source = 806U + 2U * operation.source;
+    code.push_back("{ ulong2 value = vector_reduce_sum_apply(ulong2(x[" +
                    std::to_string(source) + "], x[" +
                    std::to_string(source + 1U) + "]), " +
                    std::to_string(operation.immediate) + "u, " +
