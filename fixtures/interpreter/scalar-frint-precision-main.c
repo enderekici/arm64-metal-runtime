@@ -82,6 +82,18 @@ static void clear_fpsr(void) {
   __asm__ volatile("msr fpsr, xzr");
 }
 
+static uint16_t half_add(uint16_t left_bits, uint16_t right_bits) {
+  _Float16 left;
+  _Float16 right;
+  _Float16 result;
+  uint16_t result_bits;
+  memcpy(&left, &left_bits, sizeof(left));
+  memcpy(&right, &right_bits, sizeof(right));
+  __asm__ volatile("fadd %h0, %h1, %h2" : "=w"(result) : "w"(left), "w"(right));
+  memcpy(&result_bits, &result, sizeof(result_bits));
+  return result_bits;
+}
+
 int main(void) {
   static const uint64_t input_bits[] = {
       0x0000000000000000ULL, 0x8000000000000000ULL,
@@ -131,6 +143,7 @@ int main(void) {
       printf("\n");
     }
   }
+  printf("half-fadd %04x\n", half_add(0x3e00U, 0x4080U));
   write_fpcr(original_fpcr);
   return 0;
 }

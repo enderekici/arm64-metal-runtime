@@ -209,6 +209,8 @@ INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
 INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 INTERPRETER_SCALAR_JSCVT_MAIN := $(BUILD_DIR)/interpreter-scalar-jscvt-main
 INTERPRETER_SCALAR_FRINT_MAIN := $(BUILD_DIR)/interpreter-scalar-frint-precision-main
+INTERPRETER_SCALAR_FRINT_RESERVED_2 := $(BUILD_DIR)/interpreter-scalar-frint-reserved-ftype2
+INTERPRETER_SCALAR_FRINT_RESERVED_3 := $(BUILD_DIR)/interpreter-scalar-frint-reserved-ftype3
 INTERPRETER_SCALAR_FP_COMPARE_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-compare-main
 INTERPRETER_SCALAR_FMOV_D_MAIN := $(BUILD_DIR)/interpreter-scalar-fmov-d-main
 INTERPRETER_SCALAR_FP_COMPARE_CASES := $(addprefix $(BUILD_DIR)/interpreter-scalar-fp-compare-case-,1 2 3 4 5)
@@ -1270,6 +1272,14 @@ $(INTERPRETER_SCALAR_FRINT_MAIN): ../fixtures/interpreter/scalar-frint-precision
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -O0 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
 
+$(INTERPRETER_SCALAR_FRINT_RESERVED_2): ../fixtures/interpreter/scalar-frint-reserved-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O0 -Wall -Wextra -Werror -pedantic -DRESERVED_FRINT_ENCODING=0x1ea84000 "$<" -o "$@"
+
+$(INTERPRETER_SCALAR_FRINT_RESERVED_3): ../fixtures/interpreter/scalar-frint-reserved-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O0 -Wall -Wextra -Werror -pedantic -DRESERVED_FRINT_ENCODING=0x1ee84000 "$<" -o "$@"
+
 $(INTERPRETER_SCALAR_FMOV_D_MAIN): ../fixtures/interpreter/scalar-fmov-d-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -1350,7 +1360,7 @@ verify-scalar-jscvt-interpreter: $(APP) $(INTERPRETER_SCALAR_JSCVT_MAIN) $(INTER
 		echo "scalar-jscvt native/translated/interpreter verified: $$run_dir"
 
 .PHONY: verify-scalar-frint-precision-interpreter
-verify-scalar-frint-precision-interpreter: $(APP) $(INTERPRETER_SCALAR_FRINT_MAIN) $(INTERPRETER_METALLIB)
+verify-scalar-frint-precision-interpreter: $(APP) $(INTERPRETER_SCALAR_FRINT_MAIN) $(INTERPRETER_METALLIB) $(INTERPRETER_SCALAR_FRINT_RESERVED_2) $(INTERPRETER_SCALAR_FRINT_RESERVED_3)
 	@set -eu; \
 		run_dir=$$(mktemp -d "$(BUILD_DIR)/scalar-frint-precision-interpreter.XXXXXX"); \
 		set +e; \
@@ -1364,6 +1374,16 @@ verify-scalar-frint-precision-interpreter: $(APP) $(INTERPRETER_SCALAR_FRINT_MAI
 		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/interpreter.err" && \
+		ulimit -c 0; \
+		check_reserved() { \
+			fixture="$$1"; word="$$2"; \
+			if "$$fixture" >"$$run_dir/reserved-native.out" 2>"$$run_dir/reserved-native.err"; then echo "reserved FRINT $$word ran natively" >&2; exit 1; else status=$$?; fi; \
+			test "$$status" -eq 132; \
+			if "$(APP)" launch "$$fixture" >"$$run_dir/reserved-guest.out" 2>"$$run_dir/reserved-guest.err"; then echo "reserved FRINT $$word ran in guest" >&2; exit 1; else status=$$?; fi; \
+			test "$$status" -eq 1 && grep -F "Unsupported ARM64 instruction $$word" "$$run_dir/reserved-guest.err" >/dev/null; \
+		}; \
+		check_reserved "$(INTERPRETER_SCALAR_FRINT_RESERVED_2)" 0x1ea84000 && \
+		check_reserved "$(INTERPRETER_SCALAR_FRINT_RESERVED_3)" 0x1ee84000 && \
 		echo "scalar-frint-precision native/translated/interpreter verified: $$run_dir"
 
 verify-scalar-fp-compare-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_COMPARE_MAIN) $(INTERPRETER_SCALAR_FP_COMPARE_CASES)

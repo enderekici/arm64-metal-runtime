@@ -1580,7 +1580,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     const auto opcode = field(15, 6);
     const auto source = "x[" + str(806 + 2 * rn) + "]";
     const std::string wide = str(format) + "u";
-    if (format >= 0 && opcode >= 16 && opcode <= 19) {
+    if (field(22, 2) <= 1 && format >= 0 && opcode >= 16 && opcode <= 19) {
       const uint32_t destinationWidth = opcode >= 18 ? 64U : 32U;
       const uint32_t mode = opcode == 16 || opcode == 18 ? 3U : 5U;
       return assignVector("ulong2(fp_round_to_fixed_precision(" + source + ", " + wide +
