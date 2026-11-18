@@ -38,7 +38,8 @@
         }
     };
     spawnKeventWorker = [&](const std::vector<std::uint8_t>& events, int count,
-                            std::uint64_t workerFlags, std::uint64_t* workerIdOut) {
+                            std::uint64_t workerFlags, std::optional<std::uint64_t> workloopId,
+                            std::uint64_t* workerIdOut) {
         if (!guestBsdthreadRegistration || !guestWorkqueueDispatchConfig) return false;
         const auto* state = static_cast<const std::uint64_t*>(stateBuffer.data());
         const auto workerEntry = decode_guest_ia0_callback(
@@ -68,7 +69,10 @@
         const auto allocationAddress = static_cast<std::uint64_t>(*allocation);
         const auto stackBottom = allocationAddress + pageSize;
         const auto self = stackBottom + stackSize + pthreadStackOffset;
-        const auto listAddress = allocationAddress + baseSize;
+        // The workloop ABI passes the kqueue ID in the word immediately
+        // before the event list. Ordinary kevent workers receive only the list.
+        const auto listOffset = baseSize + (workloopId ? sizeof(std::uint64_t) : 0);
+        const auto listAddress = allocationAddress + listOffset;
         const auto threadId = guestScheduler.next_thread_id();
         const auto threadPort = nextGuestThreadPortName;
         nextGuestThreadPortName += 4;
@@ -84,7 +88,8 @@
         try {
             auto* bytes = guestMemory.buffer(allocationAddress, allocationSize, true);
             std::memset(bytes, 0, static_cast<std::size_t>(allocationSize));
-            std::memcpy(bytes + baseSize, events.data(),
+            if (workloopId) std::memcpy(bytes + baseSize, &*workloopId, sizeof(*workloopId));
+            std::memcpy(bytes + listOffset, events.data(),
                         static_cast<std::size_t>(count) * keventSize);
             std::uint64_t idValue = threadId;
             std::memcpy(bytes + (self - allocationAddress) + threadIdOffset, &idValue,
@@ -152,7 +157,7 @@
             }
         }
         if (ready > 0) {
-            const bool spawned = spawnKeventWorker(events, ready, 0, nullptr);
+            const bool spawned = spawnKeventWorker(events, ready, 0, std::nullopt, nullptr);
             if (std::getenv("ARM64_METAL_TRACE_WORKQ"))
                 std::cerr << "workq-kevent-deliver events=" << ready << " spawned=" << spawned;
             if (std::getenv("ARM64_METAL_TRACE_WORKQ")) {

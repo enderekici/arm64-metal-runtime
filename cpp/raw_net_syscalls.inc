@@ -452,6 +452,7 @@
             // supports the measured timer QoS and its worker upcall ABI only.
             constexpr std::uint32_t observedTimerQos = 0x800008ffU;
             constexpr std::uint64_t workqFlagPrioQos = 0x00004000U;
+            constexpr std::uint64_t workqFlagOvercommit = 0x00010000U;
             constexpr std::uint64_t workqFlagNewSpi = 0x00040000U;
             constexpr std::uint64_t workqFlagKevent = 0x00080000U;
             constexpr std::uint64_t workqFlagTsdBaseSet = 0x00200000U;
@@ -483,8 +484,9 @@
             const auto qosIndex = static_cast<std::uint64_t>(__builtin_ffs(
                 static_cast<int>((priority & qosClassMask) >> 8U)));
             const auto observedTimerWorkerFlags = workqFlagNewSpi | workqFlagKevent |
-                workqFlagTsdBaseSet | workqFlagWorkloop | workqFlagPrioQos | qosIndex;
-            if (!spawnKeventWorker(delivered, 1, observedTimerWorkerFlags, &ownerThread)) {
+                workqFlagTsdBaseSet | workqFlagWorkloop | workqFlagPrioQos | qosIndex |
+                ((priority & 0x80000000U) ? workqFlagOvercommit : 0);
+            if (!spawnKeventWorker(delivered, 1, observedTimerWorkerFlags, workloopId, &ownerThread)) {
                 rawFail(EAGAIN);
                 continue;
             }

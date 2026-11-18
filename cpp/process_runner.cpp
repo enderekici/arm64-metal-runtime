@@ -3528,7 +3528,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::map<std::pair<std::int16_t, std::uint64_t>, std::uint32_t> guestWorkqKeventQos;
     std::uint64_t guestWorkqKeventWorker = 0;
     std::function<bool(const std::vector<std::uint8_t>&, int, std::uint64_t,
-                       std::uint64_t*)> spawnKeventWorker;
+                       std::optional<std::uint64_t>, std::uint64_t*)> spawnKeventWorker;
     std::function<int()> workqHostKqueue;
     std::function<void(std::uint64_t, std::uint64_t)> workqApplyChanges;
     const auto finishGuestThread = [&](std::uint64_t result,
@@ -15295,7 +15295,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             if (syscall == 366) {
                 constexpr std::uint64_t carryMask = 8U;
                 constexpr std::uint64_t maximumPthreadSize = 64U * 1024U;
-                constexpr std::uint64_t bsdthreadSupportedFeatures = 0x4000115fU;
+                // Libdispatch registers its workloop callback only when the kernel
+                // advertises the workloop upcall ABI.
+                constexpr std::uint64_t workqueueFeatureWorkloop = 0x80U;
+                constexpr std::uint64_t bsdthreadSupportedFeatures =
+                    0x4000115fU | workqueueFeatureWorkloop;
                 struct GuestBsdthreadRegistrationData {
                     std::uint64_t version;
                     std::uint64_t dispatchQueueOffset;
@@ -15463,8 +15467,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                 const auto note = workloop->second.knotes.find({ident, filter});
                                 if (note == workloop->second.knotes.end() ||
                                     (note->second.fflags & 0x0fU) != threadRequest ||
-                                    note->second.ext[1] != debounceAddress ||
-                                    note->second.ext[2] != mask) {
+                                    note->second.ext[1] != debounceAddress) {
                                     error = EINVAL;
                                 } else if (debounceAddress != 0) {
                                     std::uint64_t observed = 0;

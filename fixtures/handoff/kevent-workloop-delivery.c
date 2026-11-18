@@ -16,6 +16,7 @@
 #define NOTE_WL_THREAD_REQUEST 0x001
 #define WQOPS_THREAD_WORKLOOP_RETURN 0x100
 #define WQ_FLAG_THREAD_PRIO_QOS 0x00004000U
+#define WQ_FLAG_THREAD_OVERCOMMIT 0x00010000U
 #define WQ_FLAG_THREAD_NEWSPI 0x00040000U
 #define WQ_FLAG_THREAD_KEVENT 0x00080000U
 #define WQ_FLAG_THREAD_TSD_BASE_SET 0x00200000U
@@ -83,12 +84,13 @@ __attribute__((noinline)) static void worker_start(void *self, uint32_t port,
     const uint32_t qos_index = (uint32_t)__builtin_ffs((int)qos_class);
     const uint32_t expected_flags = WQ_FLAG_THREAD_NEWSPI | WQ_FLAG_THREAD_KEVENT |
         WQ_FLAG_THREAD_TSD_BASE_SET | WQ_FLAG_THREAD_WORKLOOP |
-        WQ_FLAG_THREAD_PRIO_QOS | (qos_index & WQ_FLAG_THREAD_PRIO_MASK);
+        WQ_FLAG_THREAD_PRIO_QOS | WQ_FLAG_THREAD_OVERCOMMIT | (qos_index & WQ_FLAG_THREAD_PRIO_MASK);
     if ((event->ident == workloop_ids[0] || event->ident == workloop_ids[1]) &&
+        ((const uint64_t *)list)[-1] == event->ident &&
         event->filter == -17 && event->flags == 0x25 &&
         (uint32_t)event->qos == 0x800008ffU && event->udata == event->ident &&
         event->fflags == 0x111 && event->ext[1] == (uintptr_t)&debounce_owner &&
-        event->ext[2] == 1 && event->ext[3] == 1 && flags == expected_flags) bits |= 2U;
+        event->ext[2] == 0x3700000001ULL && event->ext[3] == 1 && flags == expected_flags) bits |= 2U;
   }
   atomic_fetch_or_explicit(&delivery_bits, bits, memory_order_release);
   atomic_fetch_add_explicit(&deliveries, 1, memory_order_release);
@@ -99,6 +101,7 @@ __attribute__((noinline)) static void worker_start(void *self, uint32_t port,
   return_change.fflags = NOTE_WL_THREAD_REQUEST;
   return_change.xflags = 0;
   return_change.data = 0;
+  return_change.ext[2] = 1;
   return_change.ext[3] = debounce_owner;
   (void)darwin_syscall(368, WQOPS_THREAD_WORKLOOP_RETURN,
       (uintptr_t)&return_change, 1, 0, 0, 0, 0, 0);
@@ -149,7 +152,7 @@ int main(int argc, char **argv) {
   change.udata = workloop_ids[0];
   change.fflags = 0x111;
   change.ext[1] = (uintptr_t)&debounce_owner;
-  change.ext[2] = 1;
+  change.ext[2] = 0x3700000001ULL;
   change.ext[3] = 1;
   debounce_owner = 2;
   result = darwin_syscall(375, workloop_ids[0], (uintptr_t)&change, 1,
