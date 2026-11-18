@@ -346,6 +346,25 @@ verify-sandbox-persona: $(BUILD_DIR)/sandbox-persona-query $(APP) $(INTERPRETER_
 		grep -Eq '^arm64-metal: Unsupported guest sandbox (status )?query shape$$' "$$run_dir/$$mode.err"; \
 	done; echo "Sandbox persona parity and refusal controls passed in $$run_dir"
 
+$(BUILD_DIR)/amfi-self-policy: ../fixtures/handoff/amfi-self-policy.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -O2 -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"
+
+.PHONY: verify-amfi-self-policy
+verify-amfi-self-policy: $(BUILD_DIR)/amfi-self-policy $(APP) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/amfi-self-policy-verify.XXXXXX"); \
+	probe="$(abspath $(BUILD_DIR)/amfi-self-policy)"; launcher="$(abspath $(APP))"; \
+	export ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))"; \
+	policy='(version 1)(allow default)(deny syscall-unix (syscall-number 381))'; \
+	/usr/bin/sandbox-exec -p "$$policy" "$$probe" >"$$run_dir/restricted.native"; \
+	"$$launcher" launch "$$probe" >"$$run_dir/strict.guest"; \
+	cmp "$$run_dir/restricted.native" "$$run_dir/strict.guest"; \
+	for mode in other-flags null-output unmapped-output read-only-output null-request other-call other-policy; do \
+		status=0; "$$launcher" launch "$$probe" "$$mode" >"$$run_dir/$$mode.out" 2>"$$run_dir/$$mode.err" || status=$$?; \
+		test "$$status" -eq 1 && test ! -s "$$run_dir/$$mode.out" || exit 1; \
+		grep -qx 'arm64-metal: Unsupported guest MAC policy or call' "$$run_dir/$$mode.err"; \
+	done; echo "Guest self-policy denial and refusal controls passed in $$run_dir"
+
 $(OPEN_APPEND_NATIVE): ../fixtures/handoff/open-append.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -std=c11 -Wall -Wextra -Werror "$<" -o "$@"

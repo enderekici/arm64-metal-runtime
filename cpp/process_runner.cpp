@@ -12680,6 +12680,9 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             }
             if (syscall == 381) {
                 const auto policy = guest_cstring(guestMemory, registers[0]);
+                const char* traceSandbox = std::getenv("ARM64_METAL_TRACE_SANDBOX");
+                const bool sandboxTraceEnabled = traceSandbox != nullptr &&
+                                                 std::strcmp(traceSandbox, "1") == 0;
                 if (policy == "Quarantine" && registers[1] == 82) {
                     std::array<std::uint64_t, 3> arguments{};
                     const auto* argumentBytes = guestMemory.buffer(
@@ -12724,6 +12727,26 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     registers[34] = 0;
                     continue;
                 }
+                // The guest cannot query the launcher's code-signing identity.
+                // libsystem_trace handles denial of this zero-input dyld self-policy query.
+                if (policy == "AMFI" && registers[1] == 90 && registers[2] != 0 &&
+                    guestMemory.is_guest_readable(registers[2], 2 * sizeof(std::uint64_t))) {
+                    std::array<std::uint64_t, 2> request{};
+                    std::memcpy(request.data(), guestMemory.buffer(registers[2], sizeof(request)),
+                                sizeof(request));
+                    const auto output = request[1];
+                    if (request[0] == 0 && output != 0 &&
+                        guestMemory.is_guest_readable(output, sizeof(std::uint64_t)) &&
+                        !guestMemory.is_readonly(output, sizeof(std::uint64_t))) {
+                        registers[0] = EPERM;
+                        registers[32] |= 8U;
+                        registers[34] = 0;
+                        if (sandboxTraceEnabled) {
+                            std::cerr << "arm64-metal amfi-self-policy denied error=EPERM output=untouched\n";
+                        }
+                        continue;
+                    }
+                }
                 if ((registers[1] != 2 || policy != "Sandbox") && guest_survey::enabled()) {
                     survey("mac_policy", static_cast<std::int64_t>(syscall),
                            policy + ":" + std::to_string(registers[1]));
@@ -12731,6 +12754,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     continue;
                 }
                 if (registers[1] != 2 || policy != "Sandbox") {
+                    if (sandboxTraceEnabled) {
+                        std::cerr << "arm64-metal mac-policy mismatch policy=" << policy.substr(0, 48)
+                                  << " call=" << registers[1] << " lr=0x" << std::hex
+                                  << registers[30] << std::dec << '\n';
+                    }
                     throw std::runtime_error("Unsupported guest MAC policy or call");
                 }
                 const auto* request = guestMemory.buffer(registers[2], 48);
@@ -12748,8 +12776,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                          filterArgument == SYS_persona && flags == 0;
                 const bool writeDataStatus = pid == 1 && filter == 240 &&
                                              flags == 0x20000005;
-                const char* traceSandbox = std::getenv("ARM64_METAL_TRACE_SANDBOX");
-                const bool sandboxTraceEnabled = traceSandbox != nullptr && std::strcmp(traceSandbox, "1") == 0;
                 if (!pathQuery && !personaQuery && !writeDataStatus) {
                     if (sandboxTraceEnabled) {
                         std::string operation;
