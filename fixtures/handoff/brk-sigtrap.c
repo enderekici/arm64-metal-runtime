@@ -5,6 +5,18 @@
 #include <stdio.h>
 #include <ucontext.h>
 
+#ifdef TEST_UDF
+#define TRAP_OP "udf "
+#define TRAP_SIGNAL SIGILL
+#define TRAP_CODE ILL_ILLTRP
+#define LAST_IMMEDIATE "#0xffff"
+#else
+#define TRAP_OP "brk "
+#define TRAP_SIGNAL SIGTRAP
+#define TRAP_CODE 0
+#define LAST_IMMEDIATE "#0xf001"
+#endif
+
 static volatile sig_atomic_t trap_count;
 static volatile sig_atomic_t trap_signal;
 static volatile sig_atomic_t trap_code;
@@ -25,7 +37,7 @@ static void run_untaken_neighbor(void) {
   const int take_breakpoint = 0;
   __asm__ volatile(
       "cbz %w0, 2f\n"
-      "1: brk #1\n"
+      "1: " TRAP_OP "#1\n"
       "2:\n"
       :
       : "r"(take_breakpoint)
@@ -33,40 +45,40 @@ static void run_untaken_neighbor(void) {
   ++resumed_count;
 }
 
-#define DEFINE_BRK_PROBE(name, instruction) \
+#define DEFINE_TRAP_PROBE(name, instruction) \
   static void name(void) {                 \
     __asm__ volatile(instruction ::: "cc", "memory"); \
     ++resumed_count;                        \
   }
 
-DEFINE_BRK_PROBE(run_brk_0, "brk #0")
-DEFINE_BRK_PROBE(run_brk_1, "brk #1")
-DEFINE_BRK_PROBE(run_brk_2, "brk #2")
-DEFINE_BRK_PROBE(run_brk_1000, "brk #0x1000")
-DEFINE_BRK_PROBE(run_brk_f000, "brk #0xf000")
-DEFINE_BRK_PROBE(run_brk_f001, "brk #0xf001")
+DEFINE_TRAP_PROBE(run_trap_0, TRAP_OP "#0")
+DEFINE_TRAP_PROBE(run_trap_1, TRAP_OP "#1")
+DEFINE_TRAP_PROBE(run_trap_2, TRAP_OP "#2")
+DEFINE_TRAP_PROBE(run_trap_1000, TRAP_OP "#0x1000")
+DEFINE_TRAP_PROBE(run_trap_f000, TRAP_OP "#0xf000")
+DEFINE_TRAP_PROBE(run_trap_last, TRAP_OP LAST_IMMEDIATE)
 
 int main(void) {
   struct sigaction action = {0};
   action.sa_sigaction = handle_trap;
   action.sa_flags = SA_SIGINFO;
   sigemptyset(&action.sa_mask);
-  if (sigaction(SIGTRAP, &action, NULL) != 0) return 2;
+  if (sigaction(TRAP_SIGNAL, &action, NULL) != 0) return 2;
 
   run_untaken_neighbor();
   const sig_atomic_t untaken_count = trap_count;
-  run_brk_0();
-  run_brk_1();
-  run_brk_2();
-  run_brk_1000();
-  run_brk_f000();
-  run_brk_f001();
+  run_trap_0();
+  run_trap_1();
+  run_trap_2();
+  run_trap_1000();
+  run_trap_f000();
+  run_trap_last();
 
   printf("untaken=%d variants=6 traps=%d signal=%d code=%d address_pc_mismatches=%d resumed=%d\n",
          (int)untaken_count, (int)trap_count, (int)trap_signal, (int)trap_code,
          (int)address_pc_mismatches, (int)resumed_count);
-  return untaken_count == 0 && trap_count == 6 && trap_signal == SIGTRAP &&
-                 trap_code == 0 && address_pc_mismatches == 0 && resumed_count == 7
+  return untaken_count == 0 && trap_count == 6 && trap_signal == TRAP_SIGNAL &&
+                 trap_code == TRAP_CODE && address_pc_mismatches == 0 && resumed_count == 7
              ? 0
              : 1;
 }

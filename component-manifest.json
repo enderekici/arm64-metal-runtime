@@ -93,6 +93,20 @@
       "evidence_level": "native-and-guest stdout/stderr/status exact match"
     },
     {
+      "id": "handled-udf-sigill",
+      "test_target": "Native and guest delivery of UDF imm16 synchronous faults",
+      "domain": "Synchronous process signals",
+      "fixture": "fixtures/handoff/brk-sigtrap.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic", "-DTEST_UDF", "{source}", "-o", "{executable}"],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "expected_stdout_lines": 1,
+      "polarity": "positive-handled-udf",
+      "negative_control": "Skips an untaken UDF, then catches six immediates including 1 and 65535. Each handler sees the faulting PC and resumes at PC+4.",
+      "evidence_level": "Exact native and guest signal number, fault code, fault address agreement and resume counts."
+    },
+    {
       "id": "default-brk-termination",
       "test_target": "component-manifest case; default-termination executable is compiled and run natively and through runtime launch",
       "domain": "Synchronous process signals",

@@ -319,7 +319,7 @@ void decode_reachable(const ExecutableImage& image,
                 // function translator continues to reject the instruction.
                 instruction = {{"x[33] = " + std::to_string(pc) +
                                 "ul; x[34] = 15; return;"}, {}};
-            } else if ((word & 0xffe0001fU) == 0) {
+            } else if ((word & 0xffff0000U) == 0) {  // UDF #imm16
                 instruction = {{"x[33] = " + std::to_string(pc) +
                                 "ul; x[34] = 14; return;"}, {}};
             } else {
