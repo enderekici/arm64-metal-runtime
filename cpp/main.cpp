@@ -173,6 +173,7 @@ void print_help() {
       "  arm64-metal launch EXECUTABLE [ARG ...]\n"
       "    Packaged AOT_REQUIRED bundles enable typed AOT by default; set\n"
       "    ARM64_METAL_INTERPRETER=0 to disable or =1 to opt in on source builds.\n"
+      "    ARM64_METAL_DEV_CPU_FALLBACK=1 enables development-only CFINV fallback.\n"
       "  arm64-metal run BINARY SYMBOL [INPUT.json|-] [BLOCK_BUDGET]\n"
       "  arm64-metal run-stream DYLIB SYMBOL\n"
       "  arm64-metal verify TRUSTED_DYLIB SYMBOL\n"
@@ -212,8 +213,8 @@ int re_terminate_with_guest_signal(std::int32_t signal, std::int32_t fallbackSta
   return fallbackStatus;
 }
 
-void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& options,
-                                  const std::filesystem::path& executablePath) {
+void configure_execution(arm64metal::process_runner::LaunchOptions& options,
+                         const std::filesystem::path& executablePath) {
   const auto selected = arm64metal::select_interpreter_assets(
       executablePath, std::getenv("ARM64_METAL_INTERPRETER"),
       std::getenv("ARM64_METAL_INTERPRETER_LIBRARY"),
@@ -221,6 +222,7 @@ void configure_interpreter_assets(arm64metal::process_runner::LaunchOptions& opt
   options.interpreter = selected.enabled;
   options.interpreterLibrary = selected.library;
   options.interpreterSource = selected.source;
+  options.developmentCpuFallback = environment_enabled("ARM64_METAL_DEV_CPU_FALLBACK");
 }
 
 std::int32_t launch_with_signal_propagation(
@@ -650,7 +652,7 @@ int run_command(const std::vector<std::string>& args,
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
     options.runtimeExecutablePath = executablePath;
-    configure_interpreter_assets(options, executablePath);
+    configure_execution(options, executablePath);
     return launch_with_signal_propagation(args[1], arguments, options);
   }
 
@@ -687,7 +689,7 @@ int run_command(const std::vector<std::string>& args,
     options.runtimeExecutablePath = executablePath;
     options.guestArgv0 = guestArgv0;
     options.guestEnvironment = std::move(environment);
-    configure_interpreter_assets(options, executablePath);
+    configure_execution(options, executablePath);
     return launch_with_signal_propagation(args[1], arguments, options);
   }
 
@@ -758,7 +760,7 @@ int run_command(const std::vector<std::string>& args,
     options.guestEnvironment = std::move(environment);
     options.inheritedGuestDescriptors = std::move(inheritedDescriptors);
     options.inheritedWritableGuestDescriptors = std::move(writableDescriptors);
-    configure_interpreter_assets(options, executablePath);
+    configure_execution(options, executablePath);
     return launch_with_signal_propagation(args[1], arguments, options);
   }
 

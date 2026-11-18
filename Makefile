@@ -23,11 +23,14 @@ MEMORY := $(BUILD)/guest-memory
 CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
 CACHE_CONFORMANCE := $(BUILD)/cache-dyld-conformance
+DEVELOPMENT_CPU_FALLBACK_FIXTURE := $(BUILD)/development-cpu-fallback
 
-.PHONY: all verify verify-function-stream verify-cache verify-apps verify-java bundle
+.PHONY: all verify verify-development-cpu-fallback verify-function-stream verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
 
-verify: all
+export ARM64_METAL_DEV_CPU_FALLBACK
+verify: override ARM64_METAL_DEV_CPU_FALLBACK := 0
+verify: all verify-development-cpu-fallback
 	sh verify-launch.sh $(RUNTIME) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(LINKED) $(REGION) $(PIPE) $(BUILD) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
 	@if $(RUNTIME) launch $(UNSIGNED_CALL) >"$(BUILD)/auth.out" 2>"$(BUILD)/auth.log"; then \
 		echo 'Unsigned BLRAAZ target was accepted' >&2; exit 1; else status=$$?; fi; \
@@ -59,6 +62,31 @@ verify: all
 	@printf 'not a Mach-O\n' >"$(BUILD)/invalid.bin"
 	@! $(RUNTIME) translate "$(BUILD)/invalid.bin" update_words >"$(BUILD)/invalid.out" 2>"$(BUILD)/invalid.log"
 	@grep 'Expected a little-endian ARM64 Mach-O' "$(BUILD)/invalid.log"
+
+$(DEVELOPMENT_CPU_FALLBACK_FIXTURE): fixtures/interpreter/development-cpu-fallback-main.s | $(BUILD)
+	xcrun clang -arch arm64 -march=armv8.5-a -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+verify-development-cpu-fallback: $(RUNTIME) $(DEVELOPMENT_CPU_FALLBACK_FIXTURE)
+	@set -eu; \
+	run_dir=$$(mktemp -d "$(BUILD)/development-cpu-fallback.XXXXXX"); \
+	native_status=0; strict_status=0; development_status=0; \
+	"$(DEVELOPMENT_CPU_FALLBACK_FIXTURE)" >"$$run_dir/native.out" 2>"$$run_dir/native.err" || native_status=$$?; \
+	env -u ARM64_METAL_DEV_CPU_FALLBACK "$(RUNTIME)" launch "$(DEVELOPMENT_CPU_FALLBACK_FIXTURE)" \
+	  >"$$run_dir/strict.out" 2>"$$run_dir/strict.err" || strict_status=$$?; \
+	ARM64_METAL_DEV_CPU_FALLBACK=1 ARM64_METAL_TRACE=1 "$(RUNTIME)" launch "$(DEVELOPMENT_CPU_FALLBACK_FIXTURE)" \
+	  >"$$run_dir/development.out" 2>"$$run_dir/development.err" || development_status=$$?; \
+	printf 'native=%s strict=%s development=%s receipts=%s\n' \
+	  "$$native_status" "$$strict_status" "$$development_status" "$$run_dir"; \
+	test "$$native_status" -eq 42 && test "$$strict_status" -eq 1 && \
+	  test "$$development_status" -eq "$$native_status" && \
+	  cmp "$$run_dir/native.out" "$$run_dir/development.out" && \
+	  grep -q 'Unsupported ARM64 instruction 0xd500401f' "$$run_dir/strict.err" && \
+	  ! grep -q 'development CPU fallback' "$$run_dir/strict.err" && \
+	  awk '/event=dispatch-start/ { dispatched=1 } \
+	       /^arm64-metal: development CPU fallback pc=0x[0-9a-f]+ opcode=0xd500401f$$/ { \
+	         if (!dispatched) exit 1; ++fallbacks; dispatched=0 \
+	       } \
+	       END { if (fallbacks != 2 || !dispatched) exit 1 }' "$$run_dir/development.err"
 
 verify-function-stream: $(RUNTIME) $(GUEST)
 	./verify-function-stream.sh "$(RUNTIME)" "$(GUEST)" "$(BUILD)/function-stream"

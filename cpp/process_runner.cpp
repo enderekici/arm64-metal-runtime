@@ -94,6 +94,7 @@ namespace {
 constexpr std::uint64_t kNoFault = std::numeric_limits<std::uint64_t>::max();
 constexpr std::uint64_t kQsortAdapterMarker = 0x51534f5254414249ULL;
 constexpr std::uint32_t kQsortAdapterStatus = 17;
+constexpr std::uint32_t kCfinvOpcode = 0xd500401fU;
 constexpr std::size_t kInstructionsPerDecode = 128;
 constexpr std::size_t kMaximumDecodedInstructions = 131072;
 constexpr std::uint64_t kMaximumDispatchBlocks = 8192;
@@ -323,7 +324,8 @@ void decode_reachable(const ExecutableImage& image,
                                 "ul; x[34] = 14; return;"}, {}};
             } else {
                 decodeErrors[pc] = error.what();
-                instruction = {{"x[33] = " + std::to_string(pc) +
+                instruction = {{"x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
+                                "x[33] = " + std::to_string(pc) +
                                 "ul; x[34] = 5; return;"}, {}};
             }
         }
@@ -8293,7 +8295,21 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             dispatchActiveKernel();
         }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
-        const auto status = registers[34];
+        auto status = registers[34];
+        if (status == 5 && options.developmentCpuFallback) {
+            const auto pc = static_cast<std::int64_t>(registers[33]);
+            if (decodeErrors.count(pc) != 0 && imports.count(pc) == 0 &&
+                image.is_code(pc) && image.instruction(pc) == kCfinvOpcode) {
+                constexpr std::uint64_t carryFlag = 1ULL << 3;
+                registers[32] ^= carryFlag;
+                registers[33] += 4;
+                // Use the normal continuation path to retain guest thread preemption.
+                status = registers[34] = 7;
+                std::cerr << "arm64-metal: development CPU fallback pc=0x"
+                          << hexadecimal(static_cast<std::uint64_t>(pc))
+                          << " opcode=0x" << hexadecimal(kCfinvOpcode) << '\n';
+            }
+        }
         if ((status == 1 || status == 7 || status == 8) &&
             preemptAtDispatchBoundary(status)) {
             continue;
