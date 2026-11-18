@@ -141,6 +141,7 @@ INTERPRETER_LITERAL_LOAD_MAIN := $(BUILD_DIR)/interpreter-literal-load-main
 INTERPRETER_LDUMIN_LDUMAX_MAIN := $(BUILD_DIR)/interpreter-ldumin-ldumax-main
 INTERPRETER_LDUMIN_LDUMAX_ALIGNMENT := $(BUILD_DIR)/interpreter-ldumin-ldumax-alignment
 INTERPRETER_LDUMIN_LDUMAX_CROSS16 := $(BUILD_DIR)/interpreter-ldumin-ldumax-cross16
+INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF := $(BUILD_DIR)/interpreter-ldumin-ldumax-byte-half
 INTERPRETER_RCPC2_ALIGNMENT := $(BUILD_DIR)/interpreter-rcpc2-alignment
 INTERPRETER_RCPC2_UNSCALED_MAIN := $(BUILD_DIR)/interpreter-rcpc2-unscaled-main
 INTERPRETER_CMEQ_ZERO_MAIN := $(BUILD_DIR)/interpreter-cmeq-zero-main
@@ -1077,7 +1078,27 @@ verify-interpreter-ldumin-ldumax-native: $(INTERPRETER_LDUMIN_LDUMAX_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)"; rc=$$?; set -e; \
 		test "$$rc" -eq 42; echo "LDUMIN/LDUMAX native guest exit=$$rc"
 
-verify-interpreter-ldumin-ldumax: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INTERPRETER_LDUMIN_LDUMAX_ALIGNMENT) $(INTERPRETER_LDUMIN_LDUMAX_CROSS16) $(INTERPRETER_METALLIB)
+$(INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF): ../fixtures/interpreter/ldumin-ldumax-byte-half-main.s
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -march=armv8.1-a+lse -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
+
+.PHONY: verify-interpreter-ldumin-ldumax-byte-half
+verify-interpreter-ldumin-ldumax-byte-half: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/ldumin-byte-half.XXXXXX"); \
+	set +e; \
+	"$(INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+	"$(APP)" launch "$(INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+		"$(APP)" launch "$(INTERPRETER_LDUMIN_LDUMAX_BYTE_HALF)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+	set -e; \
+	test "$$native_rc" -eq 42 && test "$$translated_rc" -eq 42 && test "$$interpreter_rc" -eq 42 && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		awk '/event=interpreter-packet/ { packets++; if ($$0 ~ /detail=37/) atomics++ } END { exit !(atomics == 8 && packets >= atomics) }' "$$run_dir/interpreter.err"; \
+	! grep -q 'event=compile-start' "$$run_dir/interpreter.err"; \
+	echo "LDUMIN/LDUMAX byte/halfword native/translated/AOT passed; receipts=$$run_dir"
+
+verify-interpreter-ldumin-ldumax: verify-interpreter-ldumin-ldumax-byte-half $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INTERPRETER_LDUMIN_LDUMAX_ALIGNMENT) $(INTERPRETER_LDUMIN_LDUMAX_CROSS16) $(INTERPRETER_METALLIB)
 	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/ldumin-ldumax.XXXXXX"); \
 	binary_sha=$$(shasum -a 256 "$(INTERPRETER_LDUMIN_LDUMAX_MAIN)" | awk '{print $$1}'); \
 	set +e; \
@@ -1107,7 +1128,7 @@ verify-interpreter-ldumin-ldumax: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INT
 	set -e; \
 	test "$$unaligned_native_rc" -eq 42 && test "$$unaligned_translated_rc" -eq 42 && \
 		test "$$unaligned_interpreter_rc" -eq 42 && \
-	python3 -c 'import os, signal, subprocess, sys; app, fixture, library = sys.argv[1:]; env=dict(os.environ, ARM64_METAL_INTERPRETER_LIBRARY=library); results=[subprocess.run([fixture]).returncode, subprocess.run([fixture,"signed"]).returncode, subprocess.run([app,"launch",fixture]).returncode, subprocess.run([app,"launch",fixture,"signed"]).returncode, subprocess.run([app,"launch",fixture],env=dict(env,ARM64_METAL_INTERPRETER="1")).returncode, subprocess.run([app,"launch",fixture,"signed"],env=dict(env,ARM64_METAL_INTERPRETER="1")).returncode]; assert results == [-signal.SIGBUS]*6, results' "$(APP)" "$(INTERPRETER_LDUMIN_LDUMAX_CROSS16)" "$(abspath $(INTERPRETER_METALLIB))"; \
+	python3 -c 'import os, signal, subprocess, sys; app, fixture, library = sys.argv[1:]; env=dict(os.environ, ARM64_METAL_INTERPRETER_LIBRARY=library); cases=[[],["signed"],["half"]]; results=[subprocess.run([fixture]+args).returncode for args in cases] + [subprocess.run([app,"launch",fixture]+args).returncode for args in cases] + [subprocess.run([app,"launch",fixture]+args,env=dict(env,ARM64_METAL_INTERPRETER="1")).returncode for args in cases]; assert results == [-signal.SIGBUS]*9, results' "$(APP)" "$(INTERPRETER_LDUMIN_LDUMAX_CROSS16)" "$(abspath $(INTERPRETER_METALLIB))"; \
 	echo "LDUMIN/LDUMAX native/translated/AOT and granule-alignment fixtures passed; sha256=$$binary_sha receipts=$$run_dir"
 
 .PHONY: verify-interpreter-rcpc2-native verify-interpreter-rcpc2 verify-rcpc2-alignment

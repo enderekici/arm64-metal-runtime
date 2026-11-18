@@ -17,6 +17,8 @@ _main:
     b .Lunexpected
 
 .Lsmax:
+    cmp x0, #2
+    b.eq .Lhalf
     // A 64-bit signed min-max crossing the 16-byte granule must SIGBUS.
     add x14, sp, #12
     mov x9, #1
@@ -30,6 +32,16 @@ _main:
     strb wzr, [x14, #7]
     mov x10, #2
     ldsmax x10, x11, [x14]
+    b .Lunexpected
+
+.Lhalf:
+    // A 16-bit unsigned min-max crossing the 16-byte granule must SIGBUS.
+    add x14, sp, #15
+    mov w9, #0xff
+    strb w9, [x14]
+    strb w9, [x14, #1]
+    mov w10, #0
+    lduminh w10, w11, [x14]
     b .Lunexpected
 
 .Lunexpected:

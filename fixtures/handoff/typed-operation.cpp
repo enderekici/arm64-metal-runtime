@@ -2082,6 +2082,26 @@ int main() {
          ldsminX->destination == 3U && ldsminX->source == 5U &&
          ldsminX->immediate == 1U && ldsminX->shift == 2U &&
          ldsminX->width == 64U);
+  const std::array<std::pair<std::uint32_t, std::pair<std::uint32_t, std::uint32_t>>,
+                   8> narrowMinMax = {{{0x382b712cU, {0U, 8U}},
+                                       {0x382b612cU, {1U, 8U}},
+                                       {0x782b71ccU, {0U, 16U}},
+                                       {0x782b61ccU, {1U, 16U}},
+                                       {0x382b51ccU, {2U, 8U}},
+                                       {0x382b41ccU, {3U, 8U}},
+                                       {0x782b51ccU, {2U, 16U}},
+                                       {0x782b41ccU, {3U, 16U}}}};
+  for (const auto& [encoding, expected] : narrowMinMax) {
+    const auto operation = decode_operation(encoding);
+    assert(operation && operation->opcode == Opcode::LoadUnsignedMinMax &&
+           operation->immediate == 11U && operation->shift == expected.first &&
+           operation->width == expected.second && operation->destination == 12U &&
+           operation->source == ((encoding & 0x3fU) == 0x2cU ? 9U : 14U));
+  }
+  assert(!decode_operation(0x38ab712cU));  // Byte acquire ordering.
+  assert(!decode_operation(0x386b712cU));  // Byte release ordering.
+  assert(!decode_operation(0x78ab71ccU));  // Halfword acquire ordering.
+  assert(!decode_operation(0x786b71ccU));  // Halfword release ordering.
   const auto ldapurb = decode_operation(0x19500020U);
   assert(ldapurb && ldapurb->opcode == Opcode::LoadUnscaledWriteback &&
          ldapurb->destination == 0U && ldapurb->source == 1U &&

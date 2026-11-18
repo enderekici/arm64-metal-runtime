@@ -159,7 +159,8 @@ enum class AuthenticatedReturnStep : std::uint32_t {
 // or 1 for SDIV, and width=32 or 64. Register 31 reads as zero and discards
 // writes.
 // LDUMIN/LDUMAX/LDSMIN/LDSMAX use destination=Rt, source=Rn, immediate=Rs,
-// shift=0/1 for unsigned min/max or 2/3 for signed min/max, and width=32 or 64.
+// shift=0/1 for unsigned min/max or 2/3 for signed min/max, and width=8, 16,
+// 32 or 64 for the memory lane width. The old-value result is zero-extended.
 // Register 31 reads as zero for
 // the source and discards the old-value result. Only unordered variants are
 // typed in this slice.

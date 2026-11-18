@@ -2028,9 +2028,14 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                                    " ? old : " + operand)),
                             save(rd)};
       } else if (atomicOperation.value == "smax" || atomicOperation.value == "smin") {
-        const auto signedType = width == 4 ? std::string("int") : std::string("long");
-        const auto signedOld = signedType + "(old)";
-        const auto signedOperand = signedType + "(" + str(source) + ")";
+        const auto signedType = width == 1 ? std::string("char")
+            : width == 2 ? std::string("short")
+            : width == 4 ? std::string("int") : std::string("long");
+        const auto signedOld = width == 4 ? "int(old)"
+                                          : "long(" + signedType + "(old))";
+        const auto signedOperand = width == 4
+            ? "int(" + str(source) + ")"
+            : "long(" + signedType + "(" + str(source) + "))";
         const auto chooseOld = atomicOperation.value == "smax"
             ? signedOld + " >= " + signedOperand
             : signedOld + " <= " + signedOperand;

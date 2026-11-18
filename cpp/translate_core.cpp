@@ -111,7 +111,8 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   if ((atomicMinMaxClass == 0x38206000U || atomicMinMaxClass == 0x38204000U) &&
       (bits & 0x00c00000U) == 0U) {
     const auto width = 8U << field(bits, 30, 2);
-    if (width != 32U && width != 64U) return std::nullopt;
+    if (width != 8U && width != 16U && width != 32U && width != 64U)
+      return std::nullopt;
     const auto variant = (atomicMinMaxClass == 0x38204000U ? 2U : 0U) |
                          ((bits & 0x1000U) != 0U ? 0U : 1U);
     return Operation{Opcode::LoadUnsignedMinMax, field(bits, 0, 5),

@@ -746,7 +746,8 @@ ProcessKernelPlan plan_process_kernel(
                 !unsignedMinMaxMemoryOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
                  operation.immediate <= 31 && operation.shift <= 3 &&
-                 (operation.width == 32 || operation.width == 64));
+                 (operation.width == 8 || operation.width == 16 ||
+                  operation.width == 32 || operation.width == 64));
             const bool validAddSubImmediate =
                 !addSubImmediateOpcode ||
                 (operation.destination <= 31 && operation.source <= 31 &&
