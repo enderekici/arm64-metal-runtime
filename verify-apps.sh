@@ -41,7 +41,20 @@ run_bounded() {
     (exec "$@") <"${run_input:-/dev/null}" >"$run_dir/$run_label.stdout" 2>"$run_dir/$run_label.stderr" &
     run_command_pid=$!
     (
-        sleep "$timeout_seconds"
+        watchdog_child_pid=
+        watchdog_cleanup() {
+            if [ -n "$watchdog_child_pid" ]; then
+                kill "$watchdog_child_pid" 2>/dev/null || :
+                wait "$watchdog_child_pid" 2>/dev/null || :
+                watchdog_child_pid=
+            fi
+        }
+        trap 'exit 0' HUP INT TERM
+        trap 'watchdog_cleanup' 0
+        sleep "$timeout_seconds" &
+        watchdog_child_pid=$!
+        wait "$watchdog_child_pid" || :
+        watchdog_child_pid=
         if kill -0 "$run_command_pid" 2>/dev/null; then
             run_state=$(ps -p "$run_command_pid" -o stat= 2>/dev/null || :)
             case "$run_state" in
@@ -50,7 +63,10 @@ run_bounded() {
                 *)
                     : > "$marker"
                     kill -TERM "$run_command_pid" 2>/dev/null || :
-                    sleep 1
+                    sleep 1 &
+                    watchdog_child_pid=$!
+                    wait "$watchdog_child_pid" || :
+                    watchdog_child_pid=
                     kill -KILL "$run_command_pid" 2>/dev/null || :
                     ;;
             esac
