@@ -1642,13 +1642,29 @@ int main() {
           arm64metal::translate_core::OperationPacket{30, 0, 9, 0, 0, 64}));
   const auto branchRegisterLowered = make_operation_instruction(
       *branchRegister, {}, LoweringMode::Process, 0x10000, 0x2000);
+  const std::string liveNzcvSnapshot =
+      "x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);";
   assert(branchRegisterLowered.next.empty() &&
          branchRegisterLowered.ends_block_at(0x2000));
   assert((branchRegisterLowered.code == std::vector<std::string>{
       "x[33] = x[9];",
+      liveNzcvSnapshot,
       "if (x[33] == 0ul || x[33] >= 65536ul || (x[33] & 3ul) != 0ul) { "
       "x[874] = x[33]; x[33] = 8192ul; x[34] = 3; return; }",
       "x[34] = 7; return;"}));
+  const auto checkIndirectNzcvExits = [&](const auto& lowered) {
+    const auto snapshot = std::find(lowered.code.begin(), lowered.code.end(),
+                                    liveNzcvSnapshot);
+    const auto invalidExit = std::find_if(lowered.code.begin(), lowered.code.end(),
+        [](const std::string& line) {
+          return line.find("x[34] = 3; return;") != std::string::npos;
+        });
+    const auto takenExit = std::find(lowered.code.begin(), lowered.code.end(),
+                                     "x[34] = 7; return;");
+    return snapshot != lowered.code.end() && invalidExit != lowered.code.end() &&
+           takenExit != lowered.code.end() && snapshot < invalidExit && snapshot < takenExit;
+  };
+  assert(checkIndirectNzcvExits(branchRegisterLowered));
 
   const auto branchLinkRegister = decode_operation(0xd63f03c0U);  // BLR X30.
   assert(branchLinkRegister && branchLinkRegister->opcode == Opcode::BranchRegister &&
@@ -1662,9 +1678,11 @@ int main() {
       "ulong auth_slot = 38ul + 3ul * (auth_index - 1ul); "
       "if (x[auth_slot + 2] >= 0xffffffff00000000ul) { --x[auth_slot + 2]; break; } }",
       "x[30] = 8196ul;",
+      liveNzcvSnapshot,
       "if (x[33] == 0ul || x[33] >= 65536ul || (x[33] & 3ul) != 0ul) { "
       "x[874] = x[33]; x[33] = 8192ul; x[34] = 3; return; }",
       "x[34] = 7; return;"}));
+  assert(checkIndirectNzcvExits(branchLinkRegisterLowered));
   assert((serialize_operation(*branchLinkRegister) ==
           arm64metal::translate_core::OperationPacket{30, 0, 30, 1, 0, 64}));
 
