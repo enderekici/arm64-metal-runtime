@@ -144,6 +144,7 @@
     },
     {
       "id": "simd-rdm",
+      "default_enabled": false,
       "test_target": "Native and translated Metal process launch",
       "domain": "AdvSIMD signed rounding doubling multiply-accumulate",
       "fixture": "fixtures/handoff/simd-rdm-contract.c",
