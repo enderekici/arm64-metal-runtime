@@ -175,7 +175,7 @@ PLIST
                 cp "$probe_dir/tee-prefix.bin" "$output_dir/existing"
                 set -- "$tee" -a "$output_dir/existing" "$output_dir/new"
                 if [ "$lane" = guest ]; then
-                    set -- env ARM64_METAL_DEV_CPU_FALLBACK=0 ARM64_METAL_INTERPRETER=1 \
+                    set -- env ARM64_METAL_INTERPRETER=1 \
                         ARM64_METAL_SHARED_CACHE=0 ARM64_METAL_CACHE_DEMAND=0 \
                         ARM64_METAL_CACHE_BOOTSTRAP=0 ARM64_METAL_CACHE_INITIALIZERS=0 \
                         "$runtime" launch "$@"
