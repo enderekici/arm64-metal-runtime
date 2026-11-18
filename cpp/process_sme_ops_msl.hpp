@@ -31,8 +31,11 @@ uint sme_decode_pred_count(uint vl_elements, uint pattern) {
         while ((count << 1u) <= vl_elements) count <<= 1u;
         return count;
     }
-    if (pattern <= 8u) return pattern;
-    if (pattern <= 13u) return 1u << (pattern - 5u);
+    if (pattern <= 8u) return pattern <= vl_elements ? pattern : 0u;
+    if (pattern <= 13u) {
+        const uint count = 1u << (pattern - 5u);
+        return count <= vl_elements ? count : 0u;
+    }
     if (pattern == 29u) return (vl_elements / 4u) * 4u;
     if (pattern == 30u) return (vl_elements / 3u) * 3u;
     if (pattern == 31u) return vl_elements;
