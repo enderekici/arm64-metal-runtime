@@ -222,6 +222,10 @@ PLIST
                 compare look-miss 1 /usr/bin/look z "$probe_dir/dictionary"
 
                 app_shared_cache=1
+                xcrun clang -arch arm64 -D_FORTIFY_SOURCE=0 -fno-builtin-strlcat -Wall -Werror \
+                    fixtures/handoff/cache-strlcat.c -o "$probe_dir/cache-strlcat"
+                compare cache-strlcat 0 "$probe_dir/cache-strlcat"
+                compare diff-missing 2 /usr/bin/diff -u "$run_input" "$probe_dir/missing"
                 run_input=$probe_dir/delimited-rows
                 printf 'zeta:3\nalpha:1\nalpha:1\nbeta:2\n' > "$run_input"
                 compare head-limit 0 /usr/bin/head -n 2
@@ -244,7 +248,7 @@ PLIST
                 shasum -a 256 /usr/bin/head /usr/bin/basename /usr/bin/dirname /usr/bin/cksum \
                     /usr/bin/cmp /usr/bin/tail /usr/bin/look /usr/bin/cut /usr/bin/uniq /usr/bin/sort \
                     /usr/bin/tr /usr/bin/grep /usr/bin/sed /usr/bin/readlink /usr/bin/expand /usr/bin/paste \
-                    "$probe_dir/tool-input" "$probe_dir/cmp-input" "$probe_dir/different" "$probe_dir/dictionary" \
+                    /usr/bin/diff "$probe_dir/tool-input" "$probe_dir/cmp-input" "$probe_dir/different" "$probe_dir/dictionary" \
                     "$probe_dir/delimited-rows" "$probe_dir/tabs" "$probe_dir/utf-left" \
                     "$probe_dir/utf-right" "$probe_dir/utf-invalid" > "$run_dir/cli-tools.sha256"
             )

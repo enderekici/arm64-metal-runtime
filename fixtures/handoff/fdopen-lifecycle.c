@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
@@ -20,6 +21,14 @@ int main(int argc, char **argv) {
     if (close(fd)) return 9;
     errno = 0;
     if (fdopen(-1, "r") != NULL || errno != EBADF) return 10;
+    file = fopen(argv[1], "r");
+    if (!file) return 11;
+    fd = fileno(file);
+    struct stat info;
+    if (fd < 0 || fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) return 12;
+    if (fclose(file) != 0) return 13;
+    errno = 0;
+    if (fstat(fd, &info) != -1 || errno != EBADF) return 14;
     puts("fdopen lifecycle ok");
     return 0;
 }

@@ -2666,6 +2666,7 @@ HostServiceResult dispatch_guest_host_service(
                 const auto handle = state.nextFile;
                 state.nextFile += 16;
                 state.files.emplace(handle, file);
+                state.openDescriptors.insert(::fileno(file));
                 registers[0] = handle;
             }
             break;

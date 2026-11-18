@@ -776,12 +776,10 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
             if (dependency.reexported) reexports.push_back(dependency.name);
           demand_reexport_metadata.emplace(path, std::move(*image));
         }
-        const auto find_provider = [&cache, &demand_reexport_metadata](const std::string& symbol,
-                                                                       std::int64_t target) {
+        const auto find_provider = [&cache, &demand_reexport_metadata](std::int64_t target) {
           const auto original = cache.originalAddress(target);
           for (const auto& candidate : demand_reexport_metadata) {
-            const auto exported = candidate.second.exports.find(symbol);
-            if (exported == candidate.second.exports.end() || exported->second != target) continue;
+            // Re-exports may rename the symbol in the image that owns its address.
             const auto owns_address = std::any_of(candidate.second.segments.begin(), candidate.second.segments.end(),
                                                   [original](const auto& segment) {
               return original >= segment.address && original - segment.address < segment.size;
@@ -796,7 +794,7 @@ ExecutableImage::ExecutableImage(const std::filesystem::path& binary, bool share
               host_service_ids.count(import.name) != 0 || guest_memory_imports.count(import.name) != 0) return;
           const auto exported = umbrella->exports.find(import.name);
           if (exported == umbrella->exports.end()) return;
-          const auto provider = find_provider(import.name, exported->second);
+          const auto provider = find_provider(exported->second);
           if (!provider.empty()) {
             pending.insert(provider);
             demand_libsystem_exports[import.name] = {provider, exported->second};

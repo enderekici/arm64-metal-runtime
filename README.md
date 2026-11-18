@@ -167,6 +167,9 @@ shared-cache libc run its ARM64 code with demand paging and startup initializers
 disabled. The cache-off `cmp` tests use modeled read-only `fdopen` on guest-owned
 descriptors and libc-owned input buffering. The sort test uses the existing
 locale conversion service, and reverse tail maps regular stdin read-only.
+The gate also checks the missing-input diagnostic from `diff -u` and the renamed
+`strlcat` cache export. Unified comparison of two regular files reaches guest
+libc's `flockfile`, which expects a guest-addressable FILE structure.
 The Azul JDK 25.0.3 `java -version` launch resolves local `libjli` but stops
 at `_strdup`.
 See `LEDGER.md` for exact probe boundaries and remaining work.
