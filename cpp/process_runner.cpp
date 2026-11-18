@@ -877,8 +877,7 @@ ProcessKernelPlan plan_process_kernel(
                  !adrOpcode && !vectorCompareEqualZeroOpcode &&
                  !vectorReduceExtremeOpcode && !vectorReduceSumOpcode &&
                  opcode != translate_core::Opcode::SystemFlags &&
-                 opcode != translate_core::Opcode::FlagManipulation &&
-                 opcode != translate_core::Opcode::InvertCarry) ||
+                 opcode != translate_core::Opcode::FlagManipulation) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||

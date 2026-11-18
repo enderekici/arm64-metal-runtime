@@ -742,6 +742,9 @@ Instruction make_operation_instruction(Operation operation,
                    "] = value[0]; x[" + std::to_string(destination + 1U) +
                    "] = value[1]; }");
   } else if (operation.opcode == Opcode::VectorReduceSum) {
+    if (mode != LoweringMode::Process) {
+      throw std::invalid_argument("Typed vector sum reduction is process-only");
+    }
     if (operation.destination > 31 || operation.source > 31 ||
         (operation.immediate != 8U && operation.immediate != 16U &&
          operation.immediate != 32U) || operation.shift != 0U ||
@@ -1371,6 +1374,9 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation->opcode != Opcode::LoadSignedScalar &&
       operation->opcode != Opcode::BranchLink &&
       operation->opcode != Opcode::BranchRegister) {
+    if (operation->opcode == Opcode::VectorReduceSum) {
+      throw std::invalid_argument("Typed vector sum reduction is process-only");
+    }
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {
       successors.push_back(pc + static_cast<std::int32_t>(operation->immediate));

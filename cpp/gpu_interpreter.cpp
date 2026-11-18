@@ -69,7 +69,7 @@ Result Interpreter::dispatch(const Backend& backend,
     constexpr std::uint64_t guestCodeLimit = std::uint64_t{1} << 48;
     bool hasInitialPc = false;
     bool hasAuthenticatedReturn = false;
-    bool hasScalarFP = false;
+    bool hasVectorState = false;
     std::size_t initialPacketIndex = packets.size();
     bool hasMemoryAccess = false;
     std::uint64_t previousPc = 0;
@@ -306,7 +306,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter bitfield packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::ScalarFloatingPoint) {
-            hasScalarFP = true;
+            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto kind = operation[4] >> 2U;
             const auto maxImmediate = kind == 1U ? 255U : kind == 4U ? 31U : 0U;
@@ -518,6 +518,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter load min/max packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorCompareEqualZero) {
+            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto vectorWidth = operation[5];
@@ -532,6 +533,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter vector CMEQ packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorReduceExtreme) {
+            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto variant = operation[4];
@@ -546,6 +548,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter vector reduction packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorReduceSum) {
+            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto vectorWidth = operation[5];
@@ -559,6 +562,7 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter vector sum reduction packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorReverse) {
+            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto groupWidth = operation[4];
@@ -606,10 +610,10 @@ Result Interpreter::dispatch(const Backend& backend,
         throw std::invalid_argument(
             "Interpreter mid-block entry requires a host cache-retry marker");
     }
-    if (hasScalarFP &&
+    if (hasVectorState &&
         processState.size() < 878 * sizeof(std::uint64_t)) {
         throw std::invalid_argument(
-            "Interpreter scalar-FP operation requires vector register state");
+            "Interpreter vector operation requires vector register state");
     }
     if (hasMemoryAccess && (memoryAccess == nullptr ||
         memoryAccess->guestMemoryBuffer == nullptr || memoryAccess->guestSizeBuffer == nullptr ||

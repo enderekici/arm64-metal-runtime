@@ -1945,7 +1945,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  (std::string("if (") +
                   str(outside((std::string("address")), bytes, load)) +
                   ") { x[" + str(guestFaultAddress) + "] = address; x[33] = " +
-                  str(pc) + "ul; x[34] = 2; return; }")};
+                  str(pc) + "ul; x[32] = uint(z) | (uint(n) << 1) | "
+                  "(uint(v) << 2) | (uint(c) << 3); x[34] = 2; return; }")};
     if (load) {
       code.push_back((std::string("ulong value = load_guest_word(memory + ") +
                       str(pointer) + ", " + str(bytes) + ");"));
