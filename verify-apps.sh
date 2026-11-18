@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf 'Usage: %s RUNTIME RESULTS_ROOT CASE...\n' "$0" >&2
-    printf 'Cases: brk dyld-sdk plutil tar tee libz-root libz-provider jni\n' >&2
+    printf 'Cases: brk dyld-sdk plutil tar tee cli-tools libz-root libz-provider jni\n' >&2
     exit 2
 }
 
@@ -70,6 +70,9 @@ run_bounded() {
     return 0
 }
 
+app_shared_cache=1
+app_cache_initializers=1
+
 compare() {
     cmp_label=$1
     cmp_expected_status=$2
@@ -84,8 +87,9 @@ compare() {
             "$cmp_label" "$cmp_native_status" "$cmp_expected_status" >&2
         return 1
     fi
-    run_bounded "$cmp_label.guest" env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
-        ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+    run_bounded "$cmp_label.guest" env ARM64_METAL_SHARED_CACHE="$app_shared_cache" \
+        ARM64_METAL_CACHE_DEMAND="$app_shared_cache" ARM64_METAL_CACHE_BOOTSTRAP="$app_cache_initializers" \
+        ARM64_METAL_CACHE_INITIALIZERS="$app_cache_initializers" \
         "$runtime" launch "$cmp_binary" "$@" || return 1
     cmp_guest_status=$(cat "$run_dir/$cmp_label.guest.status")
     if [ "$cmp_native_status" != "$cmp_guest_status" ]; then
@@ -189,6 +193,54 @@ PLIST
             done
             shasum -a 256 "$tee" "$tee_input" "$probe_dir/tee-appended.bin" > "$run_dir/tee.sha256"
             printf 'tee append, file creation and stdout match native\n'
+            ;;
+        cli-tools)
+            (
+                export LC_ALL=C ARM64_METAL_INTERPRETER=1
+                app_shared_cache=0
+                app_cache_initializers=0
+                run_input=$probe_dir/tool-input
+                printf 'zeta:3\nalpha:1\nalpha:1\nbeta:2\n' > "$run_input"
+                printf 'five\nsix\nseven\neight\nnine\nten\neleven\n' >> "$run_input"
+                xcrun clang -arch arm64 -Wall -Wextra -Werror fixtures/handoff/fdopen-lifecycle.c \
+                    -o "$probe_dir/fdopen-lifecycle"
+                compare fdopen-lifecycle 0 "$probe_dir/fdopen-lifecycle" "$run_input"
+                compare head-default 0 /usr/bin/head
+                compare head-absent 1 /usr/bin/head "$probe_dir/missing"
+                compare basename-paths 0 /usr/bin/basename -a /one/two three/// /
+                compare dirname-paths 0 /usr/bin/dirname /one/two three/// /
+                compare cksum-stdin 0 /usr/bin/cksum -o 3
+                printf 'prefix\000\001\377end\n' > "$probe_dir/cmp-input"
+                cp "$probe_dir/cmp-input" "$probe_dir/identical"
+                printf 'prefix\000\002\377end\n' > "$probe_dir/different"
+                compare cmp-equal 0 /usr/bin/cmp -s "$probe_dir/cmp-input" "$probe_dir/identical"
+                compare cmp-quiet-difference 1 /usr/bin/cmp -s "$probe_dir/cmp-input" "$probe_dir/different"
+                compare cmp-reported-difference 1 /usr/bin/cmp "$probe_dir/cmp-input" "$probe_dir/different"
+                compare tail-reverse 0 /usr/bin/tail -r
+                printf 'amber\namberjack\nbirch\ncedar\n' > "$probe_dir/dictionary"
+                compare look-prefix 0 /usr/bin/look am "$probe_dir/dictionary"
+                compare look-miss 1 /usr/bin/look z "$probe_dir/dictionary"
+
+                app_shared_cache=1
+                run_input=$probe_dir/delimited-rows
+                printf 'zeta:3\nalpha:1\nalpha:1\nbeta:2\n' > "$run_input"
+                compare head-limit 0 /usr/bin/head -n 2
+                compare cut-field 0 /usr/bin/cut -d: -f2
+                compare uniq-count 0 /usr/bin/uniq -c
+                compare sort-unique 0 /usr/bin/sort -u
+                compare tr-uppercase 0 /usr/bin/tr a-z A-Z
+                compare grep-lines 0 /usr/bin/grep -n '^al.*:1$'
+                compare sed-substitute 0 /usr/bin/sed 's/alpha/ALPHA/g'
+                ln -s delimited-rows "$probe_dir/rows-link"
+                compare readlink-target 0 /usr/bin/readlink "$probe_dir/rows-link"
+                printf 'ab\tcd\nfoo\tbar\n' > "$probe_dir/tabs"
+                run_input=$probe_dir/tabs compare expand-tabs 0 /usr/bin/expand -t 4
+                shasum -a 256 /usr/bin/head /usr/bin/basename /usr/bin/dirname /usr/bin/cksum \
+                    /usr/bin/cmp /usr/bin/tail /usr/bin/look /usr/bin/cut /usr/bin/uniq /usr/bin/sort \
+                    /usr/bin/tr /usr/bin/grep /usr/bin/sed /usr/bin/readlink /usr/bin/expand \
+                    "$probe_dir/tool-input" "$probe_dir/cmp-input" "$probe_dir/different" "$probe_dir/dictionary" \
+                    "$probe_dir/delimited-rows" "$probe_dir/tabs" > "$run_dir/cli-tools.sha256"
+            )
             ;;
         libz-root|libz-provider)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }

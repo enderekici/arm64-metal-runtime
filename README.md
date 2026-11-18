@@ -158,6 +158,14 @@ native diagnostics and exit status.
 Unmodified `/usr/bin/bzip2 -dc` matches native on 64-byte and 37,000-byte
 named inputs and on the small stdin case. The metadata probe verifies the
 copied extended attribute. `make verify-cache` repeats both system decoders.
+Run `make verify-apps APP_VERIFY_CASES=cli-tools APP_VERIFY_RUNTIME=/path/to/arm64-metal`
+for native/Metal comparisons of 15 unchanged tools, including matched and missing
+paths, same-length binary differences, sorting, filtering, and field selection.
+The gate selects the C locale and the packaged AOT interpreter. Commands using
+shared-cache libc run its ARM64 code with demand paging and startup initializers
+disabled. The cache-off `cmp` tests use modeled read-only `fdopen` on guest-owned
+descriptors and libc-owned input buffering. The sort test uses the existing
+locale conversion service, and reverse tail maps regular stdin read-only.
 The Azul JDK 25.0.3 `java -version` launch resolves local `libjli` but stops
 at `_strdup`.
 See `LEDGER.md` for exact probe boundaries and remaining work.
