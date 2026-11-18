@@ -139,6 +139,7 @@ INTERPRETER_INTEGER_BITOPS_MAIN := $(BUILD_DIR)/interpreter-integer-bitops-main
 INTERPRETER_INTEGER_DIVIDE_MAIN := $(BUILD_DIR)/interpreter-integer-divide-main
 INTERPRETER_LITERAL_LOAD_MAIN := $(BUILD_DIR)/interpreter-literal-load-main
 INTERPRETER_LDUMIN_LDUMAX_MAIN := $(BUILD_DIR)/interpreter-ldumin-ldumax-main
+INTERPRETER_RCPC2_ALIGNMENT := $(BUILD_DIR)/interpreter-rcpc2-alignment
 INTERPRETER_RCPC2_UNSCALED_MAIN := $(BUILD_DIR)/interpreter-rcpc2-unscaled-main
 INTERPRETER_CMEQ_ZERO_MAIN := $(BUILD_DIR)/interpreter-cmeq-zero-main
 INTERPRETER_VECTOR_EXTREME_MAIN := $(BUILD_DIR)/interpreter-vector-extreme-main
@@ -875,6 +876,10 @@ $(INTERPRETER_LDUMIN_LDUMAX_MAIN): ../fixtures/interpreter/ldumin-ldumax-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
+$(INTERPRETER_RCPC2_ALIGNMENT): ../fixtures/interpreter/rcpc2-alignment.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -march=armv8.5-a -O1 "$<" -o "$@"
+
 $(INTERPRETER_RCPC2_UNSCALED_MAIN): ../fixtures/interpreter/rcpc2-unscaled-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -1086,12 +1091,26 @@ verify-interpreter-ldumin-ldumax: $(APP) $(INTERPRETER_LDUMIN_LDUMAX_MAIN) $(INT
 		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
 	echo "LDUMIN/LDUMAX native/translated/AOT fixture passed; sha256=$$binary_sha receipts=$$run_dir"
 
-.PHONY: verify-interpreter-rcpc2-native verify-interpreter-rcpc2
+.PHONY: verify-interpreter-rcpc2-native verify-interpreter-rcpc2 verify-rcpc2-alignment
+verify-rcpc2-alignment: $(APP) $(INTERPRETER_RCPC2_ALIGNMENT) $(INTERPRETER_METALLIB)
+	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/rcpc2-alignment.XXXXXX"); \
+	export ARM64_METAL_CACHE_DEMAND=0 ARM64_METAL_SHARED_CACHE=0; \
+	export ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))"; \
+	"$(INTERPRETER_RCPC2_ALIGNMENT)"; \
+	ARM64_METAL_INTERPRETER=0 "$(APP)" launch "$(INTERPRETER_RCPC2_ALIGNMENT)"; \
+	ARM64_METAL_INTERPRETER=1 ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 \
+	    "$(APP)" launch "$(INTERPRETER_RCPC2_ALIGNMENT)" 2>"$$run_dir/aot.err"; \
+	grep -q 'event=interpreter-dispatch.*detail=3$$' "$$run_dir/aot.err"; \
+	awk '/event=interpreter-packet/ { if ($$6 == "detail=2" && prev2 == "detail=12" && !seen[prevpc]++) leaf[prev]++; prev2 = prev; prev = $$6; prevpc = $$5 } \
+	     END { exit !(leaf["detail=17"] == 5 && leaf["detail=18"] == 5 && leaf["detail=20"] == 5) }' "$$run_dir/aot.err"; \
+	python3 -c 'import os, resource, signal, subprocess, sys; resource.setrlimit(resource.RLIMIT_CORE, (0,0)); app, fixture = sys.argv[1:]; results = [subprocess.run([fixture, "default"]).returncode] + [subprocess.run([app, "launch", fixture, "default"], env=dict(os.environ, ARM64_METAL_INTERPRETER=mode)).returncode for mode in ("0", "1")]; assert results == [-signal.SIGBUS] * 3, results' "$(APP)" "$(INTERPRETER_RCPC2_ALIGNMENT)"; \
+	echo "RCpc2 alignment native/translated/AOT passed: 240 offset cases and default SIGBUS; receipts=$$run_dir"
+
 verify-interpreter-rcpc2-native: $(INTERPRETER_RCPC2_UNSCALED_MAIN)
 	@set -eu; set +e; "$(INTERPRETER_RCPC2_UNSCALED_MAIN)"; rc=$$?; set -e; \
 		test "$$rc" -eq 42; echo "RCpc2 unscaled native guest exit=$$rc"
 
-verify-interpreter-rcpc2: $(APP) $(INTERPRETER_RCPC2_UNSCALED_MAIN) $(INTERPRETER_METALLIB)
+verify-interpreter-rcpc2: verify-rcpc2-alignment $(APP) $(INTERPRETER_RCPC2_UNSCALED_MAIN) $(INTERPRETER_METALLIB)
 	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/rcpc2-unscaled.XXXXXX"); \
 	binary_sha=$$(shasum -a 256 "$(INTERPRETER_RCPC2_UNSCALED_MAIN)" | awk '{print $$1}'); \
 	set +e; \

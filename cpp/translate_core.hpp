@@ -61,6 +61,9 @@ enum class Opcode : std::uint32_t {
   AuthenticatedReturn = 36,
 };
 
+// Bit 3 distinguishes RCpc2 ordered accesses in indexed and signed scalar packets.
+inline constexpr std::uint32_t rcpc2Ordered = 8U;
+
 enum class VectorMemoryMode : std::uint32_t {
   ScaledImmediate = 0,
   Unscaled = 1,

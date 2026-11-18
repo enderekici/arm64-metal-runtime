@@ -19,6 +19,9 @@
 
 namespace arm64metal {
 
+// The shared memory shader reports an alignment Data Abort before translation.
+inline constexpr int guestReadAlignmentFaultStatus = 19;
+inline constexpr int guestWriteAlignmentFaultStatus = 20;
 inline constexpr int kGuestSpawnEnvironmentDescriptorFloor = 198;
 
 inline constexpr std::size_t guestVectorStateStart = 806;

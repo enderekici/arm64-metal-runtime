@@ -92,16 +92,16 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     const auto encodedDisplacement = static_cast<std::uint32_t>(displacement);
     if (opc == 0U) {
       return Operation{Opcode::StoreUnscaledWriteback, target, base,
-                       encodedDisplacement, 0, width};
+                       encodedDisplacement, rcpc2Ordered, width};
     }
     if (opc == 1U) {
       return Operation{Opcode::LoadUnscaledWriteback, target, base,
-                       encodedDisplacement, 0, width};
+                       encodedDisplacement, rcpc2Ordered, width};
     }
     if ((opc == 2U && size <= 2U) || (opc == 3U && size <= 1U)) {
       const auto targetIsX = opc == 2U;
       return Operation{Opcode::LoadSignedScalar, target, base,
-                       encodedDisplacement, 1U | (targetIsX ? 4U : 0U), width};
+                       encodedDisplacement, rcpc2Ordered | 1U | (targetIsX ? 4U : 0U), width};
     }
     return std::nullopt;
   }

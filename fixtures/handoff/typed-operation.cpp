@@ -2055,22 +2055,22 @@ int main() {
   const auto ldapurb = decode_operation(0x19500020U);
   assert(ldapurb && ldapurb->opcode == Opcode::LoadUnscaledWriteback &&
          ldapurb->destination == 0U && ldapurb->source == 1U &&
-         ldapurb->immediate == 0xffffff00U && ldapurb->shift == 0U &&
+         ldapurb->immediate == 0xffffff00U && ldapurb->shift == 8U &&
          ldapurb->width == 8U);
   const auto ldapursb = decode_operation(0x198ff3e0U);
   assert(ldapursb && ldapursb->opcode == Opcode::LoadSignedScalar &&
          ldapursb->destination == 0U && ldapursb->source == 31U &&
-         ldapursb->immediate == 255U && ldapursb->shift == 5U &&
+         ldapursb->immediate == 255U && ldapursb->shift == 13U &&
          ldapursb->width == 8U);
   const auto ldapursw = decode_operation(0x999ff020U);
   assert(ldapursw && ldapursw->opcode == Opcode::LoadSignedScalar &&
          ldapursw->destination == 0U && ldapursw->source == 1U &&
-         ldapursw->immediate == 0xffffffffU && ldapursw->shift == 5U &&
+         ldapursw->immediate == 0xffffffffU && ldapursw->shift == 13U &&
          ldapursw->width == 32U);
   const auto stlur = decode_operation(0xd9001020U);
   assert(stlur && stlur->opcode == Opcode::StoreUnscaledWriteback &&
          stlur->destination == 0U && stlur->source == 1U &&
-         stlur->immediate == 1U && stlur->shift == 0U && stlur->width == 64U);
+         stlur->immediate == 1U && stlur->shift == 8U && stlur->width == 64U);
   const auto processLdumin = arm64metal::decode_process(
       0xb8217040U, 0x1000, {}, {}, false);
   std::string processLduminSource;

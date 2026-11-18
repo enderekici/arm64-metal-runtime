@@ -854,7 +854,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const uint rt = instruction.operation[1];
                 const uint rn = instruction.operation[2];
                 const int displacement = as_type<int>(instruction.operation[3]);
-                const uint mode = instruction.operation[4];
+                const bool ordered = instruction.operation[4] == 8u;
+                const uint mode = ordered ? 0u : instruction.operation[4];
                 const uint width = instruction.operation[5];
                 const uint bytes = width / 8u;
                 const bool load = opcode == 17u;
@@ -874,6 +875,7 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const ulong base = state[rn];
                 const ulong address = mode == 1u
                     ? base : base + ulong(displacement);
+                if (ordered && rcpc2_alignment_fault(address, bytes, !load, pc, state)) return;
                 const ulong offset = guest_offset(address, bytes, size, writable,
                                                    !load, state, resident, config);
                 if (offset == ~0ul) {
@@ -924,7 +926,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                       uint(instruction.operation[3]) % bytes == 0u
                     : displacement >= -256 && displacement <= 255);
                 if (rt > 31u || rn > 31u || !validWidth ||
-                    (modeAndWidth & ~7u) != 0u || (width == 32u && !targetIsX) ||
+                    (modeAndWidth & ~15u) != 0u || ((modeAndWidth & 8u) != 0 && mode != 1u) ||
+                    (width == 32u && !targetIsX) ||
                     !validOffset || (mode >= 2u && rn != 31u && rn == rt) ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
@@ -935,6 +938,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 const ulong base = state[rn];
                 const ulong address = mode == 2u
                     ? base : base + ulong(displacement);
+                if ((modeAndWidth & 8u) != 0 && rcpc2_alignment_fault(address, bytes, false, pc, state))
+                    return;
                 const ulong offset = guest_offset(address, bytes, size, writable,
                                                    false, state, resident, config);
                 if (offset == ~0ul) {

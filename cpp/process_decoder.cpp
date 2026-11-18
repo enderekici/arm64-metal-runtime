@@ -1942,6 +1942,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                          str(wrappedOffset) + "ul";
     const auto pointer = physical((std::string("address")), bytes, load);
     Strings code{(std::string("{ ulong address = ") + address + ";"),
+                 "if (rcpc2_alignment_fault(address, " + str(bytes) + ", " +
+                     (load ? "false" : "true") + ", " + str(pc) +
+                     "ul, x)) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | "
+                     "(uint(c) << 3); return; }",
                  (std::string("if (") +
                   str(outside((std::string("address")), bytes, load)) +
                   ") { x[" + str(guestFaultAddress) + "] = address; x[33] = " +

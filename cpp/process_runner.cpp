@@ -638,9 +638,10 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 31 &&
                  (operation.width == 8 || operation.width == 16 ||
                   operation.width == 32 || operation.width == 64) &&
-                 operation.shift <= 3 && operation.shift != 2 &&
+                 (operation.shift == translate_core::rcpc2Ordered ||
+                  (operation.shift <= 3 && operation.shift != 2)) &&
                  indexedScalarOffset >= -256 && indexedScalarOffset <= 255 &&
-                 (operation.shift == 0 || operation.source == 31 ||
+                 ((operation.shift & 3U) == 0 || operation.source == 31 ||
                   operation.source != operation.destination));
             const auto signedScalarOffset =
                 static_cast<std::int32_t>(operation.immediate);
@@ -652,7 +653,8 @@ ProcessKernelPlan plan_process_kernel(
                 (operation.destination <= 31 && operation.source <= 31 &&
                  (operation.width == 8 || operation.width == 16 ||
                   operation.width == 32) &&
-                 (operation.shift & ~7U) == 0 &&
+                 (operation.shift & ~(7U | translate_core::rcpc2Ordered)) == 0 &&
+                 ((operation.shift & translate_core::rcpc2Ordered) == 0 || signedScalarMode == 1) &&
                  (operation.width != 32 || signedTargetIsX) &&
                  (signedScalarMode == 0
                       ? (operation.immediate <= 0xfffU * signedAccessBytes &&
@@ -11027,8 +11029,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             selectKernel(entry);
             continue;
         }
-        if (status == 2) {
-            if (cache_faulted(registers) && options.demandCache) {
+        const bool alignmentFault = status == guestReadAlignmentFaultStatus ||
+                                    status == guestWriteAlignmentFaultStatus;
+        if (status == 2 || alignmentFault) {
+            if (!alignmentFault && cache_faulted(registers) && options.demandCache) {
                 const auto requested = registers[guestCacheFaultAddress];
                 const auto width = registers[guestCacheFaultWidth];
                 const auto faultPc = registers[33];
@@ -11101,11 +11105,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto address = registers[guestFaultAddress];
             std::vector<std::uint64_t> live(
                 registers, registers + stateBuffer.size() / sizeof(std::uint64_t));
-            const bool protectionFault = guestMemory.is_protection_fault(address);
+            const bool busFault = alignmentFault || guestMemory.is_protection_fault(address);
+            const std::uint32_t syndrome = alignmentFault
+                ? (status == guestWriteAlignmentFaultStatus ? 0x92000061U : 0x92000021U) : 0;
             const GuestSynchronousFault fault{
-                protectionFault ? SIGBUS : SIGSEGV,
-                protectionFault ? BUS_ADRALN : SEGV_MAPERR,
-                address, registers[33]};
+                busFault ? SIGBUS : SIGSEGV, busFault ? BUS_ADRALN : SEGV_MAPERR,
+                address, registers[33], syndrome};
             const auto delivery = signalRuntime.deliver_synchronous(
                 hostServiceState.signals, hostServiceState.threadSignalMask,
                 live, guestMemory, fault, live[37],

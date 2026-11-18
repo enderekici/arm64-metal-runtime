@@ -226,6 +226,10 @@ GuestSignalDelivery GuestSignalRuntime::deliver_synchronous(
     write_context_integer(ucontext, 40, &machineContextSize, sizeof(machineContextSize));
     write_context_integer(ucontext, kGuestUcontextMcontextPointer, &mcontextAddress,
                           sizeof(mcontextAddress));
+    if ((fault.exceptionSyndrome >> 26U) == 0x24U) {  // Data Abort from lower EL
+        write_context_integer(mcontext, offsetof(_STRUCT_MCONTEXT, __es.__far),
+                              &fault.address, sizeof(fault.address));
+    }
     write_context_integer(mcontext, kGuestMcontextExceptionSyndrome,
                           &fault.exceptionSyndrome, sizeof(fault.exceptionSyndrome));
     for (std::size_t index = 0; index < 29; ++index) {

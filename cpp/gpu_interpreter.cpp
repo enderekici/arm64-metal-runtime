@@ -407,7 +407,8 @@ Result Interpreter::dispatch(const Backend& backend,
                    opcode == translate_core::Opcode::StoreUnscaledWriteback) {
             hasMemoryAccess = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
-            const auto mode = operation[4];
+            const bool ordered = operation[4] == translate_core::rcpc2Ordered;
+            const auto mode = ordered ? 0U : operation[4];
             const auto offset = static_cast<std::int32_t>(operation[3]);
             if (operation[1] > 31 || operation[2] > 31 ||
                 (operation[5] != 8 && operation[5] != 16 &&
@@ -434,7 +435,9 @@ Result Interpreter::dispatch(const Backend& backend,
                 : offset >= -256 && offset <= 255);
             if (operation[1] > 31 || operation[2] > 31 ||
                 !validWidth ||
-                (operation[4] & ~7U) != 0 || (width == 32 && !targetIsX) ||
+                (operation[4] & ~(7U | translate_core::rcpc2Ordered)) != 0 ||
+                ((operation[4] & translate_core::rcpc2Ordered) != 0 && mode != 1) ||
+                (width == 32 && !targetIsX) ||
                 !validOffset || (mode >= 2 && operation[2] != 31 &&
                  operation[2] == operation[1]) ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
