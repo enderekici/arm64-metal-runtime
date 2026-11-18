@@ -53,6 +53,78 @@ ulong2 vop_i8mm(ulong2 accumulator, ulong2 left, ulong2 right,
     }
     return result;
 }
+
+// Standard BFDotAdd (FEAT_BF16 with EBF=0). Products fit in 16 significand bits.
+uint bf16_product(uint left, uint right, uint nan_bits) {
+    uint a = left & 0x7fffu, b = right & 0x7fffu;
+    uint sign = ((left ^ right) & 0x8000u) << 16;
+    if (a > 0x7f80u || b > 0x7f80u) return nan_bits;
+    if (a == 0x7f80u || b == 0x7f80u) {
+        return min(a, b) < 0x80u ? nan_bits : sign | 0x7f800000u;
+    }
+    if (min(a, b) < 0x80u) return sign;
+    uint product = (128u | (a & 127u)) * (128u | (b & 127u));
+    uint carry = product >> 15;
+    int exponent = int(a >> 7) + int(b >> 7) - 127 + int(carry);
+    if (exponent <= 0) return sign;
+    if (exponent >= 255) return sign | 0x7f800000u;
+    return sign | (uint(exponent) << 23) | ((product << (9u - carry)) & 0x7fffffu);
+}
+
+// FPAdd_BF16 flushes subnormals and rounds each inexact sum to odd, without FPSR updates.
+uint bf16_add(uint left, uint right, uint nan_bits) {
+    uint a = left & 0x7fffffffu, b = right & 0x7fffffffu;
+    bool subtract = ((left ^ right) >> 31) != 0;
+    if (a < b) {
+        uint swap = a;
+        a = b;
+        b = swap;
+        left = right;  // The larger magnitude determines the sign.
+    }
+    uint sign = left & 0x80000000u;
+    if (a > 0x7f800000u || (a == 0x7f800000u && a == b && subtract)) return nan_bits;
+    if (a == 0x7f800000u) return left;
+    if (a < 0x800000u) return subtract ? 0u : sign;
+    if (b < 0x800000u) return left;
+    if (a == b && subtract) return 0u;
+    uint exponent_b = b >> 23;
+    uint gap = (a >> 23) - exponent_b;
+    if (gap > 32u) {
+        // The smaller summand is below half of either neighboring ULP. Select
+        // the truncated magnitude in the direction of the exact sum, then jam.
+        return sign | ((a - uint(subtract)) | 1u);
+    }
+    ulong hi = ulong((a & 0x7fffffu) | 0x800000u) << gap;
+    ulong lo = (b & 0x7fffffu) | 0x800000u;
+    ulong sum = subtract ? hi - lo : hi + lo;
+    int shift = 63 - int(clz(sum)) - 23;
+    int exponent = int(exponent_b) + shift;
+    if (exponent <= 0) return sign;
+    if (exponent >= 255) return sign | 0x7f800000u;
+    ulong significand = sum;
+    if (shift > 0) {
+        significand = sum >> uint(shift);
+        if ((significand << uint(shift)) != sum) significand |= 1ul;
+    } else {
+        significand <<= uint(-shift);
+    }
+    return sign | (uint(exponent) << 23) | (uint(significand) & 0x7fffffu);
+}
+
+ulong2 vop_bfdot(ulong2 accumulator, ulong2 left, ulong2 right, uint lanes, uint pair, uint fpcr) {
+    uint nan_bits = 0x7fc00000u | ((fpcr & 2u) << 30);
+    ulong2 result = ulong2(0);
+    for (uint lane = 0; lane < lanes; ++lane) {
+        uint a = uint(lane_read(left, lane, 32));
+        uint b = uint(lane_read(right, pair == 4u ? lane : pair, 32));
+        uint first = bf16_product(a & 65535u, b & 65535u, nan_bits);
+        uint second = bf16_product(a >> 16, b >> 16, nan_bits);
+        uint dot = bf16_add(first, second, nan_bits);
+        lane_add(result, lane, 32, bf16_add(uint(lane_read(accumulator, lane, 32)), dot, nan_bits));
+    }
+    return result;
+}
+
 // 0 ADDP, 1 MAX, 2 MIN
 ulong2 vop_int_pairwise(uint op, ulong2 left, ulong2 right, uint width, uint bits, bool is_signed) {
     ulong2 target = ulong2(0);

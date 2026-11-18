@@ -254,6 +254,13 @@ inline std::optional<translate_core::Instruction> floating_point(std::uint32_t b
   const auto w = boolean(wide);
   const auto bitcount = num(total);
   const auto bitsarg = w + ", " + bitcount + ", x";
+  const bool bfdot_vector = (bits & 0xbfe0fc00u) == 0x2e40fc00u;
+  const bool bfdot_indexed = (bits & 0xbfc0f400u) == 0x0f40f000u;
+  if (bfdot_vector || bfdot_indexed) {
+    const auto pair = bfdot_vector ? 4u : (field(bits, 11, 1) << 1) | field(bits, 21, 1);
+    return make({assign(rd, "vop_bfdot(" + d + ", " + n + ", " + m + ", " +
+                       num(q ? 4 : 2) + "u, " + num(pair) + "u, uint(x[@GUEST_FPCR@]))")}, pc);
+  }
   if ((vector_form || scalar_form) && (bits & 0x00200400U) == 0x00200400U) {
     const auto opcode = field(bits, 11, 5);
     if (opcode < 0x18) return std::nullopt;

@@ -1433,7 +1433,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   case 0xd51b4420: {
     bool fpcr = (bits & 32) == 0;
     if (fpcr) {
-      return emit("x[" + str(guestFPCR) + "] = " + reg(rd) + " & 0x03c00000ul;");
+      return emit("x[" + str(guestFPCR) + "] = " + reg(rd) + " & 0x03c00002ul;");
     }
     return emit("x[" + str(guestFPSR) + "] = (" + reg(rd) + " & 0x0800009ful) | (x[" +
                 str(guestFPSR) + "] & (1ul << 24));");
