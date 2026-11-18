@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf 'Usage: %s RUNTIME RESULTS_ROOT CASE...\n' "$0" >&2
-    printf 'Cases: brk dyld-sdk plutil tar tee cli-tools libz-root libz-provider jni\n' >&2
+    printf 'Cases: brk dyld-sdk plutil tar tee cli-tools compression libz-root libz-provider jni\n' >&2
     exit 2
 }
 
@@ -12,7 +12,7 @@ runtime=$1
 results_root=$2
 shift 2
 if [ "$#" -eq 1 ] && [ "$1" = all ]; then
-    set -- brk dyld-sdk plutil tar libz-root libz-provider
+    set -- brk dyld-sdk plutil tar compression libz-root libz-provider
     if [ -n "${JDK_HOME:-}" ]; then
         set -- "$@" jni
     fi
@@ -248,6 +248,78 @@ PLIST
                     "$probe_dir/delimited-rows" "$probe_dir/tabs" "$probe_dir/utf-left" \
                     "$probe_dir/utf-right" "$probe_dir/utf-invalid" > "$run_dir/cli-tools.sha256"
             )
+            ;;
+        compression)
+            gzip=/usr/bin/gzip
+            bzip2=/usr/bin/bzip2
+            [ -x "$gzip" ] || { printf 'Missing %s\n' "$gzip" >&2; exit 2; }
+            [ -x "$bzip2" ] || { printf 'Missing %s\n' "$bzip2" >&2; exit 2; }
+            compression_input=$probe_dir/compression-input.bin
+            awk 'BEGIN { for (i=0; i<12000; ++i) printf "payload-%08d-\377\n", i }' > "$compression_input"
+            test "$(wc -c < "$compression_input" | tr -d ' ')" = 228000
+            gzip_stream=$probe_dir/compression-input.gz
+            (exec "$gzip" -n -c) < "$compression_input" > "$gzip_stream" \
+                2> "$probe_dir/compression-gzip-encode.native.stderr"
+            test ! -s "$probe_dir/compression-gzip-encode.native.stderr"
+            for lane in native guest; do
+                set -- "$gzip" -dc
+                if [ "$lane" = guest ]; then
+                    set -- env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+                        ARM64_METAL_CACHE_BOOTSTRAP=0 ARM64_METAL_CACHE_INITIALIZERS=0 \
+                        ARM64_METAL_INTERPRETER=1 "$runtime" launch "$gzip" -dc
+                fi
+                run_input=$gzip_stream run_bounded "compression-gzip-decode.$lane" "$@" || exit 1
+                test "$(cat "$run_dir/compression-gzip-decode.$lane.status")" = 0
+                cmp "$compression_input" "$run_dir/compression-gzip-decode.$lane.stdout"
+            done
+            cmp "$run_dir/compression-gzip-decode.native.stdout" \
+                "$run_dir/compression-gzip-decode.guest.stdout"
+            cmp "$run_dir/compression-gzip-decode.native.stderr" \
+                "$run_dir/compression-gzip-decode.guest.stderr"
+            printf 'not a gzip stream\000\377\n' > "$probe_dir/compression-malformed.gz"
+            malformed_gzip=$probe_dir/compression-malformed.gz
+            for lane in native guest; do
+                set -- "$gzip" -dc
+                if [ "$lane" = guest ]; then
+                    set -- env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+                        ARM64_METAL_CACHE_BOOTSTRAP=0 ARM64_METAL_CACHE_INITIALIZERS=0 \
+                        ARM64_METAL_INTERPRETER=1 "$runtime" launch "$gzip" -dc
+                fi
+                run_input=$malformed_gzip run_bounded "compression-gzip-malformed.$lane" "$@" || exit 1
+            done
+            test "$(cat "$run_dir/compression-gzip-malformed.native.status")" = 1
+            test "$(cat "$run_dir/compression-gzip-malformed.guest.status")" = 1
+            cmp "$run_dir/compression-gzip-malformed.native.stdout" \
+                "$run_dir/compression-gzip-malformed.guest.stdout"
+            cmp "$run_dir/compression-gzip-malformed.native.stderr" \
+                "$run_dir/compression-gzip-malformed.guest.stderr"
+            bzip2_input=$probe_dir/compression-bzip2-input.bin
+            head -c 65536 "$compression_input" > "$bzip2_input"
+            test "$(wc -c < "$bzip2_input" | tr -d ' ')" = 65536
+            run_input=$bzip2_input run_bounded compression-bzip2-encode.native \
+                "$bzip2" -c || exit 1
+            test "$(cat "$run_dir/compression-bzip2-encode.native.status")" = 0
+            test ! -s "$run_dir/compression-bzip2-encode.native.stderr"
+            bzip2_stream=$run_dir/compression-bzip2-encode.native.stdout
+            for lane in native guest; do
+                set -- "$bzip2" -dc
+                if [ "$lane" = guest ]; then
+                    set -- env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+                        ARM64_METAL_CACHE_BOOTSTRAP=0 ARM64_METAL_CACHE_INITIALIZERS=0 \
+                        ARM64_METAL_INTERPRETER=1 "$runtime" launch "$bzip2" -dc
+                fi
+                run_input=$bzip2_stream \
+                    run_bounded "compression-bzip2-decode.$lane" "$@" || exit 1
+                test "$(cat "$run_dir/compression-bzip2-decode.$lane.status")" = 0
+                cmp "$bzip2_input" "$run_dir/compression-bzip2-decode.$lane.stdout"
+            done
+            cmp "$run_dir/compression-bzip2-decode.native.stdout" \
+                "$run_dir/compression-bzip2-decode.guest.stdout"
+            cmp "$run_dir/compression-bzip2-decode.native.stderr" \
+                "$run_dir/compression-bzip2-decode.guest.stderr"
+            shasum -a 256 "$gzip" "$bzip2" "$compression_input" "$bzip2_input" "$gzip_stream" \
+                "$bzip2_stream" > "$run_dir/compression.sha256"
+            printf '228000-byte gzip and 65536-byte bzip2 stdin decoding plus malformed gzip match native\n'
             ;;
         libz-root|libz-provider)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
