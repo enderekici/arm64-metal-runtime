@@ -17,6 +17,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -686,6 +687,77 @@ int run_command(const std::vector<std::string>& args,
     options.runtimeExecutablePath = executablePath;
     options.guestArgv0 = guestArgv0;
     options.guestEnvironment = std::move(environment);
+    configure_interpreter_assets(options, executablePath);
+    return launch_with_signal_propagation(args[1], arguments, options);
+  }
+
+  if (args[0] == "__exec_launch") {
+    if (args.size() < 6) throw std::runtime_error("Malformed internal exec launch");
+    const auto argumentCount = parse_spawn_count(args[2]);
+    if (argumentCount == 0 || argumentCount > args.size() - 5) {
+      throw std::runtime_error("Malformed internal exec argument vector");
+    }
+    std::size_t cursor = 3;
+    const auto guestArgv0 = args[cursor++];
+    std::vector<std::string> arguments;
+    arguments.reserve(argumentCount - 1);
+    for (std::size_t index = 1; index < argumentCount; ++index) {
+      arguments.push_back(args[cursor++]);
+    }
+    const auto environmentDescriptor = parse_spawn_count(args[cursor++]);
+    if (environmentDescriptor < static_cast<std::size_t>(
+                                    arm64metal::kGuestSpawnEnvironmentDescriptorFloor) ||
+        environmentDescriptor > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error("Invalid internal exec environment descriptor");
+    }
+    const auto inheritedCount = parse_spawn_count(args[cursor++]);
+    if (inheritedCount > args.size() - cursor) {
+      throw std::runtime_error("Malformed internal exec descriptor vector");
+    }
+    std::vector<std::int32_t> inheritedDescriptors;
+    inheritedDescriptors.reserve(inheritedCount);
+    std::set<std::int32_t> uniqueDescriptors;
+    for (std::size_t index = 0; index < inheritedCount; ++index, ++cursor) {
+      const auto descriptor = parse_spawn_count(args[cursor]);
+      if (descriptor < 3 || descriptor > static_cast<std::size_t>(
+                                              std::numeric_limits<std::int32_t>::max()) ||
+          !uniqueDescriptors.insert(static_cast<std::int32_t>(descriptor)).second) {
+        throw std::runtime_error("Invalid internal exec inherited descriptor");
+      }
+      inheritedDescriptors.push_back(static_cast<std::int32_t>(descriptor));
+    }
+    if (cursor == args.size()) {
+      throw std::runtime_error("Malformed internal exec writable descriptor count");
+    }
+    const auto writableCount = parse_spawn_count(args[cursor++]);
+    if (writableCount != args.size() - cursor) {
+      throw std::runtime_error("Malformed internal exec writable descriptor vector");
+    }
+    std::vector<std::int32_t> writableDescriptors;
+    writableDescriptors.reserve(writableCount);
+    std::set<std::int32_t> uniqueWritableDescriptors;
+    for (; cursor < args.size(); ++cursor) {
+      const auto descriptor = parse_spawn_count(args[cursor]);
+      if (descriptor < 3 || descriptor > static_cast<std::size_t>(
+                                              std::numeric_limits<std::int32_t>::max()) ||
+          !uniqueDescriptors.count(static_cast<std::int32_t>(descriptor)) ||
+          !uniqueWritableDescriptors.insert(static_cast<std::int32_t>(descriptor)).second) {
+        throw std::runtime_error("Invalid internal exec writable descriptor");
+      }
+      writableDescriptors.push_back(static_cast<std::int32_t>(descriptor));
+    }
+    auto environment = read_spawn_environment(static_cast<int>(environmentDescriptor));
+
+    arm64metal::process_runner::LaunchOptions options;
+    options.sharedCache = environment_enabled("ARM64_METAL_SHARED_CACHE");
+    options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
+    options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
+    options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
+    options.runtimeExecutablePath = executablePath;
+    options.guestArgv0 = guestArgv0;
+    options.guestEnvironment = std::move(environment);
+    options.inheritedGuestDescriptors = std::move(inheritedDescriptors);
+    options.inheritedWritableGuestDescriptors = std::move(writableDescriptors);
     configure_interpreter_assets(options, executablePath);
     return launch_with_signal_propagation(args[1], arguments, options);
   }

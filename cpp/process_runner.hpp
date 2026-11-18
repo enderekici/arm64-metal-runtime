@@ -24,6 +24,8 @@ struct LaunchOptions {
     std::filesystem::path runtimeExecutablePath;
     std::optional<std::string> guestArgv0;
     std::optional<std::vector<std::string>> guestEnvironment;
+    std::vector<std::int32_t> inheritedGuestDescriptors;
+    std::vector<std::int32_t> inheritedWritableGuestDescriptors;
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;

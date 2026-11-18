@@ -101,6 +101,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_malloc_type_realloc", 57, true, true},
     {"_mach_timebase_info", 58, true, true},
     {"_mach_absolute_time", 59, true, true},
+    {"_execve", 269, true, true},
     {"_clock", 60, true, true},
     {"_clock_gettime", 61, true, true},
     {"_fopen", 62, true, true},

@@ -2646,6 +2646,24 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     std::string lastHostTransition = "none";
     HostServiceState hostServiceState;
     hostServiceState.runtimeExecutablePath = options.runtimeExecutablePath;
+    hostServiceState.guestThreadCount = [&guestScheduler]() {
+        return guestScheduler.thread_count();
+    };
+    for (const auto descriptor : options.inheritedGuestDescriptors) {
+        if (descriptor < STDERR_FILENO || ::fcntl(descriptor, F_GETFD) < 0) {
+            throw std::runtime_error("Invalid inherited guest descriptor during exec launch");
+        }
+        hostServiceState.openDescriptors.insert(descriptor);
+        hostServiceState.standardDescriptorFlags.emplace(descriptor, 0);
+    }
+    for (const auto descriptor : options.inheritedWritableGuestDescriptors) {
+        if (std::find(options.inheritedGuestDescriptors.begin(),
+                      options.inheritedGuestDescriptors.end(), descriptor) ==
+            options.inheritedGuestDescriptors.end()) {
+            throw std::runtime_error("Invalid inherited writable descriptor during exec launch");
+        }
+        hostServiceState.writableDescriptors.insert(descriptor);
+    }
     if (performanceSummary.enabled()) {
         hostServiceState.recordPerformanceHostService = [&](double seconds) {
             performanceSummary.recordHostService(seconds);

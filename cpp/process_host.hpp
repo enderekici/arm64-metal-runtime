@@ -318,6 +318,7 @@ struct HostServiceState {
     std::function<bool(bool)> setJitWriteProtection;
     // Optional aggregate timing hook for the central host-service dispatcher.
     std::function<void(double)> recordPerformanceHostService;
+    std::function<std::size_t()> guestThreadCount;
 
     HostServiceState() = default;
     HostServiceState(const HostServiceState&) = delete;

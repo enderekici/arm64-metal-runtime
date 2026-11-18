@@ -1408,6 +1408,294 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
+        case 269: {  // execve replaces this runtime image in the current PID
+            const auto fail_exec = [&](int error) {
+                set_errno(error);
+                registers[0] = failure;
+            };
+            if (state.guestThreadCount && state.guestThreadCount() != 1) {
+                fail_exec(ENOTSUP);
+                break;
+            }
+            if (!state.spawnedChildren.empty() || !state.socketDescriptors.empty() ||
+                !state.guestDirectories.empty() || !state.files.empty() ||
+                state.threadSignalMask != 0 || state.signals.mask() != 0 ||
+                state.signals.pending() != 0 || state.threadPendingSignals != 0 ||
+                state.queuedProcessSignals != 0) {
+                fail_exec(ENOTSUP);
+                break;
+            }
+            bool unsupportedSignalAction = false;
+            for (std::int32_t signal = 1; signal < NSIG; ++signal) {
+                if (!GuestSignals::valid(signal)) continue;
+                if (state.signals.action(signal).handler != 0) {
+                    unsupportedSignalAction = true;
+                    break;
+                }
+            }
+            if (unsupportedSignalAction) {
+                fail_exec(ENOTSUP);
+                break;
+            }
+
+            std::string guestExecutable;
+            if (!guest_path(registers[0], guestExecutable)) {
+                registers[0] = failure;
+                break;
+            }
+            std::vector<std::string> guestArguments;
+            std::vector<std::string> guestEnvironment;
+            const auto read_guest_vector = [&](std::uint64_t address,
+                                               std::vector<std::string>& values,
+                                               bool allowNull) {
+                if (address == 0) return allowNull ? 0 : EFAULT;
+                constexpr std::size_t maximumCount = 32768;
+                std::size_t textBytes = 0;
+                for (std::size_t index = 0; index <= maximumCount; ++index) {
+                    if (index > (std::numeric_limits<std::uint64_t>::max() - address) /
+                                    sizeof(std::uint64_t)) return EFAULT;
+                    std::uint64_t pointer = 0;
+                    try {
+                        std::memcpy(&pointer, memory.buffer(
+                            address + index * sizeof(pointer), sizeof(pointer)), sizeof(pointer));
+                    } catch (const std::out_of_range&) {
+                        return EFAULT;
+                    }
+                    if (pointer == 0) return 0;
+                    if (index == maximumCount) return E2BIG;
+                    try {
+                        auto value = string_at(pointer);
+                        if (value.size() + 1 > (1U << 20) -
+                                                   std::min<std::size_t>(textBytes, 1U << 20)) {
+                            return E2BIG;
+                        }
+                        textBytes += value.size() + 1;
+                        values.push_back(std::move(value));
+                    } catch (const std::exception&) {
+                        return EFAULT;
+                    }
+                }
+                return E2BIG;
+            };
+            auto error = read_guest_vector(registers[1], guestArguments, false);
+            if (error == 0 && guestArguments.empty()) error = EFAULT;
+            if (error == 0) error = read_guest_vector(registers[2], guestEnvironment, true);
+            if (error != 0) {
+                fail_exec(error);
+                break;
+            }
+            struct stat executableStatus{};
+            if (::stat(guestExecutable.c_str(), &executableStatus) != 0) {
+                fail_exec(errno);
+                break;
+            }
+            if (S_ISDIR(executableStatus.st_mode)) {
+                fail_exec(EACCES);
+                break;
+            }
+            if (::access(guestExecutable.c_str(), X_OK) != 0) {
+                fail_exec(errno);
+                break;
+            }
+            try {
+                (void)MachImage(guestExecutable, true, ExecutableImage::minimum_image_address);
+            } catch (const std::exception&) {
+                fail_exec(ENOEXEC);
+                break;
+            }
+
+            std::set<std::int32_t> inheritedDescriptors;
+            const auto add_inherited_descriptor = [&](std::int32_t descriptor) {
+                if (descriptor < 0) return 0;
+                const auto hostFlags = ::fcntl(descriptor, F_GETFD);
+                if (hostFlags < 0) return errno;
+                const auto guestFlags = state.standardDescriptorFlags.find(descriptor);
+                const auto flags = guestFlags == state.standardDescriptorFlags.end()
+                    ? hostFlags : guestFlags->second;
+                if ((flags & FD_CLOEXEC) == 0) inheritedDescriptors.insert(descriptor);
+                return 0;
+            };
+            for (std::int32_t descriptor = STDIN_FILENO;
+                 descriptor <= STDERR_FILENO && error == 0; ++descriptor) {
+                if (standard_descriptor_open(descriptor))
+                    error = add_inherited_descriptor(descriptor);
+            }
+            for (const auto descriptor : state.openDescriptors) {
+                if (error == 0) error = add_inherited_descriptor(descriptor);
+            }
+            for (const auto& descriptor : state.guestDirectoryDescriptors) {
+                if (error == 0) error = add_inherited_descriptor(descriptor.first);
+            }
+            if (error != 0) {
+                fail_exec(error);
+                break;
+            }
+            for (const auto& descriptor : state.guestDirectoryDescriptors) {
+                if (inheritedDescriptors.count(descriptor.first) != 0) {
+                    fail_exec(ENOTSUP);
+                    error = ENOTSUP;
+                    break;
+                }
+            }
+            if (error != 0) break;
+            std::vector<std::int32_t> guestInheritedDescriptors;
+            std::vector<std::int32_t> guestInheritedWritableDescriptors;
+            for (const auto descriptor : state.openDescriptors) {
+                if (inheritedDescriptors.count(descriptor) != 0) {
+                    guestInheritedDescriptors.push_back(descriptor);
+                    if (state.writableDescriptors.count(descriptor) != 0)
+                        guestInheritedWritableDescriptors.push_back(descriptor);
+                }
+            }
+
+            auto runtimePath = state.runtimeExecutablePath.string();
+            if (runtimePath.empty()) {
+                fail_exec(ENOTSUP);
+                break;
+            }
+            std::string relayTemplate = "/tmp/arm64-metal-exec.XXXXXX";
+            auto relayDescriptor = ::mkstemp(relayTemplate.data());
+            if (relayDescriptor < 0) {
+                fail_exec(errno);
+                break;
+            }
+            if (::unlink(relayTemplate.c_str()) != 0) {
+                error = errno;
+                (void)::close(relayDescriptor);
+                fail_exec(error);
+                break;
+            }
+            const auto stagedRelayDescriptor = ::fcntl(
+                relayDescriptor, F_DUPFD_CLOEXEC, kGuestSpawnEnvironmentDescriptorFloor);
+            if (stagedRelayDescriptor < 0) {
+                error = errno;
+                (void)::close(relayDescriptor);
+                fail_exec(error);
+                break;
+            }
+            (void)::close(relayDescriptor);
+            relayDescriptor = stagedRelayDescriptor;
+            error = write_spawn_environment(relayDescriptor, guestEnvironment);
+            if (error == 0 && ::lseek(relayDescriptor, 0, SEEK_SET) < 0) error = errno;
+            if (error != 0) {
+                (void)::close(relayDescriptor);
+                fail_exec(error);
+                break;
+            }
+            inheritedDescriptors.insert(relayDescriptor);
+            std::vector<std::string> replacementArguments;
+            std::vector<char*> replacementArgv;
+            try {
+                replacementArguments.reserve(6 + guestArguments.size() +
+                                             guestInheritedDescriptors.size() +
+                                             guestInheritedWritableDescriptors.size() + 1);
+                replacementArguments.emplace_back("__exec_launch");
+                replacementArguments.push_back(guestExecutable);
+                replacementArguments.push_back(std::to_string(guestArguments.size()));
+                replacementArguments.insert(replacementArguments.end(), guestArguments.begin(),
+                                            guestArguments.end());
+                replacementArguments.push_back(std::to_string(relayDescriptor));
+                replacementArguments.push_back(
+                    std::to_string(guestInheritedDescriptors.size()));
+                for (const auto descriptor : guestInheritedDescriptors)
+                    replacementArguments.push_back(std::to_string(descriptor));
+                replacementArguments.push_back(
+                    std::to_string(guestInheritedWritableDescriptors.size()));
+                for (const auto descriptor : guestInheritedWritableDescriptors)
+                    replacementArguments.push_back(std::to_string(descriptor));
+                replacementArgv.reserve(replacementArguments.size() + 2);
+                replacementArgv.push_back(runtimePath.data());
+                for (auto& value : replacementArguments) replacementArgv.push_back(value.data());
+                replacementArgv.push_back(nullptr);
+            } catch (const std::bad_alloc&) {
+                (void)::close(relayDescriptor);
+                fail_exec(ENOMEM);
+                break;
+            }
+
+            struct ExecSpawnObjects {
+                posix_spawn_file_actions_t actions{};
+                posix_spawnattr_t attributes{};
+                bool actionsInitialized = false;
+                bool attributesInitialized = false;
+                std::vector<int> stagedDescriptors;
+                ~ExecSpawnObjects() {
+                    if (actionsInitialized) (void)posix_spawn_file_actions_destroy(&actions);
+                    if (attributesInitialized) (void)posix_spawnattr_destroy(&attributes);
+                    for (const auto descriptor : stagedDescriptors) (void)::close(descriptor);
+                }
+            } spawnObjects;
+            error = posix_spawn_file_actions_init(&spawnObjects.actions);
+            if (error == 0) spawnObjects.actionsInitialized = true;
+            if (error == 0) {
+                error = posix_spawnattr_init(&spawnObjects.attributes);
+                if (error == 0) spawnObjects.attributesInitialized = true;
+            }
+            if (error == 0) {
+                error = posix_spawnattr_setflags(
+                    &spawnObjects.attributes,
+                    POSIX_SPAWN_SETEXEC | POSIX_SPAWN_CLOEXEC_DEFAULT);
+            }
+
+            int privateFloor = relayDescriptor;
+            for (const auto descriptor : inheritedDescriptors)
+                privateFloor = std::max(privateFloor, descriptor);
+            if (privateFloor == std::numeric_limits<int>::max()) error = EMFILE;
+            else ++privateFloor;
+            for (const auto descriptor : inheritedDescriptors) {
+                if (error != 0) break;
+                const auto hostFlags = ::fcntl(descriptor, F_GETFD);
+                if (hostFlags < 0) {
+                    error = errno;
+                    break;
+                }
+                if ((hostFlags & FD_CLOEXEC) == 0) {
+                    error = posix_spawn_file_actions_addinherit_np(
+                        &spawnObjects.actions, descriptor);
+                    continue;
+                }
+                const auto staged = ::fcntl(descriptor, F_DUPFD, privateFloor);
+                if (staged < 0) {
+                    error = errno;
+                    break;
+                }
+                try {
+                    spawnObjects.stagedDescriptors.push_back(staged);
+                } catch (const std::bad_alloc&) {
+                    (void)::close(staged);
+                    error = ENOMEM;
+                    break;
+                }
+                if (staged == std::numeric_limits<int>::max()) {
+                    error = EMFILE;
+                    break;
+                }
+                privateFloor = staged + 1;
+                error = posix_spawn_file_actions_adddup2(
+                    &spawnObjects.actions, staged, descriptor);
+                if (error == 0) {
+                    error = posix_spawn_file_actions_addclose(
+                        &spawnObjects.actions, staged);
+                }
+            }
+            if (error == 0) {
+                error = posix_spawn_file_actions_addinherit_np(
+                    &spawnObjects.actions, relayDescriptor);
+            }
+            if (error != 0) {
+                (void)::close(relayDescriptor);
+                fail_exec(error);
+                break;
+            }
+
+            error = ::posix_spawn(nullptr, runtimePath.c_str(), &spawnObjects.actions,
+                                  &spawnObjects.attributes, replacementArgv.data(), environ);
+            if (error != 0) {
+                (void)::close(relayDescriptor);
+                fail_exec(error);
+            }
+            break;
+        }
         case 248: {  // posix_spawn through this same runtime with scoped file actions
             const auto pidAddress = registers[0];
             if ((pidAddress & kGuestTopByteMask) < bootstrap.pageSize ||
@@ -3874,6 +4162,8 @@ HostServiceResult dispatch_guest_host_service(
                 : ::open(path.c_str(), flags | O_CLOEXEC);
             if (descriptor >= 0) {
                 state.openDescriptors.insert(descriptor);
+                state.standardDescriptorFlags[descriptor] =
+                    (flags & O_CLOEXEC) != 0 ? FD_CLOEXEC : 0;
                 if ((flags & O_ACCMODE) != O_RDONLY) {
                     state.writableDescriptors.insert(descriptor);
                 }
@@ -4051,6 +4341,8 @@ HostServiceResult dispatch_guest_host_service(
             }
             if (descriptor >= 0) {
                 state.openDescriptors.insert(descriptor);
+                state.standardDescriptorFlags[descriptor] =
+                    (flags & O_CLOEXEC) != 0 ? FD_CLOEXEC : 0;
                 if ((flags & O_ACCMODE) != O_RDONLY) {
                     state.writableDescriptors.insert(descriptor);
                 }
@@ -4247,6 +4539,8 @@ HostServiceResult dispatch_guest_host_service(
                 const bool standard = standard_descriptor_open(descriptor);
                 if (!standard) {
                     result = ::fcntl(descriptor, operation, value);
+                    if (result >= 0 && operation == F_SETFD)
+                        state.standardDescriptorFlags[descriptor] = value;
                 } else if (operation == F_SETFD) {
                     state.standardDescriptorFlags[descriptor] = value;
                     result = 0;
