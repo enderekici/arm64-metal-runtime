@@ -994,12 +994,8 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     return;
                 }
                 const ulong address = state[rn];
-                if ((address & ulong(bytes - 1u)) != 0ul) {
-                    state[874] = address;
-                    state[33] = pc;
-                    state[34] = 2;
+                if (rcpc2_alignment_fault(address, bytes, true, instruction.pc, state))
                     return;
-                }
                 const ulong offset = guest_offset(address, bytes, size, writable,
                                                    true, state, resident, config);
                 if (offset == ~0ul) {

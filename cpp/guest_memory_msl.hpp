@@ -5,7 +5,8 @@
 namespace arm64metal {
 
 inline constexpr std::string_view guestMemoryMslSource = R"GUEST_MEMORY_MSL(
-// Darwin permits a misaligned RCpc2 access within a single 16-byte granule.
+// Darwin permits misaligned RCpc2 and LSE min/max accesses within one
+// 16-byte granule; an access that crosses the granule raises an alignment fault.
 bool rcpc2_alignment_fault(ulong address, uint bytes, bool write, ulong pc,
                            device ulong *state) {
     if ((address & 15ul) + bytes <= 16ul) return false;

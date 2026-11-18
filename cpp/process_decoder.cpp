@@ -1988,11 +1988,19 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     auto source = reg(field(16, 5));
     auto mask = width == 8 ? UINT64_MAX : (uint64_t(1) << (width * 8)) - 1;
     auto pointer = physical((std::string("address")), width, load);
-    auto bound =
-        (std::string("if ((address & ") + str(width - 1) + "ul) || " +
-         str(outside((std::string("address")), width, load)) + ") { x[" +
-         str(guestFaultAddress) + "] = address; x[33] = " + str(pc) +
-         "ul; x[34] = 2; return; }");
+    const bool minMaxAtomic = atomicOperation &&
+        (atomicOperation.value == "smax" || atomicOperation.value == "smin" ||
+         atomicOperation.value == "umax" || atomicOperation.value == "umin");
+    auto bound = minMaxAtomic
+        ? (std::string("if (rcpc2_alignment_fault(address, ") + str(width) +
+           "u, true, " + str(pc) + "ul, x)) return; if (" +
+           str(outside((std::string("address")), width, true)) +
+           ") { x[" + str(guestFaultAddress) + "] = address; x[33] = " +
+           str(pc) + "ul; x[34] = 2; return; }")
+        : (std::string("if ((address & ") + str(width - 1) + "ul) || " +
+           str(outside((std::string("address")), width, load)) + ") { x[" +
+           str(guestFaultAddress) + "] = address; x[33] = " + str(pc) +
+           "ul; x[34] = 2; return; }");
     auto get = (std::string("ulong old = load_guest_word(memory + ") +
                 str(pointer) + ", " + str(width) + ");");
     auto store = [&](std::string value) -> std::string {
