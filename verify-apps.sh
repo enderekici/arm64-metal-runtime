@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf 'Usage: %s RUNTIME RESULTS_ROOT CASE...\n' "$0" >&2
-    printf 'Cases: brk dyld-sdk plutil tar libz-root libz-provider jni\n' >&2
+    printf 'Cases: brk dyld-sdk plutil tar tee libz-root libz-provider jni\n' >&2
     exit 2
 }
 
@@ -38,7 +38,7 @@ run_bounded() {
     shift
     marker=$run_dir/$run_label.timed-out
     rm -f "$marker"
-    (exec "$@") >"$run_dir/$run_label.stdout" 2>"$run_dir/$run_label.stderr" &
+    (exec "$@") <"${run_input:-/dev/null}" >"$run_dir/$run_label.stdout" 2>"$run_dir/$run_label.stderr" &
     run_command_pid=$!
     (
         sleep "$timeout_seconds"
@@ -160,6 +160,35 @@ PLIST
             cmp "$probe_dir/native-extract/tar-input/subdir/payload.bin" \
                 "$probe_dir/guest-extract/tar-input/subdir/payload.bin"
             printf 'tar extracted file contents match native\n'
+            ;;
+        tee)
+            tee=/usr/bin/tee
+            tee_input=$probe_dir/tee-input.bin
+            printf 'start\000\377\n' > "$tee_input"
+            awk 'BEGIN { for (i=0; i<4096; ++i) printf "%08d/%07d\n", i, i%31 }' >> "$tee_input"
+            printf '\377\001end\n' >> "$tee_input"
+            printf 'prefix\000\376' > "$probe_dir/tee-prefix.bin"
+            cat "$probe_dir/tee-prefix.bin" "$tee_input" > "$probe_dir/tee-appended.bin"
+            for lane in native guest; do
+                output_dir=$probe_dir/tee-$lane
+                mkdir "$output_dir"
+                cp "$probe_dir/tee-prefix.bin" "$output_dir/existing"
+                set -- "$tee" -a "$output_dir/existing" "$output_dir/new"
+                if [ "$lane" = guest ]; then
+                    set -- env ARM64_METAL_DEV_CPU_FALLBACK=0 ARM64_METAL_INTERPRETER=1 \
+                        ARM64_METAL_SHARED_CACHE=0 ARM64_METAL_CACHE_DEMAND=0 \
+                        ARM64_METAL_CACHE_BOOTSTRAP=0 ARM64_METAL_CACHE_INITIALIZERS=0 \
+                        "$runtime" launch "$@"
+                fi
+                run_input=$tee_input run_bounded "tee.$lane" "$@" || exit 1
+                test "$(cat "$run_dir/tee.$lane.status")" = 0
+                test ! -s "$run_dir/tee.$lane.stderr"
+                cmp "$tee_input" "$run_dir/tee.$lane.stdout"
+                cmp "$tee_input" "$output_dir/new"
+                cmp "$probe_dir/tee-appended.bin" "$output_dir/existing"
+            done
+            shasum -a 256 "$tee" "$tee_input" "$probe_dir/tee-appended.bin" > "$run_dir/tee.sha256"
+            printf 'tee append, file creation and stdout match native\n'
             ;;
         libz-root|libz-provider)
             [ -x "$(xcrun --find clang)" ] || { printf 'Xcode clang is unavailable\n' >&2; exit 2; }
