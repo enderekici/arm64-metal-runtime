@@ -3030,6 +3030,14 @@ HostServiceResult dispatch_guest_host_service(
             if (result < 0) set_errno(errno);
             break;
         }
+        case 273: {  // getwc / fgetwc using the same guest FILE handles as fgetc
+            auto* file = stream_file(registers[0]);
+            if (file == nullptr) throw std::runtime_error("Guest getwc stream unsupported");
+            const auto character = std::fgetwc(file);
+            if (character == WEOF && std::ferror(file)) set_errno(errno);
+            registers[0] = static_cast<std::uint32_t>(character);
+            break;
+        }
         case 98: {  // fgetc
             const auto stream = normalize_stream(registers[0]);
             auto* file = stream_file(stream);

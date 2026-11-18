@@ -235,11 +235,18 @@ PLIST
                 compare readlink-target 0 /usr/bin/readlink "$probe_dir/rows-link"
                 printf 'ab\tcd\nfoo\tbar\n' > "$probe_dir/tabs"
                 run_input=$probe_dir/tabs compare expand-tabs 0 /usr/bin/expand -t 4
+                printf 'café\n東京\n' > "$probe_dir/utf-left"
+                printf 'λ\n' > "$probe_dir/utf-right"
+                printf 'bad\377\n' > "$probe_dir/utf-invalid"
+                LC_ALL=en_US.UTF-8 compare paste-columns 0 /usr/bin/paste -d '|' \
+                    "$probe_dir/utf-left" "$probe_dir/utf-right"
+                LC_ALL=en_US.UTF-8 compare paste-invalid 74 /usr/bin/paste "$probe_dir/utf-invalid"
                 shasum -a 256 /usr/bin/head /usr/bin/basename /usr/bin/dirname /usr/bin/cksum \
                     /usr/bin/cmp /usr/bin/tail /usr/bin/look /usr/bin/cut /usr/bin/uniq /usr/bin/sort \
-                    /usr/bin/tr /usr/bin/grep /usr/bin/sed /usr/bin/readlink /usr/bin/expand \
+                    /usr/bin/tr /usr/bin/grep /usr/bin/sed /usr/bin/readlink /usr/bin/expand /usr/bin/paste \
                     "$probe_dir/tool-input" "$probe_dir/cmp-input" "$probe_dir/different" "$probe_dir/dictionary" \
-                    "$probe_dir/delimited-rows" "$probe_dir/tabs" > "$run_dir/cli-tools.sha256"
+                    "$probe_dir/delimited-rows" "$probe_dir/tabs" "$probe_dir/utf-left" \
+                    "$probe_dir/utf-right" "$probe_dir/utf-invalid" > "$run_dir/cli-tools.sha256"
             )
             ;;
         libz-root|libz-provider)

@@ -148,6 +148,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_vwarnx", 97, true, true},
     {"_fgetc", 98, true, true},
     {"_getc", 98, true, true},
+    {"_getwc", 273, true, true},
+    {"_fgetwc", 273, true, true},
     {"_ungetc", 99, true, true},
     {"_posix_memalign", 100, true, true},
     {"_malloc_type_posix_memalign", 100, true, true},
