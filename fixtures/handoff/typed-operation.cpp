@@ -2215,8 +2215,9 @@ int main() {
     const auto process = arm64metal::decode_process(
         cmeqEncodings[index], 0x1000, {}, {}, false);
     assert(process.operation && process.operation->opcode ==
-           Opcode::VectorCompareEqualZero && process.code.size() == 1U &&
-           process.code[0].find("vector_compare_equal_zero_apply") !=
+           Opcode::VectorCompareEqualZero && process.code.size() == 2U &&
+           process.code[0].find("x[881] & 1ul") != std::string::npos &&
+           process.code[1].find("vector_compare_equal_zero_apply") !=
                std::string::npos);
     assert_vector_equal(nativeCmeq[index](vectorInput),
                         expected_cmeq_zero(vectorInput,
@@ -2273,8 +2274,9 @@ int main() {
     const auto process = arm64metal::decode_process(
         reductionEncodings[index], 0x1000, {}, {}, false);
     assert(process.operation && process.operation->opcode ==
-           Opcode::VectorReduceExtreme && process.code.size() == 1U &&
-           process.code[0].find("vector_reduce_extreme_apply") !=
+           Opcode::VectorReduceExtreme && process.code.size() == 2U &&
+           process.code[0].find("x[881] & 1ul") != std::string::npos &&
+           process.code[1].find("vector_reduce_extreme_apply") !=
                std::string::npos);
     assert_vector_equal(nativeReductions[index](reductionInput),
                         expected_vector_extreme(
@@ -2324,8 +2326,9 @@ int main() {
     const auto process = arm64metal::decode_process(
         reverseEncodings[index], 0x1000, {}, {}, false);
     assert(process.operation && process.operation->opcode == Opcode::VectorReverse &&
-           process.code.size() == 1U &&
-           process.code[0].find("vector_reverse_apply") != std::string::npos);
+           process.code.size() == 2U &&
+           process.code[0].find("x[881] & 1ul") != std::string::npos &&
+           process.code[1].find("vector_reverse_apply") != std::string::npos);
     assert_vector_equal(nativeReverses[index](reductionInput),
                         expected_vector_reverse(
                             reductionInput, reverseElementWidths[index],
