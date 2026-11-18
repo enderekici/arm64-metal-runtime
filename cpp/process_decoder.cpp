@@ -1924,6 +1924,50 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   }
   auto ordered = (bits & 0x3fbffc00) == 0x089ffc00;
   auto rcpcAcquire = (bits & 0x3ffffc00) == 0x38bfc000;
+  if ((bits & 0x3f200c00U) == 0x19000000U && decodedOperation) {
+    const auto& operation = *decodedOperation;
+    const auto bytes = operation.width / 8U;
+    const bool load = operation.opcode != translate_core::Opcode::StoreUnscaledWriteback;
+    const auto displacement = static_cast<std::int32_t>(operation.immediate);
+    const auto wrappedOffset = static_cast<std::uint64_t>(
+        static_cast<std::int64_t>(displacement));
+    const auto address = reg(operation.source, true) + " + " +
+                         str(wrappedOffset) + "ul";
+    const auto pointer = physical((std::string("address")), bytes, load);
+    Strings code{(std::string("{ ulong address = ") + address + ";"),
+                 (std::string("if (") +
+                  str(outside((std::string("address")), bytes, load)) +
+                  ") { x[" + str(guestFaultAddress) + "] = address; x[33] = " +
+                  str(pc) + "ul; x[34] = 2; return; }")};
+    if (load) {
+      code.push_back((std::string("ulong value = load_guest_word(memory + ") +
+                      str(pointer) + ", " + str(bytes) + ");"));
+      if (operation.opcode == translate_core::Opcode::LoadSignedScalar) {
+        const bool targetIsX = (operation.shift & 4U) != 0U;
+        const auto signedType = bytes == 1U ? "char" : bytes == 2U ? "short" : "int";
+        const auto cast = targetIsX ? "long" : "uint";
+        code.push_back((std::string("value = ulong(") + cast + "(" + signedType +
+                        "(value)));"));
+      } else if (bytes < 8U) {
+        const auto unsignedType = bytes == 1U ? "uchar" : bytes == 2U ? "ushort" : "uint";
+        code.push_back((std::string("value = ulong(") + unsignedType + "(value));"));
+      }
+      if (operation.destination != 31U) {
+        code.push_back((std::string("x[") + str(operation.destination) +
+                        "] = value;"));
+      }
+    } else {
+      const auto sourceType = bytes == 1U ? "uchar" : bytes == 2U ? "ushort" :
+                              bytes == 4U ? "uint" : "ulong";
+      code.push_back((std::string("store_guest_word(memory + ") + str(pointer) +
+                      ", " + sourceType + "(" + reg(operation.destination) +
+                      "), " + str(bytes) + ");"));
+    }
+    code.push_back("}");
+    auto instruction = make_instruction(code, {next});
+    instruction.operation = operation;
+    return instruction;
+  }
   if (atomicOperation != nullptr || atomicSwap || atomicCompare || ordered ||
       rcpcAcquire) {
     auto width = 1 << field(30, 2);

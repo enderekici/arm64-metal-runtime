@@ -79,6 +79,32 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
   if (const auto vectorMemory = decode_vector_memory_operation(bits)) {
     return vectorMemory;
   }
+  // FEAT_LRCPC2 scalar LDAPUR*/STLUR* uses an unscaled signed imm9. Reuse
+  // the interpreter's scalar unscaled memory packet variants; ordering is
+  // governed by the existing single-active-guest-thread dispatch model.
+  if ((bits & 0x3f200c00U) == 0x19000000U) {
+    const auto size = field(bits, 30, 2);
+    const auto opc = field(bits, 22, 2);
+    const auto width = 8U << size;
+    const auto target = field(bits, 0, 5);
+    const auto base = field(bits, 5, 5);
+    const auto displacement = signed_field(field(bits, 12, 9), 9);
+    const auto encodedDisplacement = static_cast<std::uint32_t>(displacement);
+    if (opc == 0U) {
+      return Operation{Opcode::StoreUnscaledWriteback, target, base,
+                       encodedDisplacement, 0, width};
+    }
+    if (opc == 1U) {
+      return Operation{Opcode::LoadUnscaledWriteback, target, base,
+                       encodedDisplacement, 0, width};
+    }
+    if ((opc == 2U && size <= 2U) || (opc == 3U && size <= 1U)) {
+      const auto targetIsX = opc == 2U;
+      return Operation{Opcode::LoadSignedScalar, target, base,
+                       encodedDisplacement, 1U | (targetIsX ? 4U : 0U), width};
+    }
+    return std::nullopt;
+  }
   // Typed unordered LDUMIN/LDUMAX/LDSMIN/LDSMAX. Keep acquire/release forms
   // on the existing translator path until their memory-order contract is represented.
   const auto atomicMinMaxClass = bits & 0x3f20ec00U;

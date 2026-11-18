@@ -2052,6 +2052,25 @@ int main() {
          ldsminX->destination == 3U && ldsminX->source == 5U &&
          ldsminX->immediate == 1U && ldsminX->shift == 2U &&
          ldsminX->width == 64U);
+  const auto ldapurb = decode_operation(0x19500020U);
+  assert(ldapurb && ldapurb->opcode == Opcode::LoadUnscaledWriteback &&
+         ldapurb->destination == 0U && ldapurb->source == 1U &&
+         ldapurb->immediate == 0xffffff00U && ldapurb->shift == 0U &&
+         ldapurb->width == 8U);
+  const auto ldapursb = decode_operation(0x198ff3e0U);
+  assert(ldapursb && ldapursb->opcode == Opcode::LoadSignedScalar &&
+         ldapursb->destination == 0U && ldapursb->source == 31U &&
+         ldapursb->immediate == 255U && ldapursb->shift == 5U &&
+         ldapursb->width == 8U);
+  const auto ldapursw = decode_operation(0x999ff020U);
+  assert(ldapursw && ldapursw->opcode == Opcode::LoadSignedScalar &&
+         ldapursw->destination == 0U && ldapursw->source == 1U &&
+         ldapursw->immediate == 0xffffffffU && ldapursw->shift == 5U &&
+         ldapursw->width == 32U);
+  const auto stlur = decode_operation(0xd9001020U);
+  assert(stlur && stlur->opcode == Opcode::StoreUnscaledWriteback &&
+         stlur->destination == 0U && stlur->source == 1U &&
+         stlur->immediate == 1U && stlur->shift == 0U && stlur->width == 64U);
   const auto processLdumin = arm64metal::decode_process(
       0xb8217040U, 0x1000, {}, {}, false);
   std::string processLduminSource;
@@ -2079,6 +2098,15 @@ int main() {
   for (const auto& line : processLdsmax.code) processLdsmaxSource += line;
   assert(processLdsmax.operation && processLdsmax.operation->shift == 3U &&
          processLdsmaxSource.find("int(old) >= int(x[1])") != std::string::npos);
+  const auto processLdapursb = arm64metal::decode_process(
+      0x198ff3e0U, 0x1000, {}, {}, false);
+  std::string processLdapursbSource;
+  for (const auto& line : processLdapursb.code) processLdapursbSource += line;
+  assert(processLdapursb.operation &&
+         processLdapursb.operation->opcode == Opcode::LoadSignedScalar &&
+         processLdapursbSource.find("ulong address = x[31] + 255ul") !=
+             std::string::npos &&
+         processLdapursbSource.find("long(char(value))") != std::string::npos);
   std::uint64_t atomicWord = 0xffffffffULL;
   assert(native_load_unsigned_minmax(&atomicWord, 0x80000000ULL, false, 32) ==
          0xffffffffULL);
