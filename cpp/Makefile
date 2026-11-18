@@ -55,6 +55,7 @@ $(BUILD_DIR)/%.o: %.cpp
 # partial app: once those interfaces are available, app builds every module.
 METAL_CPP ?= ../metal-cpp
 APP_SOURCES := \
+	guest_fork.cpp \
 	cache_residency.cpp \
 	guest_signal_runtime.cpp \
 	guest_scheduler.cpp \

@@ -87,6 +87,7 @@ struct ProcessBootstrapInput {
     std::uint64_t mainHeader = 0;
     std::uint64_t activePlatform = 1;
     std::uint64_t objectiveCClassCount = 0;
+    std::uint64_t pointerMungeToken = 0;
     std::uint64_t randomCanary = 1;
     std::size_t runeLocaleByteCount = 2048;
     std::uint64_t randomPACGAKey0 = 0;
@@ -94,6 +95,7 @@ struct ProcessBootstrapInput {
 };
 
 struct ProcessBootstrapResult {
+    std::uint64_t pointerMungeToken = 0;
     std::vector<std::uint8_t> memory;
     std::vector<std::uint64_t> registers;
     std::vector<GuestMemoryRange> readOnlyRanges;

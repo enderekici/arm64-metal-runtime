@@ -641,17 +641,35 @@ int run_command(const std::vector<std::string>& args,
     return 0;
   }
 
-  if (args[0] == "launch") {
-    if (args.size() < 2) throw std::runtime_error("launch requires an executable path");
-    std::vector<std::string> arguments(args.begin() + 2, args.end());
+  if (args[0] == "launch" || args[0] == "__fork_launch") {
+    const bool resumed = args[0] == "__fork_launch";
+    const std::size_t pathIndex = resumed ? 3 : 1;
+    if (args.size() <= pathIndex) throw std::runtime_error("launch requires an executable path");
+    std::vector<std::string> arguments(args.begin() + pathIndex + 1, args.end());
     arm64metal::process_runner::LaunchOptions options;
+    arm64metal::process_runner::ForkResumeChannel forkResume;
+    if (resumed) {
+      const auto snapshot = parse_spawn_count(args[1]);
+      const auto ready = parse_spawn_count(args[2]);
+      if (snapshot <= 2 || ready <= 2 || snapshot == ready)
+        throw std::runtime_error("Invalid guest fork descriptors");
+      forkResume.snapshot = static_cast<int>(snapshot);
+      forkResume.ready = static_cast<int>(ready);
+      options.forkResume = &forkResume;
+    }
     options.sharedCache = environment_enabled("ARM64_METAL_SHARED_CACHE");
     options.demandCache = environment_enabled("ARM64_METAL_CACHE_DEMAND");
     options.cacheBootstrap = environment_enabled("ARM64_METAL_CACHE_BOOTSTRAP");
     options.cachedInitializers = environment_enabled("ARM64_METAL_CACHE_INITIALIZERS");
     options.runtimeExecutablePath = executablePath;
     configure_interpreter_assets(options, executablePath);
-    return launch_with_signal_propagation(args[1], arguments, options);
+    try {
+      return launch_with_signal_propagation(args[pathIndex], arguments, options);
+    } catch (const std::exception&) {
+      // Initialization failure is reported as fork errno in the still-running parent.
+      if (!resumed || forkResume.acknowledged || environment_enabled("ARM64_METAL_TRACE")) throw;
+      return 1;
+    }
   }
 
   if (args[0] == "__spawn_launch") {

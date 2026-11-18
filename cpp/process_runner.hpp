@@ -11,6 +11,16 @@
 
 namespace arm64metal::process_runner {
 
+struct ForkResumeChannel {
+    int snapshot = -1;
+    int ready = -1;
+    bool acknowledged = false;
+    ForkResumeChannel() = default;
+    ForkResumeChannel(const ForkResumeChannel&) = delete;
+    ForkResumeChannel& operator=(const ForkResumeChannel&) = delete;
+    ~ForkResumeChannel();
+};
+
 struct LaunchOptions {
     bool sharedCache = false;
     bool demandCache = false;
@@ -29,6 +39,7 @@ struct LaunchOptions {
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;
+    ForkResumeChannel* forkResume = nullptr;
 };
 
 // Launch `executable` with arguments following argv[0]. The host environment

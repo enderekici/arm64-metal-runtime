@@ -235,9 +235,10 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
         }
     }
 
-    std::uint64_t pointer_munge_token = 0;
-    arc4random_buf(&pointer_munge_token, sizeof(pointer_munge_token));
+    auto pointer_munge_token = input.pointerMungeToken;
+    if (!pointer_munge_token) arc4random_buf(&pointer_munge_token, sizeof(pointer_munge_token));
     if (pointer_munge_token == 0) pointer_munge_token = 1;
+    result.pointerMungeToken = pointer_munge_token;
     std::vector<std::string> apple_strings = {
         "executable_path=" + result.resolvedExecutablePath,
         "ptr_munge=" + hex_word(pointer_munge_token),

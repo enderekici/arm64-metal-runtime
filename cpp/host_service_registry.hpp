@@ -14,6 +14,7 @@ inline constexpr int kDyldConformanceOnDiskService = 245;
 inline constexpr int kMachMakeMemoryEntryService = 251;
 inline constexpr int kMachPortDeallocateService = 252;
 inline constexpr int kGetPageSizeService = 268;
+inline constexpr int kForkService = 270;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -231,6 +232,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_mkdtemp", 155, true, true},
     {"_unlink", 156, true, true},
     {"_rmdir", 177, true, true},
+    {"_fork", kForkService, true, true},
     {"_posix_spawn", 248, true, true},
     {"_waitpid", 249, true, true},
     {"_posix_spawn_file_actions_init", 264, true, true},

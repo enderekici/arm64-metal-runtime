@@ -1,4 +1,5 @@
 #include "guest_csops.hpp"
+#include "guest_fork.hpp"
 #include "guest_dlopen.hpp"
 #include "host_service_registry.hpp"
 #include "guest_exit.hpp"
@@ -2041,10 +2042,18 @@ std::string pac_failure_message(const std::uint64_t* state, std::size_t words,
 
 }  // namespace
 
+ForkResumeChannel::~ForkResumeChannel() {
+    if (snapshot >= 0) ::close(snapshot);
+    if (ready >= 0) ::close(ready);
+}
+
 std::int32_t launch_executable(const std::filesystem::path& executable,
                                const std::vector<std::string>& arguments,
                                const LaunchOptions& options,
                                std::int32_t* terminatingSignal) {
+    std::optional<guest_fork::Snapshot> forkHeader;
+    if (options.forkResume)
+        forkHeader = guest_fork::read_header(options.forkResume->snapshot, options.forkResume->ready);
     if (terminatingSignal != nullptr) *terminatingSignal = 0;
     const auto signalExitStatus = [terminatingSignal](const GuestSignalDelivery& delivery) {
         if (terminatingSignal != nullptr) *terminatingSignal = delivery.signal;
@@ -2116,6 +2125,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     input.mappingBackingEnd = image.mapping_backing_end();
     if (input.mappingBackingEnd > input.mappedImage.size()) {
         input.mappedImage.resize(static_cast<std::size_t>(input.mappingBackingEnd), 0);
+    }
+    if (forkHeader) {
+        input.pointerMungeToken = forkHeader->header.pointerMungeToken;
+        input.randomPACGAKey0 = forkHeader->header.pacKey0;
+        input.randomPACGAKey1 = forkHeader->header.pacKey1;
     }
     input.executablePath = executable.string();
     input.arguments = arguments;
@@ -8224,6 +8238,33 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     };
 #include "thread_tsd_cleanup.inc"
 #include "workq_kevent_delivery.inc"
+    // Fork snapshots support the initial local image, its fixed private heap and
+    // ordinary inherited pipes. Track host transitions whose state is not in this format.
+    const bool simpleForkShape = !sharedCache && !cacheBootstrap && startup.size() == 1 &&
+        guestTlvDescriptors.empty() && !options.guestEnvironment && !options.guestArgv0 &&
+        options.inheritedGuestDescriptors.empty();
+    bool forkEligible = simpleForkShape && !forkHeader;
+    if (forkHeader && !simpleForkShape)
+        throw std::runtime_error("Guest fork snapshot requires a plain local image");
+    if (forkHeader) {
+        auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
+        guest_fork::restore(options.forkResume->snapshot, *forkHeader, bootstrap, memoryBuffer.data(),
+                            memoryBuffer.size(), live, stateBuffer.size() / sizeof(*live),
+                            hostServiceState, [&](std::uint64_t pc) {
+            return pc == guestReturnSentinel ||
+                ((pc & 3U) == 0 && pc < guestCodeLimit && image.is_code(static_cast<std::int64_t>(pc)));
+        });
+        ::close(options.forkResume->snapshot);
+        options.forkResume->snapshot = -1;
+        if (live[33] != guestReturnSentinel) selectKernel(static_cast<std::int64_t>(live[33]));
+        ssize_t acknowledged;
+        do { acknowledged = ::write(options.forkResume->ready, "R", 1); }
+        while (acknowledged < 0 && errno == EINTR);
+        ::close(options.forkResume->ready);
+        options.forkResume->ready = -1;
+        if (acknowledged != 1) throw std::runtime_error("Guest fork parent no longer waiting");
+        options.forkResume->acknowledged = true;
+    }
     std::uint64_t dispatchSequence = 0;
     bool socketSuccessDiagnosticEmitted = false;
     bool socketUnsupportedDiagnosticEmitted = false;
@@ -8295,6 +8336,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         registers = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto status = registers[34];
+        if (status != 1 && status != 4 && status != 7 && status != 8) forkEligible = false;
         if ((status == 1 || status == 7 || status == 8) &&
             preemptAtDispatchBoundary(status)) {
             continue;
@@ -8546,6 +8588,37 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 static_cast<const std::uint64_t*>(stateBuffer.data()) +
                     stateBuffer.size() / sizeof(std::uint64_t));
             const auto service = registers[35];
+            if (service == kForkService) {
+                progressTrace.event("fork-eligible", hostRegisters[33], forkEligible);
+                int forkError = ENOTSUP;
+                pid_t child = -1;
+                if (forkEligible && guestScheduler.thread_count() == 1 &&
+                    !hostServiceState.signals.pending() && !hostServiceState.threadPendingSignals &&
+                    !hostServiceState.queuedProcessSignals && !hostServiceState.threadSignalMask &&
+                    !signalRuntime.has_frames(guestMainThreadID) && callbackFrames.empty()) {
+                    progressTrace.event("fork-launch", hostRegisters[33], memoryBuffer.size());
+                    try {
+                        child = guest_fork::spawn(executable.string(), arguments, bootstrap,
+                            memoryBuffer.data(), memoryBuffer.size(), hostRegisters, hostServiceState);
+                    } catch (const std::system_error& error) {
+                        forkError = error.code().value();
+                    } catch (const std::bad_alloc&) {
+                        forkError = ENOMEM;
+                    }
+                }
+                progressTrace.event(child < 0 ? "fork-failed" : "fork-child-ready",
+                                    hostRegisters[33], child < 0 ? forkError : child);
+                if (child < 0) std::memcpy(guestMemory.buffer(bootstrap.errnoSlot, sizeof(int), true),
+                                           &forkError, sizeof(forkError));
+                else forkEligible = false;
+                registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(child));
+                continue;
+            }
+            switch (service) {
+                case 2: case 23: case 28: break;  // write, read, __error
+                case 26: case 42: case 48: case 56: break;  // malloc, pipe, getpid, free
+                default: forkEligible = false; break;
+            }
             lastHostTransition = "service=" + std::to_string(service) + "@pc=0x" +
                 hexadecimal(hostRegisters[33]);
             recordTransition(lastHostTransition + " x0=0x" + hexadecimal(hostRegisters[0]) +
