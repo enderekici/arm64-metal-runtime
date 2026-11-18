@@ -10,6 +10,8 @@ the C++ launcher and native fixtures, `make verify` runs the default gates, and
 path. `make bundle-cpp` retains the separately named C++ archive. Python
 supports verification tools. The packaged runtime uses Foundation and Metal.
 
+Use `make verify-cfinv` to check carry inversion on the GPU and strict rejection of RMIF. The former development-only CFINV CPU companion has been removed. For an unchanged macOS CLI that creates and appends files, run `make verify-apps APP_VERIFY_CASES=tee APP_VERIFY_RUNTIME=<packaged-launcher>`. The measured package and receipt are recorded in `COMPATIBILITY.md`.
+
 ## Build and verify
 
 Requirements are Apple Silicon, Xcode Command Line Tools, and Apple's metal-cpp headers. The last test host was an M4 Pro on macOS 27.0.1 (26A434), Apple clang 21. The local metal-cpp include root was `/tmp/metal-cpp`.
