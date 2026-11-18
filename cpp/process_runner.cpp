@@ -3346,10 +3346,14 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         hostServiceState.signals.set_mask_value(activeMask);
     };
     const auto syncThreadSwitch = [&](bool requeue, std::vector<std::uint64_t>& live) {
-        std::vector<std::uint64_t> globalTail;
-        if (live.size() >= guestTokenCount) {
-            globalTail.assign(live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount),
-                              live.end());
+        std::vector<std::uint64_t> globalHeader;
+        std::vector<std::uint64_t> globalTokens;
+        if (live.size() >= guestTokenStart) {
+            globalHeader.assign(
+                live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount),
+                live.begin() + static_cast<std::ptrdiff_t>(guestSMESVCR));
+            globalTokens.assign(
+                live.begin() + static_cast<std::ptrdiff_t>(guestTokenStart), live.end());
         }
         const auto activeId = guestScheduler.current_id();
         auto& activeBeforeSchedule = guestScheduler.current();
@@ -3457,11 +3461,13 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 std::this_thread::sleep_for(std::chrono::nanoseconds(interval));
             }
         }
-        if (live.size() < guestTokenCount + globalTail.size()) {
-            live.resize(guestTokenCount + globalTail.size(), 0);
+        if (live.size() < guestTokenStart + globalTokens.size()) {
+            live.resize(guestTokenStart + globalTokens.size(), 0);
         }
-        std::copy(globalTail.begin(), globalTail.end(),
+        std::copy(globalHeader.begin(), globalHeader.end(),
                   live.begin() + static_cast<std::ptrdiff_t>(guestTokenCount));
+        std::copy(globalTokens.begin(), globalTokens.end(),
+                  live.begin() + static_cast<std::ptrdiff_t>(guestTokenStart));
         std::memcpy(stateBuffer.data(), live.data(), live.size() * sizeof(std::uint64_t));
         if (switched) {
             dispatchesInTimeSlice = 0;
@@ -4338,6 +4344,15 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     struct GuestCallbackFrame {
         std::vector<std::uint64_t> savedRegisters;
         std::vector<std::uint64_t> savedVectorAndAuth;
+        std::vector<std::uint64_t> savedSME;
+        void saveVectorAndSME(const std::uint64_t* words) {
+            savedVectorAndAuth.assign(words + 806, words + guestTokenCount);
+            savedSME.assign(words + guestSMESVCR, words + guestSMEStateEnd);
+        }
+        void restoreVectorAndSME(std::uint64_t* words) const {
+            std::copy(savedVectorAndAuth.begin(), savedVectorAndAuth.end(), words + 806);
+            std::copy(savedSME.begin(), savedSME.end(), words + guestSMESVCR);
+        }
         std::uint64_t authenticationDepth = 0;
         std::uint64_t mutationBlock = 0;
         bool tproScope = false;
@@ -5280,7 +5295,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             auto* words = static_cast<std::uint64_t*>(stateBuffer.data());
             GuestCallbackFrame frame;
             frame.savedRegisters.assign(words, words + 36);
-            frame.savedVectorAndAuth.assign(words + 806, words + guestTokenCount);
+            frame.saveVectorAndSME(words);
             frame.authenticationDepth = words[37];
             frame.callback = objcLoadImages.callback;
             for (const auto record : pendingLoads) frame.arguments.push_back({record, 0, 0, 0});
@@ -6177,7 +6192,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         frame.savedRegisters.assign(savedRegisters.begin(), savedRegisters.begin() + 36);
         frame.savedRegisters[34] = 0;
         const auto* live = static_cast<const std::uint64_t*>(stateBuffer.data());
-        frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
+        frame.saveVectorAndSME(live);
         frame.authenticationDepth = live[37];
         frame.callback = callbacks.front();
         frame.bulkImageCallbacks = std::move(callbacks);
@@ -8180,7 +8195,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         GuestCallbackFrame frame;
         frame.savedRegisters.assign(live, live + 36);
         frame.savedRegisters[34] = 0;
-        frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
+        frame.saveVectorAndSME(live);
         frame.authenticationDepth = live[37];
         frame.exitDso = dso;
         frame.exitStatus = exitStatus;
@@ -8232,8 +8247,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             acquireExitLease(frame, header);
             auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
             std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), live);
-            std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(),
-                      live + 806);
+            frame.restoreVectorAndSME(live);
             live[37] = frame.authenticationDepth;
             live[0] = handler->argument;
             live[30] = guestReturnSentinel;
@@ -8252,7 +8266,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         GuestCallbackFrame frame;
         frame.savedRegisters.assign(live, live + 36);
         frame.savedRegisters[34] = 0;
-        frame.savedVectorAndAuth.assign(live + 806, live + guestTokenCount);
+        frame.saveVectorAndSME(live);
         frame.authenticationDepth = live[37];
         frame.exitImages = std::move(images);
         frame.exitStatus = exitStatus;
@@ -8389,7 +8403,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     if (handler) {
                         auto* live = static_cast<std::uint64_t*>(stateBuffer.data());
                         std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), live);
-                        std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(), live + 806);
+                        frame.restoreVectorAndSME(live);
                         live[37] = frame.authenticationDepth;
                         acquireExitLease(frame, handler->owner_image);
                         live[0] = handler->argument;
@@ -8420,8 +8434,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (frame.exitThreadResult) {
                     auto* restored = static_cast<std::uint64_t*>(stateBuffer.data());
                     std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), restored);
-                    std::copy(frame.savedVectorAndAuth.begin(),
-                              frame.savedVectorAndAuth.end(), restored + 806);
+                    frame.restoreVectorAndSME(restored);
                     restored[37] = frame.authenticationDepth;
                     std::vector<std::uint64_t> live(
                         restored, restored + stateBuffer.size() / sizeof(std::uint64_t));
@@ -8436,8 +8449,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto& pending = callbackFrames.back();
                     std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
                               callbackRegisters);
-                    std::copy(pending.savedVectorAndAuth.begin(),
-                              pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                    pending.restoreVectorAndSME(callbackRegisters);
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy(notification.arguments.begin(), notification.arguments.end(),
                               callbackRegisters);
@@ -8454,8 +8466,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto& pending = callbackFrames.back();
                     std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
                               callbackRegisters);
-                    std::copy(pending.savedVectorAndAuth.begin(),
-                              pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                    pending.restoreVectorAndSME(callbackRegisters);
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy(pending.arguments.front().begin(),
                               pending.arguments.front().end(), callbackRegisters);
@@ -8471,8 +8482,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     const auto& pending = callbackFrames.back();
                     std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
                               callbackRegisters);
-                    std::copy(pending.savedVectorAndAuth.begin(),
-                              pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                    pending.restoreVectorAndSME(callbackRegisters);
                     callbackRegisters[37] = pending.authenticationDepth;
                     std::copy_n(bootstrap.registers.begin(), 5, callbackRegisters);
                     callbackRegisters[30] = guestReturnSentinel;
@@ -8490,8 +8500,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                     auto* callbackRegisters = static_cast<std::uint64_t*>(stateBuffer.data());
                     std::copy(callbackFrames.back().savedRegisters.begin(),
                               callbackFrames.back().savedRegisters.end(), callbackRegisters);
-                    std::copy(callbackFrames.back().savedVectorAndAuth.begin(),
-                              callbackFrames.back().savedVectorAndAuth.end(), callbackRegisters + 806);
+                    callbackFrames.back().restoreVectorAndSME(callbackRegisters);
                     callbackRegisters[37] = callbackFrames.back().authenticationDepth;
                     std::copy(args.begin(), args.end(), callbackRegisters);
                     callbackRegisters[30] = guestReturnSentinel;
@@ -8533,8 +8542,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 }
                 auto* restored = static_cast<std::uint64_t*>(stateBuffer.data());
                 std::copy(frame.savedRegisters.begin(), frame.savedRegisters.end(), restored);
-                std::copy(frame.savedVectorAndAuth.begin(), frame.savedVectorAndAuth.end(),
-                          restored + 806);
+                frame.restoreVectorAndSME(restored);
                 restored[37] = frame.authenticationDepth;
                 if (restored[33] != guestReturnSentinel) {
                     selectKernel(static_cast<std::int64_t>(restored[33]));
@@ -8786,8 +8794,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 frame.savedRegisters.assign(hostRegisters.begin(), hostRegisters.begin() + 36);
                 frame.savedRegisters[33] = hostRegisters[30];
                 frame.savedRegisters[34] = 0;
-                frame.savedVectorAndAuth.assign(hostRegisters.begin() + 806,
-                                                hostRegisters.begin() + guestTokenCount);
+                frame.saveVectorAndSME(hostRegisters.data());
                 frame.authenticationDepth = hostRegisters[37];
                 frame.tproScope = true;
                 frame.dyldBootstrapCallback = cxxMethod;
@@ -8873,8 +8880,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto& pending = callbackFrames.back();
                 std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
                           callbackRegisters);
-                std::copy(pending.savedVectorAndAuth.begin(),
-                          pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                pending.restoreVectorAndSME(callbackRegisters);
                 callbackRegisters[37] = pending.authenticationDepth;
                 std::copy(pending.arguments.front().begin(),
                           pending.arguments.front().end(), callbackRegisters);
@@ -10180,8 +10186,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     frame.savedRegisters[34] = 0;
                                     const auto* currentState =
                                         static_cast<const std::uint64_t*>(stateBuffer.data());
-                                    frame.savedVectorAndAuth.assign(currentState + 806,
-                                                                    currentState + guestTokenCount);
+                                    frame.saveVectorAndSME(currentState);
                                     frame.authenticationDepth = hostRegisters[37];
                                     frame.initializerTargets = std::move(initializers);
                                     frame.imageNotifications = std::move(imageNotifications);
@@ -10208,9 +10213,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                                     const auto& pending = callbackFrames.back();
                                     std::copy(pending.savedRegisters.begin(),
                                               pending.savedRegisters.end(), callbackRegisters);
-                                    std::copy(pending.savedVectorAndAuth.begin(),
-                                              pending.savedVectorAndAuth.end(),
-                                              callbackRegisters + 806);
+                                    pending.restoreVectorAndSME(callbackRegisters);
                                     callbackRegisters[37] = pending.authenticationDepth;
                                     if (hasImageNotifications) {
                                         const auto& notification =
@@ -10569,8 +10572,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 if (stateBuffer.size() / sizeof(std::uint64_t) < guestTokenCount) {
                     throw std::runtime_error("Guest callback register image is truncated");
                 }
-                frame.savedVectorAndAuth.assign(stateWordsPtr + 806,
-                                                stateWordsPtr + guestTokenCount);
+                frame.saveVectorAndSME(stateWordsPtr);
                 frame.authenticationDepth = live[37];
                 frame.mutationBlock = *block;
                 frame.callback = callback;
@@ -10737,7 +10739,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto* stateWords = static_cast<const std::uint64_t*>(stateBuffer.data());
                 frame.savedRegisters.assign(stateWords, stateWords + 36);
                 frame.savedRegisters[34] = 0;
-                frame.savedVectorAndAuth.assign(stateWords + 806, stateWords + guestTokenCount);
+                frame.saveVectorAndSME(stateWords);
                 frame.authenticationDepth = stateWords[37];
                 frame.callback = callback;
                 frame.arguments = std::move(arguments);
@@ -10828,8 +10830,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 frame.savedRegisters[34] = 0;
                 const auto* currentState =
                     static_cast<const std::uint64_t*>(stateBuffer.data());
-                frame.savedVectorAndAuth.assign(currentState + 806,
-                                                currentState + guestTokenCount);
+                frame.saveVectorAndSME(currentState);
                 frame.authenticationDepth = hostRegisters[37];
                 frame.imageNotifications = std::move(notifications);
                 frame.nextImageNotification = 1;
@@ -10838,8 +10839,7 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
                 const auto& pending = callbackFrames.back();
                 std::copy(pending.savedRegisters.begin(), pending.savedRegisters.end(),
                           callbackRegisters);
-                std::copy(pending.savedVectorAndAuth.begin(),
-                          pending.savedVectorAndAuth.end(), callbackRegisters + 806);
+                pending.restoreVectorAndSME(callbackRegisters);
                 callbackRegisters[37] = pending.authenticationDepth;
                 const auto& first = pending.imageNotifications.front();
                 std::copy(first.arguments.begin(), first.arguments.end(), callbackRegisters);

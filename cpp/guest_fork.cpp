@@ -23,7 +23,7 @@ namespace arm64metal::guest_fork {
 namespace {
 
 static_assert(sizeof(Header) == 96 && sizeof(int) == 4);
-constexpr std::uint64_t version = 0x464f524b00000001ULL;
+constexpr std::uint64_t version = 0x464f524b00000002ULL;
 constexpr std::size_t maxMemory = 512 * 1024 * 1024;
 constexpr std::size_t maxAllocations = 65536;
 constexpr std::size_t maxDescriptors = 1024;

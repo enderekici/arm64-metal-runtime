@@ -1,4 +1,5 @@
 #include "guest_scheduler.hpp"
+#include "process_host.hpp"
 
 #include <mach/kern_return.h>
 
@@ -51,7 +52,8 @@ GuestThread GuestScheduler::make_thread_frame(
     thread.allocation = allocation;
     thread.errnoAddress = errnoAddress;
     thread.tsdAddress = tsdAddress;
-    thread.registers.assign(guestSchedulerRegisterCount, 0);
+    thread.registers.assign(guestSMEStateEnd, 0);
+    thread.registers[guestSMESVLBytes] = 64;
     thread.registers[0] = argument;
     thread.registers[30] = guestReturnSentinel;
     thread.registers[31] = static_cast<std::uint64_t>(stack.end);

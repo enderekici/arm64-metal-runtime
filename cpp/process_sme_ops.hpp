@@ -28,7 +28,6 @@ inline std::optional<Instruction> memory(std::uint32_t bits, std::int64_t pc,
   if ((bits & mask) != base) return std::nullopt;
   const auto zn = bits & 31U;
   const auto rn = (bits >> 5) & 31U;
-  if (rn == 31U) return std::nullopt;
   const std::string address = "x[" + std::to_string(rn) + "]";
   std::string offset;
   std::string check;

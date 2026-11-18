@@ -5,6 +5,8 @@
 #include "guest_vector_crypto.hpp"
 #include "process_host.hpp"
 #include "process_vector_ops.hpp"
+#include "process_sme_lazy.hpp"
+#include "process_sme_ops.hpp"
 #include "shared_cache.hpp"
 #include <algorithm>
 #include <iomanip>
@@ -193,6 +195,99 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   };
   auto next = pc + 4;
   auto rd = field(0, 5), rn = field(5, 5);
+  if (auto sme = decode_sme_lazy(bits, pc, cached)) return *sme;
+  if (auto sme = lower_sme_instruction(bits, pc, cached)) return *sme;
+  const bool legacySIMDDataProcessing =
+      (bits & 0x0e000000) == 0x0e000000 && (bits & 0x5e000000) != 0x1e000000;
+  // SME architectural state. Streaming Z low 128-bit lanes alias the ordinary
+  // V register image at x[806..869]; the SME interval stores only the upper
+  // six lanes at the fixed M4 SVL.
+  if ((bits & 0xffffffe0) == 0xd51b4240) { // MSR SVCR, Xt
+    const auto value = reg(rd);
+    Strings code{
+        "{ ulong smeWantedSVCR = " + value + " & 3ul;",
+        "if ((x[" + str(guestSMESVCR) + "] & 1ul) != (smeWantedSVCR & 1ul)) {",
+        "x[" + str(guestFPSR) + "] |= 0x0800009ful;",
+        "for (uint z = 0u; z < 32u; ++z) {",
+        "for (uint lane = 0u; lane < 6u; ++lane) x[" + str(guestSMEZStart) +
+            " + z * " + str(guestSMEZStride) + " + lane] = 0ul;",
+        "x[806u + z * 2u] = 0ul; x[807u + z * 2u] = 0ul;",
+        "}",
+        "for (uint p = 0u; p < 16u; ++p) x[" + str(guestSMEPStart) +
+            " + p] = 0ul;",
+        "}",
+        "if ((x[" + str(guestSMESVCR) + "] & 2ul) == 0ul && (smeWantedSVCR & 2ul) != 0ul) {",
+        "for (uint word = 0u; word < 512u; ++word) x[" +
+            str(guestSMEZAStart) + " + word] = 0ul;",
+        "}",
+        "x[" + str(guestSMESVCR) + "] = smeWantedSVCR; }"};
+    return make_instruction(std::move(code), {next});
+  }
+  if ((bits & 0xffffffe0) == 0xd53b4240) { // MRS SVCR
+    return make_instruction(
+        {rd == 31 ? "" : reg(rd) + " = x[" + str(guestSMESVCR) + "] & 3ul;"}, {next});
+  }
+  if ((bits & 0xffffffe0) == 0xd53bd0a0) { // MRS TPIDR2_EL0
+    return make_instruction(
+        {rd == 31 ? "" : reg(rd) + " = x[" + str(guestSMETPIDR2) + "];"}, {next});
+  }
+  if ((bits & 0xffffffe0) == 0xd51bd0a0) { // MSR TPIDR2_EL0
+    return make_instruction({"x[" + str(guestSMETPIDR2) + "] = " + reg(rd) + ";"}, {next});
+  }
+  const auto setStreaming = [&](bool enable) {
+    Strings code;
+    if (enable) {
+      code.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) == 0ul) {");
+      code.push_back("x[" + str(guestSMESVCR) + "] |= 1ul;");
+      code.push_back("x[" + str(guestFPSR) + "] |= 0x0800009ful;");
+    } else {
+      code.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) {");
+      code.push_back("x[" + str(guestSMESVCR) + "] &= ~1ul;");
+      code.push_back("x[" + str(guestFPSR) + "] |= 0x0800009ful;");
+    }
+    code.push_back("for (uint z = 0u; z < 32u; ++z) {");
+    code.push_back("for (uint lane = 0u; lane < 6u; ++lane) x[" +
+                   str(guestSMEZStart) + " + z * " + str(guestSMEZStride) +
+                   " + lane] = 0ul;");
+    code.push_back("x[806u + z * 2u] = 0ul; x[807u + z * 2u] = 0ul;");
+    code.push_back("}");
+    code.push_back("for (uint p = 0u; p < 16u; ++p) x[" +
+                   str(guestSMEPStart) + " + p] = 0ul;");
+    code.push_back("}");
+    return make_instruction(std::move(code), {next});
+  };
+  const auto setZA = [&](bool enable) {
+    Strings code;
+    if (enable) {
+      code.push_back("if ((x[" + str(guestSMESVCR) + "] & 2ul) == 0ul) {");
+      code.push_back("x[" + str(guestSMESVCR) + "] |= 2ul;");
+      code.push_back("for (uint word = 0u; word < 512u; ++word) x[" +
+                     str(guestSMEZAStart) + " + word] = 0ul;");
+    } else {
+      code.push_back("x[" + str(guestSMESVCR) + "] &= ~2ul;");
+    }
+    if (enable) code.push_back("}");
+    return make_instruction(std::move(code), {next});
+  };
+  switch (bits) {
+  case 0xd503437f: return setStreaming(true);  // SMSTART SM
+  case 0xd503427f: return setStreaming(false); // SMSTOP SM
+  case 0xd503457f: return setZA(true);         // SMSTART ZA
+  case 0xd503447f: return setZA(false);        // SMSTOP ZA
+  case 0xd503477f: {                           // SMSTART
+    auto sm = setStreaming(true);
+    auto za = setZA(true);
+    sm.code.insert(sm.code.end(), za.code.begin(), za.code.end());
+    return sm;
+  }
+  case 0xd503467f: {                           // SMSTOP
+    auto sm = setStreaming(false);
+    auto za = setZA(false);
+    sm.code.insert(sm.code.end(), za.code.begin(), za.code.end());
+    return sm;
+  }
+  default: break;
+  }
   if (const auto operation =
           translate_core::decode_authenticated_return_operation(bits)) {
     const auto step = static_cast<translate_core::AuthenticatedReturnStep>(
@@ -297,6 +392,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   }
   auto emit = [&](auto... lines) -> Instruction {
     std::vector<std::string> code{lines...};
+    if (legacySIMDDataProcessing) {
+      code.insert(code.begin(), "if ((x[" + str(guestSMESVCR) +
+          "] & 1ul) != 0ul) { x[33] = " + str(pc) + "ul; x[34] = 14; return; }");
+    }
     for (auto &line : code)
       replace_all(line, "x[34] = 2;", "x[33] = " + str(pc) + "ul; x[34] = 2;");
     Instruction instruction{code, {next}};
@@ -1061,11 +1160,30 @@ Instruction decode_process(uint32_t bits, int64_t pc,
             str(807 + 2 * index) + "])");
   };
   auto assignVector = [&](std::string expression) -> Instruction {
-    return emit((std::string("{ ulong2 value = ") + str(expression) + "; x[" +
-                 str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
-                 "] = value[1]; }"));
+    Strings code;
+    if (legacySIMDDataProcessing) {
+      code.push_back("if ((x[" + str(guestSMESVCR) +
+          "] & 1ul) != 0ul) { x[33] = " + str(pc) + "ul; x[34] = 14; return; }");
+    }
+    code.push_back("{ ulong2 value = " + str(expression) + "; x[" +
+        str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
+        "] = value[1]; }");
+    code.push_back("for (uint lane = 0u; lane < 6u; ++lane) x[" +
+        str(guestSMEZStart) + " + " + str(rd * guestSMEZStride) +
+        "u + lane] = 0ul;");
+    Instruction instruction{std::move(code), {next}};
+    for (auto& line : instruction.code) {
+      replace_all(line, "x[34] = 2;", "x[33] = " + str(pc) + "ul; x[34] = 2;");
+    }
+    return instruction;
   };
   if (auto lowered = lower_neon(bits, pc)) {
+    lowered->code.insert(lowered->code.begin(),
+        "if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) { x[33] = " +
+        str(pc) + "ul; x[34] = 14; return; }");
+    lowered->code.push_back("for (uint lane = 0u; lane < 6u; ++lane) x[" +
+        str(guestSMEZStart) + " + " + str(rd * guestSMEZStride) +
+        "u + lane] = 0ul;");
     return *lowered;
   }
   if ((bits & 0xff3ffc00) == 0x5e31b800) {
@@ -2240,7 +2358,11 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         (std::string("x[") + str(slot) +
          "] = load_guest_word(memory + offset, " +
          str(std::min<int64_t>(width, 8)) + ");"),
-        (std::string("x[") + str(slot + 1) + "] = " + str(upper) + "; }"));
+        (std::string("x[") + str(slot + 1) + "] = " + str(upper) + ";"),
+        (std::string("for (uint lane = 0u; lane < 6u; ++lane) x[") +
+         str(guestSMEZStart) + " + " +
+         str(guestSMEZStride * decodedOperation->destination) +
+         "u + lane] = 0ul; }"));
   }
   const bool vectorLoad = decodedOperation &&
       decodedOperation->opcode == translate_core::Opcode::LoadVectorMemory;
@@ -2305,6 +2427,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(outside("address", width, vectorLoad)) +
                  ") { x[874] = address; x[34] = 2; return; }"),
                 transfer,
+                vectorLoad ? (std::string("for (uint lane = 0u; lane < 6u; ++lane) x[") +
+                    str(guestSMEZStart) + " + " +
+                    str(guestSMEZStride * decodedOperation->destination) +
+                    "u + lane] = 0ul;") : std::string{},
                 writeback ? (std::string(str(base)) + " += ulong(" +
                                   str(displacement) + ");")
                           : std::string{},

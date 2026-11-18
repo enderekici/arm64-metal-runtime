@@ -6,6 +6,7 @@
 #include "integer_ops_shared.h"
 #include "process_host.hpp"
 #include "process_vector_ops_msl.hpp"
+#include "process_sme_ops_msl.hpp"
 
 #include <array>
 #include <string>
@@ -979,6 +980,7 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
     }
     @GUEST_VECTOR_CRYPTO_SOURCE@
     @PROCESS_VECTOR_OPS_MSL@
+    @PROCESS_SME_OPS_MSL@
     @GUEST_NEON_SOURCE@
     ulong2 vector_reduce_long(ulong2 source, uint source_width, uint destination_width, uint bits) {
         ulong sum = 0;
@@ -1230,7 +1232,7 @@ std::string render_source(std::string_view rendered_cases, bool plain_arm64_main
   std::string source(kProcessMetalTemplate);
   remove_swift_multiline_indentation(source);
   const auto decimal = [](std::uint64_t value) { return std::to_string(value); };
-  const std::array<std::pair<std::string_view, std::string>, 18> values = {{
+  const std::array<std::pair<std::string_view, std::string>, 19> values = {{
       {"@RENDERED_CASES@", std::string(rendered_cases)},
       {"@GUEST_NEON_SOURCE@", std::string(neon_metal_source())},
       {"@GUEST_MEMORY_MSL_SOURCE@", std::string(guestMemoryMslSource)},
@@ -1248,6 +1250,7 @@ std::string render_source(std::string_view rendered_cases, bool plain_arm64_main
       {"@GUEST_TOKEN_TAG@", decimal(guestTokenTag)},
       {"@GUEST_VECTOR_CRYPTO_SOURCE@", std::string(vector_crypto_metal_source())},
       {"@PROCESS_VECTOR_OPS_MSL@", std::string(processVectorOpsMslSource)},
+      {"@PROCESS_SME_OPS_MSL@", std::string(processSmeOpsMslSource)},
       {"@TYPED_INTEGER_MSL_SOURCE@", std::string(typed_integer_msl_source)},
   }};
   for (const auto& [key, value] : values) replace_all(source, key, value);

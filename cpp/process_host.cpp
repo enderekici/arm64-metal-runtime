@@ -387,6 +387,7 @@ ProcessBootstrapResult build_process_bootstrap(ProcessBootstrapInput input) {
     result.registers[guestPACGAKey + 1] = input.randomPACGAKey1 == 0 ? random_word()
                                                                      : input.randomPACGAKey1;
     result.registers[guestTokenCapacity] = input.initialAuthenticationEntries;
+    result.registers[guestSMESVLBytes] = 64;
     result.registers[guestFaultAddress] = std::numeric_limits<std::uint64_t>::max();
     result.registers[guestCacheFaultAddress] = std::numeric_limits<std::uint64_t>::max();
     return result;

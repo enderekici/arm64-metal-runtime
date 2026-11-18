@@ -36,7 +36,18 @@ inline constexpr std::size_t guestThreadPointer = 876;
 inline constexpr std::size_t guestCacheFaultWidth = 877;
 inline constexpr std::size_t guestPACGAKey = 878;
 inline constexpr std::size_t guestJitWriteState = 880;
-inline constexpr std::size_t guestTokenStart = 881;
+// Fixed M4 SME state occupies a per-thread interval before the shared token
+// table. Zn low 128 bits alias the existing V slots; these words hold only
+// the remaining six lanes. SVL is 64 bytes (512 bits) on the supported host.
+inline constexpr std::size_t guestSMESVCR = 881;
+inline constexpr std::size_t guestSMETPIDR2 = 882;
+inline constexpr std::size_t guestSMESVLBytes = 883;
+inline constexpr std::size_t guestSMEZStart = 884;
+inline constexpr std::size_t guestSMEZStride = 6;
+inline constexpr std::size_t guestSMEPStart = 1076;
+inline constexpr std::size_t guestSMEZAStart = 1092;
+inline constexpr std::size_t guestSMEStateEnd = 1604;
+inline constexpr std::size_t guestTokenStart = guestSMEStateEnd;
 inline constexpr std::int32_t guestUnixSyslogCaptureDescriptor = -1;
 inline constexpr std::int32_t guestUnixClosedEndpoint = -2;
 inline constexpr std::uint64_t guestMappingBase = std::uint64_t{1} << 44U;
