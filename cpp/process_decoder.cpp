@@ -1610,6 +1610,12 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                               ((opcode & 1) ? "true" : "false") + ", " + str(mode) + "u, x)";
     return rd == 31 ? emit() : emit(std::string(str(reg(rd))) + " = " + value + ";");
   }
+  if ((bits & 0xfffffc00) == 0x1e7e0000) {
+    const auto source = "x[" + str(806 + 2 * rn) + "]";
+    const auto value = "fp_javascript_to_int32(" + source + ", x)";
+    return rd == 31 ? emit(value + ";")
+                    : emit(std::string(str(reg(rd))) + " = uint(" + value + ");");
+  }
   if ((bits & 0xff200c00) == 0x1e200c00) {
     const int format = fpFormat(field(22, 2));
     const auto condition = conditions[field(12, 4)];

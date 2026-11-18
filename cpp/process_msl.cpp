@@ -633,6 +633,36 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_to_integer_fixed(bits, wide_source, wide_destination != 0u ? 64u : 32u,
                                    is_unsigned, mode, 0u, state);
     }
+    // FJCVTZS truncates to an integer then wraps finite values modulo 2^32.
+    ulong fp_javascript_to_int32(ulong bits, device ulong *state) {
+        FpOperand value = fp_unpack(bits, 1u, state);
+        if (value.kind >= 2u) {
+            state[@GUEST_FPSR@] |= 1ul;
+            return 0ul;
+        }
+        ulong integer = 0ul;
+        bool inexact = false;
+        if (value.exponent < 0) {
+            inexact = value.significand != 0ul;
+        } else if (value.exponent < 63) {
+            uint shift = 63u - uint(value.exponent);
+            integer = value.significand >> shift;
+            inexact = (value.significand & ((1ul << shift) - 1ul)) != 0ul;
+        } else if (value.exponent == 63) {
+            integer = value.significand;
+        } else {
+            uint shift = uint(value.exponent - 63);
+            integer = shift < 32u ? value.significand << shift : 0ul;
+        }
+        bool overflow = value.exponent > 31 ||
+            (value.exponent == 31 &&
+             (value.sign != 1ul || value.significand != (1ul << 63)));
+        if (overflow) state[@GUEST_FPSR@] |= 1ul;
+        if (inexact) state[@GUEST_FPSR@] |= 16ul;
+        uint result = uint(integer);
+        if (value.sign != 0ul) result = 0u - result;
+        return ulong(result);
+    }
     // IEEE-754 scalar divide using integer significands. Metal lacks binary64;
     // this also gives binary32 the guest FPCR rounding mode and FPSR flags.
     ulong fp_divide(ulong left, ulong right, uint wide, device ulong *state) {
