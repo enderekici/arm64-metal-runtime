@@ -618,12 +618,21 @@ int main() {
   const auto dotFull = decode_operation(0x4e829420U);
   const auto dotIndexed = decode_operation(0x4f82e020U);
   const auto dotShortFull = decode_operation(0x0e829420U);
-  const auto dotShortIndexed = decode_operation(0x2fa2e020U);
+  const auto dotShortIndexedSigned = decode_operation(0x0fa2e820U);
+  const auto dotShortIndexedUnsigned = decode_operation(0x2fa2e820U);
   assert(dotFull.has_value() && dotFull->opcode == Opcode::VectorDot &&
          dotIndexed.has_value() && dotIndexed->opcode == Opcode::VectorDot &&
          dotShortFull.has_value() && dotShortFull->width == 64U &&
-         dotShortIndexed.has_value() && dotShortIndexed->width == 64U);
-  assert(!decode_operation(0x0f80e820U).has_value());  // Q=0, lane 2 is reserved.
+         dotShortIndexedSigned.has_value() && dotShortIndexedSigned->width == 64U &&
+         dotShortIndexedUnsigned.has_value() &&
+         dotShortIndexedUnsigned->width == 64U);
+  assert(dotShortIndexedSigned->shift == 15U &&
+         dotShortIndexedUnsigned->shift == 14U);
+  const auto shortDotInstruction = make_operation_instruction(
+      *dotShortIndexedSigned, {0x1004}, LoweringMode::Process,
+      std::uint64_t{1} << 48);
+  assert(shortDotInstruction.code.size() == 1U &&
+         shortDotInstruction.code.front().find("3u, 64u") != std::string::npos);
   for (const std::uint32_t invalidSize : {0U, 1U, 3U}) {
     const auto sizeBits = invalidSize << 22U;
     assert(!decode_operation((0x4e829420U & ~(3U << 22U)) | sizeBits).has_value());

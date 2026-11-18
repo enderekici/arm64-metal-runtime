@@ -488,7 +488,6 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     const auto signedLanes = dotIndexed == 0x0f80e000U ? 1U : 0U;
     const auto lane = field(bits, 21, 1) | (field(bits, 11, 1) << 1U);
     const auto vectorWidth = field(bits, 30, 1) != 0U ? 128U : 64U;
-    if (vectorWidth == 64U && lane > 1U) return std::nullopt;
     return Operation{Opcode::VectorDot, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5),
                      signedLanes | 2U | (lane << 2U), vectorWidth};
@@ -792,7 +791,6 @@ Instruction make_operation_instruction(Operation operation,
         operation.immediate > 31 || operation.shift > 15U ||
         (indexed == 0U && lane != 0U) ||
         (operation.width != 64U && operation.width != 128U) ||
-        (operation.width == 64U && indexed != 0U && lane > 1U) ||
         next.size() != 1U) {
       throw std::invalid_argument("Typed vector dot operands are invalid");
     }

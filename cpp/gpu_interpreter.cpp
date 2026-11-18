@@ -580,7 +580,6 @@ Result Interpreter::dispatch(const Backend& backend,
             if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
                 dotFlags > 15U || (indexed == 0U && lane != 0U) ||
                 (operation[5] != 64U && operation[5] != 128U) ||
-                (operation[5] == 64U && indexed != 0U && lane > 1U) ||
                 packet.successorCount != (blockEnd ? 1U : 0U) ||
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
                 throw std::invalid_argument(

@@ -1353,7 +1353,6 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 if (vd > 31u || vn > 31u || vm > 31u || dotFlags > 15u ||
                     (indexed == 0u && lane != 0u) ||
                     (instruction.operation[5] != 64u && instruction.operation[5] != 128u) ||
-                    (instruction.operation[5] == 64u && indexed != 0u && lane > 1u) ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
                     state[33] = pc;

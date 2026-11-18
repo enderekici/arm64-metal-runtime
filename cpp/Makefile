@@ -1009,7 +1009,7 @@ verify-interpreter-vector-dot-short: $(APP) $(INTERPRETER_VECTOR_DOT_SHORT_MAIN)
 		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
 		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
-		test "$$(grep -c 'event=interpreter-packet.*detail=47' "$$run_dir/interpreter.err")" -eq 2 && \
+		test "$$(grep -c 'event=interpreter-packet.*detail=47' "$$run_dir/interpreter.err")" -eq 4 && \
 		! grep -q 'event=compile-start' "$$run_dir/interpreter.err" || exit 1; \
 	echo "Advanced SIMD .2S dot products native/Metal/AOT passed; exit=$$interpreter_rc receipts=$$run_dir"
 
