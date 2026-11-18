@@ -13,6 +13,7 @@ inline constexpr int kJitWriteStateService = 244;
 inline constexpr int kDyldConformanceOnDiskService = 245;
 inline constexpr int kMachMakeMemoryEntryService = 251;
 inline constexpr int kMachPortDeallocateService = 252;
+inline constexpr int kGetPageSizeService = 268;
 
 struct HostServiceRegistration {
   std::string_view symbol;
@@ -57,6 +58,7 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_malloc_type_malloc", 26, true, true},
     {"_malloc", 26, true, true},
     {"_sysconf", 27, true, true},
+    {"_getpagesize", kGetPageSizeService, true, true},
     {"___error", 28, true, true},
     {"_strrchr", 29, true, true},
     {"_getprogname", 30, true, true},

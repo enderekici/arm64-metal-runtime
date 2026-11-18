@@ -2747,6 +2747,9 @@ HostServiceResult dispatch_guest_host_service(
             registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
             break;
         }
+        case kGetPageSizeService:
+            registers[0] = bootstrap.pageSize;
+            break;
         case 13: {  // stat
             if (registers[0] == 0 || registers[1] == 0) {
                 set_errno(EFAULT);
