@@ -150,6 +150,21 @@ PLIST
 PLIST
             compare plutil-valid 0 "$plutil" -lint "$probe_dir/valid.plist"
             compare plutil-malformed 1 "$plutil" -lint "$probe_dir/malformed.plist"
+            native_plist=$probe_dir/native.binary.plist
+            guest_plist=$probe_dir/guest.binary.plist
+            run_bounded plutil-convert.native "$plutil" -convert binary1 -o "$native_plist" "$probe_dir/valid.plist"
+            test "$(cat "$run_dir/plutil-convert.native.status")" = 0
+            test "$(head -c 8 "$native_plist")" = bplist00
+            test "$("$plutil" -extract runtime raw "$native_plist")" = metal
+            test "$("$plutil" -extract count raw "$native_plist")" = 3
+            run_bounded plutil-convert.guest env ARM64_METAL_SHARED_CACHE=1 ARM64_METAL_CACHE_DEMAND=1 \
+                ARM64_METAL_CACHE_BOOTSTRAP=1 ARM64_METAL_CACHE_INITIALIZERS=1 \
+                "$runtime" launch "$plutil" -convert binary1 -o "$guest_plist" "$probe_dir/valid.plist"
+            test "$(cat "$run_dir/plutil-convert.guest.status")" = 0
+            cmp "$run_dir/plutil-convert.native.stdout" "$run_dir/plutil-convert.guest.stdout"
+            cmp "$run_dir/plutil-convert.native.stderr" "$run_dir/plutil-convert.guest.stderr"
+            cmp "$native_plist" "$guest_plist"
+            printf 'plutil binary conversion matches native file and output\n'
             ;;
         tar)
             tar=/usr/bin/tar
