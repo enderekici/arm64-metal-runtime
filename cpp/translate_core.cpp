@@ -89,6 +89,9 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::LoadUnsignedMinMax, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), variant, width};
   }
+  if (bits == 0xd500401fU) {  // CFINV
+    return Operation{Opcode::InvertCarry, 0, 0, 0, 0, 0};
+  }
   if (bits == 0xd65f03c0) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
   }
@@ -599,7 +602,16 @@ Instruction make_operation_instruction(Operation operation,
                                        std::uint64_t guest_code_limit,
                                        std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::AuthenticatedReturn) {
+  if (operation.opcode == Opcode::InvertCarry) {
+    if (operation.destination || operation.source || operation.immediate ||
+        operation.shift || operation.width || next.size() != 1) {
+      throw std::invalid_argument("Invalid typed CFINV operation");
+    }
+    code.push_back("c = !c;");
+    if (mode == LoweringMode::Process) {
+      code.push_back("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
+    }
+  } else if (operation.opcode == Opcode::AuthenticatedReturn) {
     if (mode != LoweringMode::Process || operation.destination > 2 ||
         operation.source != 0 || operation.immediate != 0 ||
         operation.shift != 0 || operation.width != 0) {

@@ -29,7 +29,6 @@ struct LaunchOptions {
     // Number of guest instructions allowed per Metal dispatch (1..8192).
     // Repeated bounded dispatches continue the process until exit or failure.
     std::uint32_t dispatchBlocks = 8192;
-    bool developmentCpuFallback = false;
 };
 
 // Launch `executable` with arguments following argv[0]. The host environment

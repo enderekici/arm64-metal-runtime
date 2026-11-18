@@ -79,6 +79,30 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 return;
             }
             const uint opcode = instruction.operation[0];
+            if (opcode == 45u) {  // CFINV
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (instruction.operation[1] || instruction.operation[2] ||
+                    instruction.operation[3] || instruction.operation[4] ||
+                    instruction.operation[5] || instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                state[32] ^= 8ul;
+                pc += 4ul;
+                if (blockEnd) {
+                    leftBlock = true;
+                    break;
+                }
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode >= 9u && opcode <= 12u) {
                 const uint rd = instruction.operation[1];
                 const uint rn = instruction.operation[2];

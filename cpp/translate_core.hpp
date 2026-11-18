@@ -54,6 +54,7 @@ enum class Opcode : std::uint32_t {
   VectorReverse = 41,
   LoadVectorMemory = 43,
   StoreVectorMemory = 44,
+  InvertCarry = 45,
   AuthenticatedReturn = 36,
 };
 

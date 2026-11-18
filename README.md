@@ -69,12 +69,10 @@ The verified signal subset includes registration, masking, self-delivery, nested
 handlers, and externally delivered signals for the host bridge's supported
 signal set. Guest handlers run on Metal at dispatcher boundaries. Synchronous
 fault signals, alternate stacks, and full interrupted-syscall semantics remain open.
-By default the launcher requires guest instructions to execute on Metal and
-reports unsupported instructions and imports when the guest reaches them.
-For development, set `ARM64_METAL_DEV_CPU_FALLBACK=1` to interpret `CFINV`
-on the CPU when Metal reaches it. The launcher logs the guest PC and opcode
-to stderr, then resumes on Metal. `make verify` runs its launch suite in
-strict mode and checks the opt-in handoff with `make verify-development-cpu-fallback`.
+The launcher executes guest instructions on Metal and reports unsupported
+instructions and imports when reached. `make verify-cfinv` compares CFINV's
+carry and flag behavior with native ARM64 in translated and typed AOT execution.
+It also checks that RMIF reports its unsupported opcode and guest PC.
 
 `./arm64-metal inspect-cache /usr/lib/libbz2.1.0.dylib _BZ2_bzBuffToBuffDecompress`
 locates a direct export in the installed ARM64e dyld cache and reads its first

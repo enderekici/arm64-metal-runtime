@@ -3,21 +3,23 @@
 .p2align 2
 _main:
     cmp xzr, xzr
+    b.ne LafterInvert
     cfinv
-    b.cs fail
-    b.ne fail
+LafterInvert:
+    b.cs Lfail
+    b.ne Lfail
 
     movn x9, #0
     lsr x9, x9, #1
     adds x9, x9, #1
     cfinv
-    b.cc fail
-    b.pl fail
-    b.vc fail
-    b.eq fail
+    b.cc Lfail
+    b.pl Lfail
+    b.vc Lfail
+    b.eq Lfail
     mov x0, #42
     ret
 
-fail:
+Lfail:
     mov x0, #1
     ret
