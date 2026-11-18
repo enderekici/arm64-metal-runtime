@@ -25,6 +25,8 @@ constexpr std::size_t kGuestMcontextExceptionSyndrome = 8;
 constexpr std::size_t kGuestSiginfoAddress = 24;
 constexpr std::size_t kGuestUcontextSignalMask = 4;
 constexpr std::size_t kGuestUcontextMcontextPointer = 48;
+constexpr std::size_t kGuestStreamingZUpperStart = 884;
+constexpr std::size_t kGuestStreamingZUpperEnd = 1076;
 
 static_assert(sizeof(void*) == 8);
 static_assert(sizeof(siginfo_t) == kGuestSiginfoSize);
@@ -293,6 +295,10 @@ std::optional<GuestSignalResume> GuestSignalRuntime::resume(
     std::copy(frame.registers.begin(), frame.registers.end(), registers.begin());
     std::copy(frame.vectors.begin(), frame.vectors.end(),
               registers.begin() + guestSignalVectorStart);
+    if (registers.size() >= kGuestStreamingZUpperEnd) {
+        std::fill(registers.begin() + kGuestStreamingZUpperStart,
+                  registers.begin() + kGuestStreamingZUpperEnd, 0);
+    }
     bool recompile = false;
     if (frame.synchronousContext != 0 && memory != nullptr) {
         const auto* ucontext = memory->buffer(frame.synchronousContext, kGuestUcontextSize);

@@ -1,6 +1,7 @@
 #include "guest_signal_runtime.hpp"
 #include "process_host.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <csignal>
 #include <cstdint>
@@ -95,12 +96,21 @@ int main() {
                threadPending == directThreadPending && fastRegisters == directRegisters);
     }
 
-    std::vector<std::uint64_t> first(guestSignalVectorEnd, 0);
-    std::vector<std::uint64_t> second(guestSignalVectorEnd, 0);
+    std::vector<std::uint64_t> first(1604, 0);
+    std::vector<std::uint64_t> second(1604, 0);
     first[guestSignalPC] = 0x1110;
     second[guestSignalPC] = 0x2220;
     first[37] = 3;
     second[37] = 5;
+    first[881] = 3;
+    first[882] = 0x12345678;
+    first[883] = 64;
+    first[884] = 0xfeedface;
+    first[1075] = 0x1111;
+    first[1076] = 0x2222;
+    first[1092] = 0x3333;
+    first[1603] = 0x4444;
+    first[806] = 0xaaaa;
     std::uint32_t processPending = 0;
     std::uint32_t firstPending = GuestSignals::bit(SIGUSR1);
     std::uint32_t secondPending = GuestSignals::bit(SIGUSR1);
@@ -112,14 +122,24 @@ int main() {
     assert(runtime.deliver(signals, processPending, secondPending, secondMask,
         second, 5, 0xb2, 2).outcome == GuestSignalOutcome::HandlerEntered);
     assert(runtime.frame_depth(1) == 1 && runtime.frame_depth(2) == 1);
+    std::fill(first.begin() + 884, first.begin() + 1076, 0xdeadbeef);
+    first[881] = 1;
+    first[882] = 0x2222;
+    first[1076] = 0x3333;
+    first[1092] = 0x5555;
+    first[806] = 0xbbbb;
 
     const auto secondResume = runtime.resume(signals, secondMask, second, 5, 2);
     assert(secondResume && secondResume->programCounter == 0x2220 &&
            secondResume->executionContext == 0xb2);
+    assert(first[881] == 1 && first[882] == 0x2222 && first[1076] == 0x3333);
     assert(runtime.has_frames(1) && !runtime.has_frames(2));
     const auto firstResume = runtime.resume(signals, firstMask, first, 3, 1);
     assert(firstResume && firstResume->programCounter == 0x1110 &&
            firstResume->executionContext == 0xa1);
+    assert(first[806] == 0xaaaa && first[881] == 1 && first[882] == 0x2222 &&
+           first[883] == 64 && first[884] == 0 && first[1075] == 0 &&
+           first[1076] == 0x3333 && first[1092] == 0x5555 && first[1603] == 0x4444);
     assert(!runtime.has_frames(1) && !runtime.has_frames(2));
 
     GuestSignalRuntime synchronousRuntime;
