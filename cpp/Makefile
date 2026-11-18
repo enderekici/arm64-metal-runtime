@@ -330,7 +330,6 @@ verify-sandbox-persona: $(BUILD_DIR)/sandbox-persona-query $(APP) $(INTERPRETER_
 	@set -eu; run_dir=$$(mktemp -d "$(BUILD_DIR)/sandbox-persona-verify.XXXXXX"); \
 	probe="$(abspath $(BUILD_DIR)/sandbox-persona-query)"; launcher="$(abspath $(APP))"; \
 	export ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))"; \
-	export ARM64_METAL_DEV_CPU_FALLBACK=0; \
 	for mode in persona null-reply path; do \
 		"$$probe" "$$mode" >"$$run_dir/$$mode.native"; \
 		"$$launcher" launch "$$probe" "$$mode" >"$$run_dir/$$mode.guest"; \
