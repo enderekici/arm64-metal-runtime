@@ -144,6 +144,29 @@ inline ulong2 vector_reduce_sum_apply(
     }
     return ulong2(sum & laneMask, 0ul);
 }
+inline ulong2 vector_dot_apply(
+    ulong2 accumulator, ulong2 left, ulong2 right,
+    uint signedLanes, uint indexed, uint selectedLane) {
+    ulong2 result = ulong2(0ul);
+    for (uint group = 0u; group < 4u; ++group) {
+        uint sum = uint((accumulator[group >> 1u] >> ((group & 1u) * 32u)) &
+                        0xfffffffful);
+        for (uint byte = 0u; byte < 4u; ++byte) {
+            const uint leftIndex = group * 4u + byte;
+            const uint leftBit = leftIndex * 8u;
+            const ulong a = (left[leftBit >> 6u] >> (leftBit & 63u)) & 0xfful;
+            const uint rightByte = indexed != 0u
+                ? selectedLane * 4u + byte : leftIndex;
+            const uint rightBit = rightByte * 8u;
+            const ulong b = (right[rightBit >> 6u] >> (rightBit & 63u)) & 0xfful;
+            const int lhs = signedLanes != 0u ? int((a ^ 0x80ul) - 0x80ul) : int(a);
+            const int rhs = signedLanes != 0u ? int((b ^ 0x80ul) - 0x80ul) : int(b);
+            sum += uint(lhs * rhs);
+        }
+        result[group >> 1u] |= ulong(sum) << ((group & 1u) * 32u);
+    }
+    return result;
+}
 inline ulong2 vector_reverse_apply(
     ulong2 source, uint elementWidth, uint vectorWidth, uint groupWidth) {
     ulong2 result = ulong2(0ul);
@@ -949,6 +972,21 @@ inline constexpr char typed_integer_msl_source[] =
     "uint bit = lane * elementWidth; "
     "sum += (source[bit >> 6u] >> (bit & 63u)) & laneMask; } "
     "return ulong2(sum & laneMask, 0ul); }\n"
+    "inline ulong2 vector_dot_apply(ulong2 accumulator, ulong2 left, ulong2 right, "
+    "uint signedLanes, uint indexed, uint selectedLane) { ulong2 result = ulong2(0ul); "
+    "for (uint group = 0u; group < 4u; ++group) { "
+    "uint sum = uint((accumulator[group >> 1u] >> ((group & 1u) * 32u)) & 0xfffffffful); "
+    "for (uint byte = 0u; byte < 4u; ++byte) { "
+    "uint leftIndex = group * 4u + byte; uint leftBit = leftIndex * 8u; "
+    "ulong a = (left[leftBit >> 6u] >> (leftBit & 63u)) & 0xfful; "
+    "uint rightIndex = indexed != 0u ? selectedLane * 4u + byte : leftIndex; "
+    "uint rightBit = rightIndex * 8u; "
+    "ulong b = (right[rightBit >> 6u] >> (rightBit & 63u)) & 0xfful; "
+    "int lhs = signedLanes != 0u ? int((a ^ 0x80ul) - 0x80ul) : int(a); "
+    "int rhs = signedLanes != 0u ? int((b ^ 0x80ul) - 0x80ul) : int(b); "
+    "sum += uint(lhs * rhs); } uint resultBit = group * 32u; "
+    "result[resultBit >> 6u] |= ulong(sum) << (resultBit & 63u); } "
+    "return result; }\n"
     "inline ulong2 vector_reverse_apply(ulong2 source, uint elementWidth, "
     "uint vectorWidth, uint groupWidth) { ulong2 result = ulong2(0ul); "
     "ulong laneMask = ~0ul >> (64u - elementWidth); "

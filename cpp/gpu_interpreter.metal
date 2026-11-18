@@ -1339,6 +1339,47 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 }
                 continue;
             }
+            if (opcode == 47u) {
+                const uint vd = instruction.operation[1];
+                const uint vn = instruction.operation[2];
+                const uint vm = instruction.operation[3];
+                const uint dotFlags = instruction.operation[4];
+                const uint indexed = (dotFlags >> 1u) & 1u;
+                const uint lane = (dotFlags >> 2u) & 3u;
+                const bool blockEnd = (instruction.flags & 2u) != 0u;
+                if (vd > 31u || vn > 31u || vm > 31u || dotFlags > 15u ||
+                    (indexed == 0u && lane != 0u) || instruction.operation[5] != 128u ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                    (blockEnd && instruction.successor0 != instruction.pc + 4ul)) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                const uint destinationSlot = 806u + 2u * vd;
+                const uint leftSlot = 806u + 2u * vn;
+                const uint rightSlot = 806u + 2u * vm;
+                const ulong2 accumulator = ulong2(state[destinationSlot],
+                                                  state[destinationSlot + 1u]);
+                const ulong2 left = ulong2(state[leftSlot], state[leftSlot + 1u]);
+                const ulong2 right = ulong2(state[rightSlot], state[rightSlot + 1u]);
+                const ulong2 result = vector_dot_apply(
+                    accumulator, left, right, dotFlags & 1u, indexed, lane);
+                state[destinationSlot] = result[0];
+                state[destinationSlot + 1u] = result[1];
+                if (blockEnd) {
+                    pc = instruction.successor0;
+                    leftBlock = true;
+                    break;
+                }
+                pc = instruction.pc + 4ul;
+                if (index + 1 >= packetCount || packets[index + 1].pc != pc ||
+                    (packets[index + 1].flags & 1u) != 0u) {
+                    state[33] = pc;
+                    state[34] = 7;
+                    return;
+                }
+                continue;
+            }
             if (opcode == 41u) {
                 const uint vd = instruction.operation[1];
                 const uint vn = instruction.operation[2];

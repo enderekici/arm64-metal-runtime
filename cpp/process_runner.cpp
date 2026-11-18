@@ -601,6 +601,8 @@ ProcessKernelPlan plan_process_kernel(
                 opcode == translate_core::Opcode::VectorReduceExtreme;
             const bool vectorReduceSumOpcode =
                 opcode == translate_core::Opcode::VectorReduceSum;
+            const bool vectorDotOpcode =
+                opcode == translate_core::Opcode::VectorDot;
             const auto& operation = *instruction.operation;
             const bool validMemoryOperation =
                 !unsignedMemoryOpcode ||
@@ -867,6 +869,14 @@ ProcessKernelPlan plan_process_kernel(
                   operation.immediate == 32U) && operation.shift == 0U &&
                  (operation.width == 64U || operation.width == 128U) &&
                  (operation.immediate != 32U || operation.width == 128U));
+            const auto vectorDotIndexed = (operation.shift >> 1U) & 1U;
+            const auto vectorDotLane = (operation.shift >> 2U) & 3U;
+            const bool validVectorDot =
+                !vectorDotOpcode ||
+                (operation.destination <= 31 && operation.source <= 31 &&
+                 operation.immediate <= 31 && operation.shift <= 15U &&
+                 (vectorDotIndexed != 0U || vectorDotLane == 0U) &&
+                 operation.width == 128U);
             if ((!moveWideOpcode && !authenticatedStep && !memoryOpcode && !addSubImmediateOpcode &&
                  !conditionalSelectOpcode && !addSubShiftedRegisterOpcode &&
                  !addSubExtendedRegisterOpcode && !addSubCarryRegisterOpcode &&
@@ -877,7 +887,8 @@ ProcessKernelPlan plan_process_kernel(
                  !adrOpcode && !vectorCompareEqualZeroOpcode &&
                  !vectorReduceExtremeOpcode && !vectorReduceSumOpcode &&
                  opcode != translate_core::Opcode::SystemFlags &&
-                 opcode != translate_core::Opcode::FlagManipulation) ||
+                 opcode != translate_core::Opcode::FlagManipulation &&
+                 !vectorDotOpcode) ||
                 !validMemoryOperation || !validPairMemoryOperation ||
                 !validIndexedScalarMemoryOperation ||
                 !validSignedScalarMemoryOperation ||
@@ -892,7 +903,7 @@ ProcessKernelPlan plan_process_kernel(
                 !validBitfield || !validScalarFP ||
                 !validIntegerBitOperation || !validIntegerDivide || !validAdr ||
                 !validVectorCompareEqualZero || !validVectorReduceExtreme ||
-                !validVectorReduceSum ||
+                !validVectorReduceSum || !validVectorDot ||
                 instruction.next.size() != 1 || pc > std::numeric_limits<std::int64_t>::max() - 4 ||
                 instruction.next.front() != pc + 4) {
                 break;

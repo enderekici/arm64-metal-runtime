@@ -475,6 +475,23 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::VectorReduceSum, field(bits, 0, 5),
                      field(bits, 5, 5), elementWidth, 0U, vectorWidth};
   }
+  const auto dotFull = bits & 0xbf20fc00U;
+  const auto dotIndexed = bits & 0xbf00e400U;
+  if ((dotFull == 0x0e009400U || dotFull == 0x2e009400U) &&
+      (bits & (1U << 30)) != 0U) {
+    const auto signedLanes = dotFull == 0x0e009400U ? 1U : 0U;
+    return Operation{Opcode::VectorDot, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5),
+                     signedLanes, 128U};
+  }
+  if ((dotIndexed == 0x0f00e000U || dotIndexed == 0x2f00e000U) &&
+      (bits & (1U << 30)) != 0U) {
+    const auto signedLanes = dotIndexed == 0x0f00e000U ? 1U : 0U;
+    const auto lane = field(bits, 21, 1) | (field(bits, 11, 1) << 1U);
+    return Operation{Opcode::VectorDot, field(bits, 0, 5),
+                     field(bits, 5, 5), field(bits, 16, 5),
+                     signedLanes | 2U | (lane << 2U), 128U};
+  }
   const auto vectorReverseEncoding = bits & 0xbf3ffc00U;
   const auto reverseGroupWidth = vectorReverseEncoding == 0x0e201800U ? 16U
       : vectorReverseEncoding == 0x2e200800U ? 32U
@@ -763,6 +780,34 @@ Instruction make_operation_instruction(Operation operation,
                    "u); x[" + std::to_string(destination) +
                    "] = value[0]; x[" + std::to_string(destination + 1U) +
                    "] = value[1]; }");
+  } else if (operation.opcode == Opcode::VectorDot) {
+    if (mode != LoweringMode::Process) {
+      throw std::invalid_argument("Typed vector dot is process-only");
+    }
+    const auto signedLanes = operation.shift & 1U;
+    const auto indexed = (operation.shift >> 1U) & 1U;
+    const auto lane = (operation.shift >> 2U) & 3U;
+    if (operation.destination > 31 || operation.source > 31 ||
+        operation.immediate > 31 || operation.shift > 15U ||
+        (indexed == 0U && lane != 0U) || operation.width != 128U ||
+        next.size() != 1U) {
+      throw std::invalid_argument("Typed vector dot operands are invalid");
+    }
+    const auto destination = 806U + 2U * operation.destination;
+    const auto left = 806U + 2U * operation.source;
+    const auto right = 806U + 2U * operation.immediate;
+    code.push_back("{ ulong2 value = vector_dot_apply(ulong2(x[" +
+                   std::to_string(destination) + "], x[" +
+                   std::to_string(destination + 1U) + "]), ulong2(x[" +
+                   std::to_string(left) + "], x[" +
+                   std::to_string(left + 1U) + "]), ulong2(x[" +
+                   std::to_string(right) + "], x[" +
+                   std::to_string(right + 1U) + "]), " +
+                   std::to_string(signedLanes) + "u, " +
+                   std::to_string(indexed) + "u, " +
+                   std::to_string(lane) + "u); x[" +
+                   std::to_string(destination) + "] = value[0]; x[" +
+                   std::to_string(destination + 1U) + "] = value[1]; }");
   } else if (operation.opcode == Opcode::VectorReduceExtreme) {
     const auto minimum = operation.shift & 1U;
     const auto signedLanes = (operation.shift >> 1U) & 1U;
@@ -1374,8 +1419,12 @@ Instruction decode(std::uint32_t bits, std::int64_t pc,
       operation->opcode != Opcode::LoadSignedScalar &&
       operation->opcode != Opcode::BranchLink &&
       operation->opcode != Opcode::BranchRegister) {
-    if (operation->opcode == Opcode::VectorReduceSum) {
-      throw std::invalid_argument("Typed vector sum reduction is process-only");
+    if (operation->opcode == Opcode::VectorReduceSum ||
+        operation->opcode == Opcode::VectorDot) {
+      throw std::invalid_argument(
+          operation->opcode == Opcode::VectorReduceSum
+              ? "Typed vector sum reduction is process-only"
+              : "Typed vector dot is process-only");
     }
     std::vector<std::int64_t> successors;
     if (operation->opcode == Opcode::Branch) {

@@ -96,6 +96,15 @@ Result Interpreter::dispatch(const Backend& backend,
         }
         const auto& operation = packet.operation;
         const auto opcode = static_cast<translate_core::Opcode>(operation[0]);
+        if (opcode == translate_core::Opcode::VectorCompareEqualZero ||
+            opcode == translate_core::Opcode::VectorReduceExtreme ||
+            opcode == translate_core::Opcode::VectorReduceSum ||
+            opcode == translate_core::Opcode::VectorDot ||
+            opcode == translate_core::Opcode::VectorReverse ||
+            opcode == translate_core::Opcode::LoadVectorMemory ||
+            opcode == translate_core::Opcode::StoreVectorMemory) {
+            hasVectorState = true;
+        }
         if (opcode == translate_core::Opcode::Return) {
             if ((packet.flags & packetBlockEnd) == 0 || packet.successorCount != 0 ||
                 operation[1] != 0 ||
@@ -518,7 +527,6 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter load min/max packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorCompareEqualZero) {
-            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto vectorWidth = operation[5];
@@ -533,7 +541,6 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter vector CMEQ packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorReduceExtreme) {
-            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto variant = operation[4];
@@ -548,7 +555,6 @@ Result Interpreter::dispatch(const Backend& backend,
                     "Interpreter vector reduction packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::VectorReduceSum) {
-            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto vectorWidth = operation[5];
@@ -561,8 +567,20 @@ Result Interpreter::dispatch(const Backend& backend,
                 throw std::invalid_argument(
                     "Interpreter vector sum reduction packet metadata is invalid");
             }
+        } else if (opcode == translate_core::Opcode::VectorDot) {
+            const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
+            const auto dotFlags = operation[4];
+            const auto indexed = (dotFlags >> 1U) & 1U;
+            const auto lane = (dotFlags >> 2U) & 3U;
+            if (operation[1] > 31 || operation[2] > 31 || operation[3] > 31 ||
+                dotFlags > 15U || (indexed == 0U && lane != 0U) ||
+                operation[5] != 128U ||
+                packet.successorCount != (blockEnd ? 1U : 0U) ||
+                (blockEnd && packet.successor0 != packet.pc + 4)) {
+                throw std::invalid_argument(
+                    "Interpreter vector dot packet metadata is invalid");
+            }
         } else if (opcode == translate_core::Opcode::VectorReverse) {
-            hasVectorState = true;
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
             const auto elementWidth = operation[3];
             const auto groupWidth = operation[4];
