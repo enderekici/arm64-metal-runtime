@@ -106,6 +106,8 @@ inline constexpr HostServiceRegistration kHostServiceRegistry[]{
     {"_clock", 60, true, true},
     {"_clock_gettime", 61, true, true},
     {"_fopen", 62, true, true},
+    {"_fdopen", 271, true, true},
+    {"_setvbuf", 272, true, true},
     {"_fread", 63, true, true},
     {"_feof", 64, true, true},
     {"_pthread_mutex_init", 65, true, true},

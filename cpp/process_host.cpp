@@ -749,7 +749,10 @@ HostServiceState::~HostServiceState() {
     for (const auto& right : guestBootstrapSendRights) {
         (void)mach_port_deallocate(mach_task_self(), right.second);
     }
-    for (const auto& file : files) std::fclose(file.second);
+    for (const auto& file : files) {
+        openDescriptors.erase(::fileno(file.second));
+        std::fclose(file.second);
+    }
     for (const auto& mapping : mappedFiles) {
         if (mapping.second.hostAddress != nullptr) {
             ::munmap(mapping.second.hostAddress, static_cast<std::size_t>(mapping.second.size));
@@ -937,6 +940,24 @@ HostServiceResult dispatch_guest_host_service(
     };
     const auto release_guest = [&](std::int64_t address) {
         if (address != 0 && state.heap) state.heap->release(address);
+    };
+    const auto file_for_descriptor = [&](int descriptor) {
+        return std::find_if(state.files.begin(), state.files.end(),
+            [&](const auto& item) { return ::fileno(item.second) == descriptor; });
+    };
+    const auto close_guest_file = [&](const auto& file) {
+        const auto descriptor = ::fileno(file->second);
+        state.openDescriptors.erase(descriptor);
+        state.writableDescriptors.erase(descriptor);
+        const auto result = std::fclose(file->second);
+        if (result != 0) set_errno(errno);
+        if (const auto buffer = state.fgetlnBuffers.find(file->first);
+            buffer != state.fgetlnBuffers.end()) {
+            release_guest(static_cast<std::int64_t>(buffer->second.address));
+            state.fgetlnBuffers.erase(buffer);
+        }
+        state.files.erase(file);
+        return static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
     };
     const auto is_standard_stream = [&](std::uint64_t address) {
         address = normalize_stream(address);
@@ -2183,16 +2204,24 @@ HostServiceResult dispatch_guest_host_service(
                     static_cast<std::int64_t>(std::mbtowc(nullptr, nullptr, 0)));
                 break;
             }
-            if (registers[1] >= memory.size()) {
-                throw std::runtime_error("Guest mbtowc input pointer unsupported");
+            std::array<char, MB_LEN_MAX> bytes{};
+            const auto limit = std::min<std::uint64_t>(registers[2], bytes.size());
+            std::size_t length = 0;
+            while (length < limit) {
+                if (registers[1] > std::numeric_limits<std::uint64_t>::max() - length) break;
+                const auto address = registers[1] + length;
+                const auto extent = std::min<std::uint64_t>(
+                    limit - length, memory.contiguous_readable_size(address));
+                if (!extent) break;
+                std::memcpy(bytes.data() + length, memory.buffer(address, extent), extent);
+                length += extent;
             }
-            const auto available = memory.size() - static_cast<std::size_t>(registers[1]);
-            const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(
-                registers[2], available));
-            const auto* source = reinterpret_cast<const char*>(memory.buffer(registers[1], length));
+            if (limit && !length) throw std::out_of_range("Guest mbtowc input pointer is invalid");
+            const auto* source = bytes.data();
             wchar_t output = 0;
             const auto result = std::mbtowc(registers[0] == 0 ? nullptr : &output,
                                              source, length);
+            if (result < 0) set_errno(errno);
             if (registers[0] != 0 && result >= 0) {
                 std::memcpy(memory.buffer(registers[0], sizeof(output), true),
                             &output, sizeof(output));
@@ -2582,15 +2611,7 @@ HostServiceResult dispatch_guest_host_service(
             const auto stream = normalize_stream(registers[0]);
             const auto found = state.files.find(stream);
             if (found != state.files.end()) {
-                const auto result = std::fclose(found->second);
-                state.files.erase(found);
-                if (const auto lineBuffer = state.fgetlnBuffers.find(stream);
-                    lineBuffer != state.fgetlnBuffers.end()) {
-                    guest_heap().release(static_cast<std::int64_t>(lineBuffer->second.address));
-                    state.fgetlnBuffers.erase(lineBuffer);
-                }
-                if (result != 0) set_errno(errno);
-                registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+                registers[0] = close_guest_file(found);
             } else if (is_standard_stream(stream) &&
                        state.closedStreams.insert(stream).second) {
                 if (const auto lineBuffer = state.fgetlnBuffers.find(stream);
@@ -2605,13 +2626,39 @@ HostServiceResult dispatch_guest_host_service(
             }
             break;
         }
-        case 62: {  // fopen read-only
-            const auto path = string_at(registers[0]);
+        case 272: {  // setvbuf with libc-owned buffering
+            if (registers[1] != 0)
+                throw std::runtime_error("Guest setvbuf does not support a supplied buffer");
+            const auto file = state.files.find(registers[0]);
+            if (file == state.files.end()) throw std::runtime_error("Guest setvbuf requires an owned FILE");
+            const int result = std::setvbuf(file->second, nullptr,
+                                            static_cast<int>(registers[2]), registers[3]);
+            if (result != 0) set_errno(errno);
+            registers[0] = static_cast<std::uint64_t>(static_cast<std::int64_t>(result));
+            break;
+        }
+        case 62:   // fopen
+        case 271: {  // fdopen on a guest-owned descriptor
             const auto mode = string_at(registers[1]);
             if (mode != "r" && mode != "rb") {
-                throw std::runtime_error("Guest fopen supports read-only files");
+                throw std::runtime_error("Guest stdio open supports read-only files");
             }
-            auto* file = std::fopen(path.c_str(), "rb");
+            std::FILE* file = nullptr;
+            if (service == 62) {
+                file = std::fopen(string_at(registers[0]).c_str(), "rb");
+            } else {
+                const auto descriptor = static_cast<std::int32_t>(registers[0]);
+                if (!state.openDescriptors.count(descriptor)) {
+                    set_errno(EBADF);
+                    registers[0] = 0;
+                    break;
+                }
+                if (state.socketDescriptors.count(descriptor) ||
+                    file_for_descriptor(descriptor) != state.files.end()) {
+                    throw std::runtime_error("Guest fdopen requires an unbound file descriptor");
+                }
+                file = ::fdopen(descriptor, "rb");
+            }
             if (file == nullptr) {
                 set_errno(errno);
                 registers[0] = 0;
@@ -3138,7 +3185,8 @@ HostServiceResult dispatch_guest_host_service(
         }
         case 222: {  // fdopendir transfers a guest-owned descriptor into DIR
             const auto descriptor = static_cast<std::int32_t>(registers[0]);
-            if (state.openDescriptors.count(descriptor) == 0) {
+            if (state.openDescriptors.count(descriptor) == 0 ||
+                file_for_descriptor(descriptor) != state.files.end()) {
                 set_errno(EBADF);
                 registers[0] = 0;
                 break;
@@ -4400,6 +4448,11 @@ HostServiceResult dispatch_guest_host_service(
                 if (state.closedStreams.insert(stream).second) registers[0] = 0;
                 else { set_errno(EBADF); registers[0] = failure; }
             } else if (state.openDescriptors.erase(descriptor) != 0) {
+                const auto streamFile = file_for_descriptor(descriptor);
+                if (streamFile != state.files.end()) {
+                    registers[0] = close_guest_file(streamFile);
+                    break;
+                }
                 state.socketDescriptors.erase(descriptor);
                 state.writableDescriptors.erase(descriptor);
                 state.standardDescriptorFlags.erase(descriptor);
@@ -4817,7 +4870,8 @@ HostServiceResult dispatch_guest_host_service(
             }
             const auto descriptor = static_cast<std::int32_t>(registers[4]);
             const auto file_offset = static_cast<std::int64_t>(registers[5]);
-            if (!owns_descriptor(descriptor)) {
+            if (!owns_descriptor(descriptor) &&
+                !(descriptor == STDIN_FILENO && standard_descriptor_open(descriptor))) {
                 set_errno(EBADF);
                 registers[0] = failure;
                 break;
