@@ -143,6 +143,23 @@
       "coverage_boundary": "SMMLA, UMMLA and USMMLA through process translation"
     },
     {
+      "id": "simd-rdm",
+      "test_target": "Native and translated Metal process launch",
+      "domain": "AdvSIMD signed rounding doubling multiply-accumulate",
+      "fixture": "fixtures/handoff/simd-rdm-contract.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-march=armv8.1-a+rdm", "-O0", "-Wall", "-Wextra", "-Werror", "-fno-stack-protector", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 120,
+      "expected_status": 0,
+      "expected_stdout_lines": 104,
+      "polarity": "positive",
+      "negative_control": "Exact negative and positive ties, final saturation and cancellation with FPSR.QC both clear and pre-seeded",
+      "evidence_level": "Full vector register and FPSR matched native on all 104 output rows",
+      "coverage_boundary": "SQRDMLAH and SQRDMLSH with 16- and 32-bit elements, scalar and vector, regular and indexed"
+    },
+    {
       "id": "simd-saturation-and-shifts",
       "test_target": "component-manifest case; ARM64 SIMD executable is compiled and run natively and through runtime launch",
       "domain": "ARM64 AdvSIMD saturation and shifts",

@@ -119,6 +119,21 @@ ulong neon_sqdmulh_lane(ulong a, ulong b, uint w, bool round, device ulong *stat
     if (round) product += 1l << (w - 1u);
     return ulong(product >> w) & lane_mask(w);
 }
+ulong2 neon_rdm(ulong2 accumulator, ulong2 left, ulong2 right, uint width,
+                uint lanes, bool subtract, device ulong *state) {
+    ulong2 result = ulong2(0);
+    const long bias = 1l << (width - 2u);
+    for (uint lane = 0; lane < lanes; ++lane) {
+        const long a = neon_sx(lane_read(left, lane, width), width);
+        const long b = neon_sx(lane_read(right, lane, width), width);
+        const long d = neon_sx(lane_read(accumulator, lane, width), width);
+        // Shift the undoubled product by width-1 to keep min*min in range.
+        const long product = a * b;
+        const long rounded = ((subtract ? -product : product) + bias) >> (width - 1u);
+        lane_add(result, lane, width, neon_clamp_signed(d + rounded, width, state));
+    }
+    return result;
+}
 ulong neon_pmul8(ulong a, ulong b) {
     ulong r = 0ul;
     for (uint bit = 0; bit < 8u; ++bit) if (((b >> bit) & 1ul) != 0) r ^= a << bit;
@@ -618,6 +633,16 @@ inline translate_core::Instruction assign(std::uint32_t rd, const std::string &e
 inline std::string u32(std::uint32_t v) { return std::to_string(v) + "u"; }
 inline std::string flag(bool v) { return v ? "true" : "false"; }
 
+inline std::string indexed_integer_operand(std::uint32_t bits, std::uint32_t size) {
+  const auto h = bit_field(bits, 11, 1);
+  const auto l = bit_field(bits, 21, 1);
+  const auto index = size == 1 ? (h << 2) | (l << 1) | bit_field(bits, 20, 1) : (h << 1) | l;
+  const auto reg = bit_field(bits, 16, size == 1 ? 4 : 5);
+  const auto width = u32(8u << size);
+  return "vector_dup(lane_read(" + vreg(reg) + ", " + u32(index) + ", " + width + "), " +
+         width + ", 128)";
+}
+
 }  // namespace neon_detail
 
 // Floating-point AdvSIMD groups handled by neon_fp_misc / neon_fp_three.
@@ -721,6 +746,18 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
   const bool u = field(29, 1) != 0;
   const std::string d = vreg(rd), n = vreg(rn), m = vreg(rm);
 
+  // FEAT_RDM regular and by-element forms. Scalar encodings require Q=1.
+  const bool rdmRegular = (bits & 0xaf20f400U) == 0x2e008400U;
+  const bool rdmIndexed = (bits & 0xaf00d400U) == 0x2f00d000U;
+  const bool rdmScalar = field(28, 1) != 0;
+  if ((rdmRegular || rdmIndexed) && (size == 1 || size == 2) && (!rdmScalar || q)) {
+    const auto width = 8u << size;
+    const auto lanes = rdmScalar ? 1u : (q ? 128u : 64u) / width;
+    const auto right = rdmIndexed ? indexed_integer_operand(bits, size) : m;
+    const bool subtract = field(rdmIndexed ? 13 : 11, 1) != 0;
+    return assign(rd, "neon_rdm(" + d + ", " + n + ", " + right + ", " +
+                          u32(width) + ", " + u32(lanes) + ", " + flag(subtract) + ", x)", pc);
+  }
   // FP groups: two-register misc, three-same (non-arithmetic), scalar and FP16 forms.
   if (const auto lowered = lower_neon_fp(bits, pc)) return lowered;
   // Scalar fixed-point FP conversions and 64-bit/narrow scalar integer shifts.
@@ -954,12 +991,7 @@ inline std::optional<translate_core::Instruction> lower_neon(std::uint32_t bits,
   // Vector by element (integer).
   if ((bits & 0x9f000400) == 0x0f000000 && (size == 1 || size == 2)) {
     const auto opcode = field(12, 4);
-    const std::uint32_t index = size == 1 ? (field(11, 1) << 2) | (field(21, 1) << 1) | field(20, 1)
-                                          : (field(11, 1) << 1) | field(21, 1);
-    const std::uint32_t reg = size == 1 ? field(16, 4) : field(16, 5);
-    const std::uint32_t w = 8u << size;
-    const std::string element = "vector_dup(lane_read(" + vreg(reg) + ", " + u32(index) + ", " +
-                                u32(w) + "), " + u32(w) + ", 128)";
+    const auto element = indexed_integer_operand(bits, size);
     std::uint32_t same = 0xff, diff = 0xff;
     bool flagU = u;
     if (!u) {
