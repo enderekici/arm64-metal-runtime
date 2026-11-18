@@ -409,5 +409,9 @@ the spawn control also matched native in that wave. The measured scope covers
 null spawn actions/attributes, one tracked PID, two waiters, and sibling
 release. An earlier pre-fix wait run returned status 1 despite printing
 `exited23=0` (`/tmp/metal-next-milestone.GiLP0u/wait-red.*`). SA_RESTART
-delivery may defer; raw fork/exec and GUI behavior remain open. See
+delivery may defer. The later `6682a34` candidate passed imported `fork()` for
+one single-threaded, cache-off guest: inherited pipes, matching child PID, and
+isolated private stack, global and heap writes. Raw fork and general fork/exec
+remain open. The `062bbb6` package passed both Objective-C framework fixtures;
+the guest AppKit window gate remains open. See
 [COMPATIBILITY.md](COMPATIBILITY.md) for the contract map and receipts.

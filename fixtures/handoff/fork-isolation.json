@@ -7,7 +7,7 @@
       "domain": "POSIX fork, process memory, inherited descriptors and waitpid",
       "fixture": "fixtures/handoff/fork-isolation.c",
       "compile": ["xcrun", "clang", "-arch", "arm64", "-O2", "-Wall", "-Wextra", "-Werror", "{source}", "-o", "{executable}"],
-      "required_launch_flags": {"ARM64_METAL_DEV_CPU_FALLBACK": "0"},
+      "required_launch_flags": {},
       "timeout_seconds": 45,
       "expected_status": 0,
       "expected_returncode": 0,
