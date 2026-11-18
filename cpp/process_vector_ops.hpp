@@ -434,6 +434,13 @@ inline std::optional<translate_core::Instruction> integer(std::uint32_t bits, st
   const auto m = vreg(rm);
   const auto width_text = num(width);
   const auto is_signed = boolean(!u);
+  const auto matrix = bits & 0xffe0fc00U;
+  if (matrix == 0x4e80a400U || matrix == 0x6e80a400U || matrix == 0x4e80ac00U) {
+    const bool signedLeft = matrix == 0x4e80a400U;    // SMMLA
+    const bool signedRight = matrix != 0x6e80a400U;  // SMMLA or USMMLA
+    return make({assign(rd, "vop_i8mm(" + vreg(rd) + ", " + n + ", " + m + ", " +
+                        boolean(signedLeft) + ", " + boolean(signedRight) + ")")}, pc);
+  }
   if ((bits & 0x00200400U) == 0x00200400U) {
     const auto opcode = field(bits, 11, 5);
     if (size == 3 && !q) return std::nullopt;

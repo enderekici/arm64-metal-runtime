@@ -125,6 +125,23 @@
       "coverage_boundary": "Process-level translated output only; custom AOT SIMD fallback means this does not prove typed GPU-interpreter packet coverage."
     },
     {
+      "id": "simd-i8mm",
+      "test_target": "Native and translated Metal process launch",
+      "domain": "AdvSIMD I8MM matrix multiply-accumulate",
+      "fixture": "fixtures/handoff/simd-i8mm-contract.c",
+      "compile": ["xcrun", "clang", "-arch", "arm64", "-march=armv8.6-a+i8mm", "-O0", "-Wall", "-Wextra", "-Werror", "-fno-stack-protector", "{source}", "-o", "{executable}"],
+      "native_args": [],
+      "guest_args": [],
+      "required_launch_flags": {},
+      "timeout_seconds": 60,
+      "expected_status": 0,
+      "expected_stdout_lines": 6,
+      "polarity": "positive",
+      "negative_control": "Distinct signed and unsigned byte matrices, 32-bit accumulator wrap, and aliased operands",
+      "evidence_level": "Native and guest stdout, stderr and exit status with six output lines and 24 result words",
+      "coverage_boundary": "SMMLA, UMMLA and USMMLA through process translation"
+    },
+    {
       "id": "simd-saturation-and-shifts",
       "test_target": "component-manifest case; ARM64 SIMD executable is compiled and run natively and through runtime launch",
       "domain": "ARM64 AdvSIMD saturation and shifts",

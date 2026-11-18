@@ -32,6 +32,27 @@ ulong2 vop_int_binary(uint op, ulong2 left, ulong2 right, uint width, uint bits,
     }
     return target;
 }
+int vop_matrix_byte(ulong packed, uint index, bool isSigned) {
+    const int value = int((packed >> (8u * index)) & 255ul);
+    return isSigned && value >= 128 ? value - 256 : value;
+}
+ulong2 vop_i8mm(ulong2 accumulator, ulong2 left, ulong2 right,
+                bool signedLeft, bool signedRight) {
+    ulong2 result = ulong2(0);
+    for (uint row = 0; row < 2u; ++row) {
+        for (uint column = 0; column < 2u; ++column) {
+            const uint lane = 2u * row + column;
+            uint sum = uint(lane_read(accumulator, lane, 32u));
+            for (uint k = 0; k < 8u; ++k) {
+                const int a = vop_matrix_byte(left[row], k, signedLeft);
+                const int b = vop_matrix_byte(right[column], k, signedRight);
+                sum += uint(a * b);
+            }
+            lane_add(result, lane, 32u, sum);
+        }
+    }
+    return result;
+}
 // 0 ADDP, 1 MAX, 2 MIN
 ulong2 vop_int_pairwise(uint op, ulong2 left, ulong2 right, uint width, uint bits, bool is_signed) {
     ulong2 target = ulong2(0);
