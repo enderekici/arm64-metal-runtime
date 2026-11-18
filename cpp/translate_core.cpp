@@ -1,4 +1,5 @@
 #include "translate_core.hpp"
+#include "process_host.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -1215,6 +1216,12 @@ Instruction make_operation_instruction(Operation operation,
       throw std::invalid_argument("Typed scalar FP operands are invalid");
     }
     const auto destination = scalarRegister(operation.destination);
+    const auto clearStreamingUpper =
+        "if ((x[" + std::to_string(guestSMESVCR) + "] & 1ul) != 0ul) { "
+        "for (uint lane = 0u; lane < 6u; ++lane) x[" +
+        std::to_string(guestSMEZStart) + " + " +
+        std::to_string(guestSMEZStride * operation.destination) +
+        "u + lane] = 0ul; }";
     std::string result;
     if (kind == 0U) {
       const auto sourceWidth = (operation.shift & 2U) != 0 ? 64U : 32U;
@@ -1228,12 +1235,14 @@ Instruction make_operation_instruction(Operation operation,
                      "x[" + destination + "] = fp_result.value; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+      if (mode == LoweringMode::Process) code.push_back(clearStreamingUpper);
     } else if (kind == 1U) {
       code.push_back("{ x[" + destination + "] = scalar_fp_expand_immediate(" +
                      std::to_string(operation.immediate) + "u, " +
                      std::to_string(operation.width) + "u); x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; }");
+      if (mode == LoweringMode::Process) code.push_back(clearStreamingUpper);
     } else if (kind == 2U) {
       result = "scalar_fp_round_positive(x[" +
           scalarRegister(operation.source) + "], " +
@@ -1242,6 +1251,7 @@ Instruction make_operation_instruction(Operation operation,
                      "x[" + destination + "] = fp_result.value; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+      if (mode == LoweringMode::Process) code.push_back(clearStreamingUpper);
     } else if (kind == 3U) {
       code.push_back("{ const ScalarFPResult fp_result = scalar_fp_negate(x[" +
                      scalarRegister(operation.source) + "], " +
@@ -1249,11 +1259,13 @@ Instruction make_operation_instruction(Operation operation,
                      "] = fp_result.value; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul; x[871] |= fp_result.fpsrFlags; }");
+      if (mode == LoweringMode::Process) code.push_back(clearStreamingUpper);
     } else if (kind == 5U) {
       code.push_back("x[" + destination + "] = x[" +
                      scalarRegister(operation.source) + "]; x[" +
                      std::to_string(807U + 2U * operation.destination) +
                      "] = 0ul;");
+      if (mode == LoweringMode::Process) code.push_back(clearStreamingUpper);
     } else {
       const auto right = (detail & 2U) != 0U
           ? std::string("0ul")

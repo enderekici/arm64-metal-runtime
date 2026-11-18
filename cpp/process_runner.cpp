@@ -2565,10 +2565,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
 
     std::map<std::int64_t, std::string> decodeErrors;
     std::map<std::int64_t, CompiledProcessKernel> kernels;
-    const auto compileKernel = [&](std::int64_t entry) {
+    std::map<std::int64_t, CompiledProcessKernel> streamingKernels;
+    const auto compileKernel = [&](std::int64_t entry, bool allowInterpreter) {
         const auto plan = plan_process_kernel(image, imports, guestStubs, qsortEntries,
                                               decodeErrors, entry,
-                                              interpreter != nullptr);
+                                              allowInterpreter && interpreter != nullptr);
         if (plan.interpreterEligible) {
             progressTrace.event("interpreter-block-ready",
                                 static_cast<std::uint64_t>(entry),
@@ -2603,9 +2604,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
     }
     const auto initialEntry = static_cast<std::int64_t>(startup.front());
     auto [initialKernel, inserted] = kernels.emplace(
-        initialEntry, compileKernel(initialEntry));
+        initialEntry, compileKernel(initialEntry, true));
     (void)inserted;
     auto* activeKernel = &initialKernel->second;
+    bool activeKernelStreamingFallback = false;
     std::int64_t activeEntry = initialEntry;
     std::size_t startupIndex = 0;
     std::string lastKernelSelectionPath = "initial-startup-entry";
@@ -2646,11 +2648,12 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         }
         auto found = kernels.find(entry);
         if (found == kernels.end()) {
-            auto [compiled, wasInserted] = kernels.emplace(entry, compileKernel(entry));
+            auto [compiled, wasInserted] = kernels.emplace(entry, compileKernel(entry, true));
             (void)wasInserted;
             found = compiled;
         }
         activeKernel = &found->second;
+        activeKernelStreamingFallback = false;
         activeEntry = entry;
         lastKernelSelectionPath = "selectKernel-transition";
     };
@@ -2658,8 +2661,10 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         if (!processCodeCacheInvalidated) return false;
         processCodeCacheInvalidated = false;
         kernels.clear();
+        streamingKernels.clear();
         decodeErrors.clear();
         activeKernel = nullptr;
+        activeKernelStreamingFallback = false;
         return true;
     };
 
@@ -2709,6 +2714,34 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         };
     }
     const auto dispatchActiveKernel = [&]() {
+        auto* routeState = static_cast<std::uint64_t*>(stateBuffer.data());
+        const auto routePc = routeState[33];
+        const bool streaming = (routeState[guestSMESVCR] & 1ul) != 0ul;
+        if (streaming && activeKernel->usesInterpreter &&
+            !activeKernelStreamingFallback) {
+            if (routePc > static_cast<std::uint64_t>(
+                              std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("Streaming guest PC exceeds translated code range");
+            }
+            const auto entry = static_cast<std::int64_t>(routePc);
+            auto found = streamingKernels.find(entry);
+            if (found == streamingKernels.end()) {
+                auto [compiled, inserted] = streamingKernels.emplace(
+                    entry, compileKernel(entry, false));
+                (void)inserted;
+                found = compiled;
+            }
+            activeKernel = &found->second;
+            activeKernelStreamingFallback = true;
+            activeEntry = entry;
+            lastKernelSelectionPath = "streaming-translated-fallback";
+        } else if (!streaming && activeKernelStreamingFallback) {
+            if (routePc > static_cast<std::uint64_t>(
+                              std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("Guest PC exceeds translated code range");
+            }
+            selectKernel(static_cast<std::int64_t>(routePc));
+        }
         auto* before = static_cast<std::uint64_t*>(stateBuffer.data());
         const auto startPc = before[33];
         const auto startBudget = before[36];
@@ -2716,6 +2749,11 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
         const bool usedInterpreter = activeKernel->usesInterpreter;
         const auto packetCount = usedInterpreter
             ? activeKernel->interpretedPackets.size() : 0;
+        if (progressTrace.enabled()) {
+            progressTrace.event(usedInterpreter ? "interpreter-dispatch" :
+                                                  "translated-dispatch",
+                                startPc, packetCount);
+        }
         DispatchTiming timing;
         try {
             if (usedInterpreter) {
@@ -8349,12 +8387,6 @@ std::int32_t launch_executable(const std::filesystem::path& executable,
             const auto dispatchStarted = std::chrono::steady_clock::now();
             if (progressTrace.enabled() && reportDispatch) {
                 progressTrace.event("dispatch-start", registers[33], dispatchSequence);
-            }
-            if (activeKernel->usesInterpreter) {
-                if (progressTrace.enabled()) {
-                    progressTrace.event("interpreter-dispatch", registers[33],
-                                        activeKernel->interpretedPackets.size());
-                }
             }
             dispatchActiveKernel();
             if (jitExecutionTrace.enabled()) {

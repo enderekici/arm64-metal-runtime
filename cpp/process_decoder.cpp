@@ -199,6 +199,16 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   if (auto sme = lower_sme_instruction(bits, pc, cached)) return *sme;
   const bool legacySIMDDataProcessing =
       (bits & 0x0e000000) == 0x0e000000 && (bits & 0x5e000000) != 0x1e000000;
+  const auto streamingIllegal = "if ((x[" + str(guestSMESVCR) +
+      "] & 1ul) != 0ul) { x[32] = uint(z) | (uint(n) << 1) | "
+      "(uint(v) << 2) | (uint(c) << 3); x[33] = " + str(pc) +
+      "ul; x[34] = 14; return; }";
+  const auto guardLegacySIMD = [&](Instruction instruction) {
+    if (legacySIMDDataProcessing) {
+      instruction.code.insert(instruction.code.begin(), streamingIllegal);
+    }
+    return instruction;
+  };
   // SME architectural state. Streaming Z low 128-bit lanes alias the ordinary
   // V register image at x[806..869]; the SME interval stores only the upper
   // six lanes at the fixed M4 SVL.
@@ -246,7 +256,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
       code.push_back("x[" + str(guestFPSR) + "] |= 0x0800009ful;");
     }
     code.push_back("for (uint z = 0u; z < 32u; ++z) {");
-    code.push_back("for (uint lane = 0u; lane < 6u; ++lane) x[" +
+    code.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
                    str(guestSMEZStart) + " + z * " + str(guestSMEZStride) +
                    " + lane] = 0ul;");
     code.push_back("x[806u + z * 2u] = 0ul; x[807u + z * 2u] = 0ul;");
@@ -305,7 +315,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   // The AdvSIMD lowerers below match on bits 28:24 alone, so keep every other
   // such word away from them instead of mis-lowering it as a vector op.
   if ((bits & 0x8e000000) == 0x8e000000 && (bits >> 24) != 0x9e) {
-    if (auto lowered = lower_vector_crypto(bits, pc)) return *lowered;
+    if (auto lowered = lower_vector_crypto(bits, pc)) return guardLegacySIMD(*lowered);
     std::ostringstream message;
     message << "Unsupported ARM64 instruction 0x" << std::hex << std::setw(8)
             << std::setfill('0') << bits << " at __text+0x" << pc;
@@ -386,16 +396,13 @@ Instruction decode_process(uint32_t bits, int64_t pc,
         decodedOperation->opcode == translate_core::Opcode::Return
             ? PCs{}
             : PCs{next};
-    return translate_core::make_operation_instruction(
+    return guardLegacySIMD(translate_core::make_operation_instruction(
         *decodedOperation, successors, translate_core::LoweringMode::Process,
-        guestCodeLimit, static_cast<std::uint64_t>(pc));
+        guestCodeLimit, static_cast<std::uint64_t>(pc)));
   }
   auto emit = [&](auto... lines) -> Instruction {
     std::vector<std::string> code{lines...};
-    if (legacySIMDDataProcessing) {
-      code.insert(code.begin(), "if ((x[" + str(guestSMESVCR) +
-          "] & 1ul) != 0ul) { x[33] = " + str(pc) + "ul; x[34] = 14; return; }");
-    }
+    if (legacySIMDDataProcessing) code.insert(code.begin(), streamingIllegal);
     for (auto &line : code)
       replace_all(line, "x[34] = 2;", "x[33] = " + str(pc) + "ul; x[34] = 2;");
     Instruction instruction{code, {next}};
@@ -1161,10 +1168,7 @@ Instruction decode_process(uint32_t bits, int64_t pc,
   };
   auto assignVector = [&](std::string expression) -> Instruction {
     Strings code;
-    if (legacySIMDDataProcessing) {
-      code.push_back("if ((x[" + str(guestSMESVCR) +
-          "] & 1ul) != 0ul) { x[33] = " + str(pc) + "ul; x[34] = 14; return; }");
-    }
+    if (legacySIMDDataProcessing) code.push_back(streamingIllegal);
     code.push_back("{ ulong2 value = " + str(expression) + "; x[" +
         str(806 + 2 * rd) + "] = value[0]; x[" + str(807 + 2 * rd) +
         "] = value[1]; }");
@@ -1178,10 +1182,8 @@ Instruction decode_process(uint32_t bits, int64_t pc,
     return instruction;
   };
   if (auto lowered = lower_neon(bits, pc)) {
-    lowered->code.insert(lowered->code.begin(),
-        "if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) { x[33] = " +
-        str(pc) + "ul; x[34] = 14; return; }");
-    lowered->code.push_back("for (uint lane = 0u; lane < 6u; ++lane) x[" +
+    lowered->code.insert(lowered->code.begin(), streamingIllegal);
+    lowered->code.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
         str(guestSMEZStart) + " + " + str(rd * guestSMEZStride) +
         "u + lane] = 0ul;");
     return *lowered;
@@ -1786,6 +1788,19 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                            : "ulong(uint(" + source + ") ^ 0x80000000u)";
     return assignVector("ulong2(" + value + ", 0ul)");
   }
+  if ((bits & 0xfffffc00) == 0x9eae0000) { // FMOV Xd, Vn.D[1]
+    return rd == 31 ? emit() : emit(reg(rd) + " = x[" +
+        str(807 + 2 * rn) + "];");
+  }
+  if ((bits & 0xfffffc00) == 0x9eaf0000) { // FMOV Vd.D[1], Xn
+    Strings code{"x[" + str(807 + 2 * rd) + "] = " + reg(rn) + ";",
+        "if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) {",
+        "for (uint lane = 0u; lane < 6u; ++lane) x[" +
+            str(guestSMEZStart) + " + " +
+            str(guestSMEZStride * rd) + "u + lane] = 0ul;",
+        "}"};
+    return emit(code[0], code[1], code[2], code[3]);
+  }
   auto vectorMove = bits & 0xfffffc00;
   if (contains({0x1e260000, 0x1e270000, 0x9e660000, 0x9e670000, 0x1ee60000, 0x1ee70000,
                 0x9ee60000, 0x9ee70000}, vectorMove)) {
@@ -2221,6 +2236,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                 : (std::string("0"));
         code.push_back(
             (std::string("x[") + str(slot + 1) + "] = " + str(high) + ";"));
+        code.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
+            str(guestSMEZStart) + " + " +
+            str(guestSMEZStride * ((rd + index) & 31u)) +
+            "u + lane] = 0ul;");
       } else {
         code.push_back((std::string("store_guest_word(") + str(start) + ", x[" +
                         str(slot) + "], 8);"));
@@ -2267,10 +2286,15 @@ Instruction decode_process(uint32_t bits, int64_t pc,
             width == 16
                 ? (std::string("load_guest_word(") + str(pointer) + " + 8, 8)")
                 : (std::string("0"));
-        return Strings{
+        Strings result{
             (std::string("x[") + str(first) + "] = load_guest_word(" +
              str(pointer) + ", " + str(count) + ");"),
             (std::string("x[") + str(first + 1) + "] = " + str(upper) + ";")};
+        result.push_back("if ((x[" + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
+            str(guestSMEZStart) + " + " +
+            str(guestSMEZStride * regIndex) +
+            "u + lane] = 0ul;");
+        return result;
       }
       auto lines = Strings{(std::string("store_guest_word(") + str(pointer) +
                             ", x[" + str(first) + "], " + str(count) + ");")};
@@ -2359,10 +2383,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
          "] = load_guest_word(memory + offset, " +
          str(std::min<int64_t>(width, 8)) + ");"),
         (std::string("x[") + str(slot + 1) + "] = " + str(upper) + ";"),
-        (std::string("for (uint lane = 0u; lane < 6u; ++lane) x[") +
+        std::string("if ((x[") + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
          str(guestSMEZStart) + " + " +
          str(guestSMEZStride * decodedOperation->destination) +
-         "u + lane] = 0ul; }"));
+         "u + lane] = 0ul; }");
   }
   const bool vectorLoad = decodedOperation &&
       decodedOperation->opcode == translate_core::Opcode::LoadVectorMemory;
@@ -2427,10 +2451,10 @@ Instruction decode_process(uint32_t bits, int64_t pc,
                  str(outside("address", width, vectorLoad)) +
                  ") { x[874] = address; x[34] = 2; return; }"),
                 transfer,
-                vectorLoad ? (std::string("for (uint lane = 0u; lane < 6u; ++lane) x[") +
+                vectorLoad ? std::string("if ((x[") + str(guestSMESVCR) + "] & 1ul) != 0ul) for (uint lane = 0u; lane < 6u; ++lane) x[" +
                     str(guestSMEZStart) + " + " +
                     str(guestSMEZStride * decodedOperation->destination) +
-                    "u + lane] = 0ul;") : std::string{},
+                    "u + lane] = 0ul;" : std::string{},
                 writeback ? (std::string(str(base)) + " += ulong(" +
                                   str(displacement) + ");")
                           : std::string{},

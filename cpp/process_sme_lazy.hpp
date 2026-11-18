@@ -39,7 +39,7 @@ inline std::optional<Instruction> decode_sme_lazy(uint32_t bits, int64_t pc,
                              : guestWriteAlignmentFaultStatus;
     const auto access = load ? "false" : "true";
     const std::string code =
-        "{ if ((x[" + std::to_string(guestSMESVCR) + "] & 2ul) == 0ul) { x[33] = " + std::to_string(pc) +
+        "{ if ((x[" + std::to_string(guestSMESVCR) + "] & 2ul) == 0ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); x[33] = " + std::to_string(pc) +
         "ul; x[34] = 14; return; } "
         "ulong address = " + address + "; "
         "if ((address & 15ul) != 0ul) { x[" + std::to_string(guestFaultAddress) + "] = address; x[33] = " +
@@ -61,7 +61,7 @@ inline std::optional<Instruction> decode_sme_lazy(uint32_t bits, int64_t pc,
 
   // ZERO {ZA}: preserve all other architectural SME state.
   if (bits == 0xc00800ffu) {
-    return emit({"if ((x[" + std::to_string(guestSMESVCR) + "] & 2ul) == 0ul) { x[33] = " +
+    return emit({"if ((x[" + std::to_string(guestSMESVCR) + "] & 2ul) == 0ul) { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3); x[33] = " +
                  std::to_string(pc) + "ul; x[34] = 14; return; }",
                  "for (ulong i = 0; i < 512ul; ++i) x[" +
                  std::to_string(guestSMEZAStart) + "ul + i] = 0ul;"});

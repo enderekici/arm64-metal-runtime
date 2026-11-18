@@ -15,7 +15,8 @@ inline std::optional<Instruction> one(std::int64_t pc, std::string statement,
   const auto mode = needs_za ? "3ul" : "1ul";
   std::vector<std::string> code{
       "if ((x[881] & " + std::string(mode) + ") != " + mode +
-          ") { x[33] = " + std::to_string(pc) +
+          ") { x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | "
+          "(uint(c) << 3); x[33] = " + std::to_string(pc) +
           "ul; x[34] = 14; return; }",
       std::move(statement)};
   return Instruction{std::move(code), {pc + 4}};
