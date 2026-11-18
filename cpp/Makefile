@@ -207,6 +207,7 @@ INTERPRETER_RUNTIME_GUARD_NATIVE := $(BUILD_DIR)/interpreter-pthread-runtime-own
 INTERPRETER_ADC_SBC_CARRY_MAIN := $(BUILD_DIR)/interpreter-adc-sbc-carry-main
 INTERPRETER_SCALAR_FP_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-main
 INTERPRETER_SCALAR_JSCVT_MAIN := $(BUILD_DIR)/interpreter-scalar-jscvt-main
+INTERPRETER_SCALAR_FRINT_MAIN := $(BUILD_DIR)/interpreter-scalar-frint-precision-main
 INTERPRETER_SCALAR_FP_COMPARE_MAIN := $(BUILD_DIR)/interpreter-scalar-fp-compare-main
 INTERPRETER_SCALAR_FMOV_D_MAIN := $(BUILD_DIR)/interpreter-scalar-fmov-d-main
 INTERPRETER_SCALAR_FP_COMPARE_CASES := $(addprefix $(BUILD_DIR)/interpreter-scalar-fp-compare-case-,1 2 3 4 5)
@@ -1238,6 +1239,10 @@ $(INTERPRETER_SCALAR_JSCVT_MAIN): ../fixtures/interpreter/scalar-jscvt-main.c
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -O0 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
 
+$(INTERPRETER_SCALAR_FRINT_MAIN): ../fixtures/interpreter/scalar-frint-precision-main.c
+	@mkdir -p "$(BUILD_DIR)"
+	xcrun clang -arch arm64 -O0 -Wall -Wextra -Werror -pedantic "$<" -o "$@"
+
 $(INTERPRETER_SCALAR_FMOV_D_MAIN): ../fixtures/interpreter/scalar-fmov-d-main.s
 	@mkdir -p "$(BUILD_DIR)"
 	xcrun clang -arch arm64 -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
@@ -1316,6 +1321,23 @@ verify-scalar-jscvt-interpreter: $(APP) $(INTERPRETER_SCALAR_JSCVT_MAIN) $(INTER
 		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
 		grep -q 'interpreter-dispatch' "$$run_dir/interpreter.err" && \
 		echo "scalar-jscvt native/translated/interpreter verified: $$run_dir"
+
+.PHONY: verify-scalar-frint-precision-interpreter
+verify-scalar-frint-precision-interpreter: $(APP) $(INTERPRETER_SCALAR_FRINT_MAIN) $(INTERPRETER_METALLIB)
+	@set -eu; \
+		run_dir=$$(mktemp -d "$(BUILD_DIR)/scalar-frint-precision-interpreter.XXXXXX"); \
+		set +e; \
+		"$(INTERPRETER_SCALAR_FRINT_MAIN)" >"$$run_dir/native.out" 2>"$$run_dir/native.err"; native_rc=$$?; \
+		"$(APP)" launch "$(INTERPRETER_SCALAR_FRINT_MAIN)" >"$$run_dir/translated.out" 2>"$$run_dir/translated.err"; translated_rc=$$?; \
+		$(if $(GPU_LOCK),$(GPU_LOCK) )env ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$(abspath $(INTERPRETER_METALLIB))" ARM64_METAL_TRACE=1 "$(APP)" launch "$(INTERPRETER_SCALAR_FRINT_MAIN)" >"$$run_dir/interpreter.out" 2>"$$run_dir/interpreter.err"; interpreter_rc=$$?; \
+		set -e; \
+		test "$$native_rc" -eq 0 && test "$$translated_rc" -eq 0 && test "$$interpreter_rc" -eq 0 && \
+		cmp "$$run_dir/native.out" "$$run_dir/translated.out" && \
+		cmp "$$run_dir/native.out" "$$run_dir/interpreter.out" && \
+		cmp "$$run_dir/native.err" "$$run_dir/translated.err" && \
+		grep -q 'interpreter-pipeline-ready.*detail=1' "$$run_dir/interpreter.err" && \
+		grep -q 'interpreter-dispatch' "$$run_dir/interpreter.err" && \
+		echo "scalar-frint-precision native/translated/interpreter verified: $$run_dir"
 
 verify-scalar-fp-compare-native: $(INTERPRETER_TYPED_NATIVE) $(INTERPRETER_SCALAR_FP_COMPARE_MAIN) $(INTERPRETER_SCALAR_FP_COMPARE_CASES)
 	@set -eu; \

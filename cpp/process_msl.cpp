@@ -633,6 +633,31 @@ constexpr std::string_view kProcessMetalTemplate = R"PROCESS_MSL(
         return fp_to_integer_fixed(bits, wide_source, wide_destination != 0u ? 64u : 32u,
                                    is_unsigned, mode, 0u, state);
     }
+    ulong fp_round_to_fixed_precision(ulong bits, uint source_width, uint destination_width,
+                                      uint mode, device ulong *state) {
+        if (mode == 5u) mode = uint(state[@GUEST_FPCR@] >> 22) & 3u;
+        ulong integer;
+        if (fp_kind(bits, source_width) >= 3u) {
+            state[@GUEST_FPSR@] |= 1ul;
+            integer = 1ul << (destination_width - 1u);
+        } else {
+            ulong prior_invalid = state[@GUEST_FPSR@] & 1ul;
+            state[@GUEST_FPSR@] &= ~1ul;
+            integer = fp_to_integer(bits, source_width, destination_width == 64u,
+                                    false, mode, state);
+            bool invalid = (state[@GUEST_FPSR@] & 1ul) != 0ul;
+            state[@GUEST_FPSR@] |= prior_invalid;
+            if (invalid) integer = 1ul << (destination_width - 1u);
+        }
+        if (integer == 0ul) {
+            ulong input_sign = (bits >> fp_sbit(source_width)) & 1ul;
+            return fp_sign_bit(input_sign, source_width);
+        }
+        bool negative = destination_width == 32u ? int(uint(integer)) < 0 : long(integer) < 0;
+        ulong signed_integer = destination_width == 32u
+            ? ulong(long(int(uint(integer)))) : integer;
+        return integer_to_float(signed_integer, negative, fp_fbits(source_width), state);
+    }
     // FJCVTZS truncates to an integer then wraps finite values modulo 2^32.
     ulong fp_javascript_to_int32(ulong bits, device ulong *state) {
         FpOperand value = fp_unpack(bits, 1u, state);
