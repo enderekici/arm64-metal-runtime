@@ -373,13 +373,17 @@ The extracted `mainq` fixture matches native stdout (`main queue ran`), empty
 stderr, and status 0. Receipts are under
 `/tmp/arm64-metal-thread-services.fHD5G1/`.
 
-Timer delivery remains unresolved. The `f76a922` guest reached raw
+The earlier `f76a922` guest reached raw
 `gettimeofday` (116), then trapped with status 133 at `kevent_id` (375), flags
 `0x403` and `EVFILT_WORKLOOP` (-17); it produced no timer ticks. Native LLDB
 shows `_dispatch_kq_poll` returning 0 for the owner-address/state request.
 Receipts: `/tmp/metal-thread-fc128-fix/timer.guest.*` and
 `/tmp/metal-thread-fc128-fix/timer.native.lldb.txt`. The later `b6e8994`
-checkpoint does not close this gap.
+checkpoint retained that failure. The timer candidate subsequently committed as
+`33a7d32` passed the unchanged opt-in Objective-C fixture with a warm kernel
+cache: both native and guest delivered the callback within the two-second
+deadline and exited cleanly. See `COMPATIBILITY.md` for the frozen runtime
+identity and exact receipt. Other workloop behavior remains unverified.
 
 General macOS compatibility now proceeds through reusable contract-differential
 lanes; full applications are occasional holdouts, not the repeated test loop.
