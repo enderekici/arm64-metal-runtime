@@ -89,6 +89,14 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::LoadUnsignedMinMax, field(bits, 0, 5),
                      field(bits, 5, 5), field(bits, 16, 5), variant, width};
   }
+  if ((bits & 0xffe07c10U) == 0xba000400U) {  // RMIF Xn, #shift, #mask
+    return Operation{Opcode::FlagManipulation, 0, field(bits, 5, 5),
+                     field(bits, 0, 4), field(bits, 15, 6), 64};
+  }
+  if ((bits & 0xffffbc1fU) == 0x3a00080dU) {  // SETF8/SETF16 Wn
+    return Operation{Opcode::FlagManipulation, 0, field(bits, 5, 5), 0, 0,
+                     field(bits, 14, 1) ? 16U : 8U};
+  }
   if (bits == 0xd500401fU) {  // CFINV
     return Operation{Opcode::InvertCarry, 0, 0, 0, 0, 0};
   }
@@ -611,6 +619,21 @@ Instruction make_operation_instruction(Operation operation,
     if (mode == LoweringMode::Process) {
       code.push_back("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
     }
+  } else if (operation.opcode == Opcode::FlagManipulation) {
+    if (operation.destination || next.size() != 1 ||
+        !valid_flag_manipulation(operation.source, operation.immediate,
+                                 operation.shift, operation.width)) {
+      throw std::invalid_argument("Invalid typed RMIF/SETF operation");
+    }
+    code = {"{",
+            "const uint prior = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
+            "const uint flags = flag_manipulation_apply(" + reg(operation.source, true) + ", " +
+                std::to_string(operation.immediate) + "u, " + std::to_string(operation.shift) +
+                "u, " + std::to_string(operation.width) + "u, prior);",
+            "z = (flags & 1u) != 0u; n = (flags & 2u) != 0u;",
+            "v = (flags & 4u) != 0u; c = (flags & 8u) != 0u;"};
+    if (mode == LoweringMode::Process) code.push_back("x[32] = flags;");
+    code.push_back("}");
   } else if (operation.opcode == Opcode::AuthenticatedReturn) {
     if (mode != LoweringMode::Process || operation.destination > 2 ||
         operation.source != 0 || operation.immediate != 0 ||

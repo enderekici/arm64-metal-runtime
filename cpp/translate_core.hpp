@@ -55,6 +55,7 @@ enum class Opcode : std::uint32_t {
   LoadVectorMemory = 43,
   StoreVectorMemory = 44,
   InvertCarry = 45,
+  FlagManipulation = 46,
   AuthenticatedReturn = 36,
 };
 
@@ -176,6 +177,14 @@ struct Operation {
   std::uint32_t shift;
   std::uint32_t width;
 };
+
+// FlagManipulation: width 64 selects RMIF (Rn, NZCV mask, rotation);
+// widths 8 and 16 select SETF8 and SETF16 (Wn only). Register 31 reads as zero.
+inline constexpr bool valid_flag_manipulation(std::uint32_t source, std::uint32_t mask,
+                                              std::uint32_t shift, std::uint32_t width) {
+  return source <= 31U && (width == 64U ? mask <= 15U && shift <= 63U :
+      (width == 8U || width == 16U) && mask == 0U && shift == 0U);
+}
 
 using OperationPacket = std::array<std::uint32_t, 6>;
 

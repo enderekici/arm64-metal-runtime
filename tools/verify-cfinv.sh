@@ -4,8 +4,9 @@ unset ARM64_METAL_TRACE ARM64_METAL_TRACE_INTERPRETER_PACKETS
 
 runtime=$1
 cfinv=$2
-rmif=$3
-library=$4
+flagm=$3
+reserved=$4
+library=$5
 receipts=$(mktemp -d "$(dirname "$cfinv")/cfinv.XXXXXX")
 echo "CFINV receipts $receipts"
 
@@ -22,34 +23,55 @@ expect_exit() {
     fi
 }
 
-expect_exit 42 native "$cfinv"
-expect_exit 42 rmif-native "$rmif"
-expect_exit 42 translated env ARM64_METAL_INTERPRETER=0 "$runtime" launch "$cfinv"
-cmp "$receipts/native.out" "$receipts/translated.out"
-cmp "$receipts/native.err" "$receipts/translated.err"
-
 printf '%s\n' '[{"words":[],"seed":0}]' >"$receipts/input"
-expect_exit 0 function "$runtime" run "$cfinv" main "$receipts/input"
 printf '%s\n' '[{"result":42,"words":[]}]' >"$receipts/expected"
-cmp "$receipts/expected" "$receipts/function.out"
-test ! -s "$receipts/function.err"
-
-expect_exit 1 rmif-translated env ARM64_METAL_INTERPRETER=0 "$runtime" launch "$rmif"
 unset ARM64_METAL_INTERPRETER ARM64_METAL_INTERPRETER_LIBRARY ARM64_METAL_INTERPRETER_SOURCE
 if [ ! -f "$(dirname "$runtime")/resources/interpreter/AOT_REQUIRED" ]; then
     export ARM64_METAL_INTERPRETER=1 ARM64_METAL_INTERPRETER_LIBRARY="$library"
 fi
-expect_exit 42 aot env ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 "$runtime" launch "$cfinv"
-cmp "$receipts/native.out" "$receipts/aot.out"
-awk '/event=interpreter-packet .* detail=45$/ { packets++ }
-     /event=dispatch-start / { dispatches++ }
-     /event=interpreter-dispatch / { interpreted++ }
-     /event=compile-start / { compiled++ }
-     END { exit !(packets == 2 && dispatches == 1 && interpreted == 1 && !compiled) }' "$receipts/aot.err"
 
-expect_exit 1 rmif-aot "$runtime" launch "$rmif"
-for mode in translated aot; do
-    test ! -s "$receipts/rmif-$mode.out"
-    grep -Eq '^arm64-metal: Unsupported ARM64 instruction 0xba0007e1 at __text\+0x[0-9a-f]+$' "$receipts/rmif-$mode.err"
-done
-echo 'CFINV matched native in translated function, process and AOT. RMIF rejected in both launch modes.'
+check_positive() {
+    fixture=$1
+    name=$2
+    opcode=$3
+    packets=$4
+    expect_exit 42 "$name-native" "$fixture"
+    expect_exit 42 "$name-translated" env ARM64_METAL_INTERPRETER=0 "$runtime" launch "$fixture"
+    cmp "$receipts/$name-native.out" "$receipts/$name-translated.out"
+    cmp "$receipts/$name-native.err" "$receipts/$name-translated.err"
+
+    expect_exit 0 "$name-function" "$runtime" run "$fixture" main "$receipts/input"
+    cmp "$receipts/expected" "$receipts/$name-function.out"
+    test ! -s "$receipts/$name-function.err"
+
+    expect_exit 42 "$name-aot" env ARM64_METAL_TRACE=1 ARM64_METAL_TRACE_INTERPRETER_PACKETS=1 "$runtime" launch "$fixture"
+    cmp "$receipts/$name-native.out" "$receipts/$name-aot.out"
+    awk -v opcode="detail=$opcode" -v expected="$packets" '
+        /event=interpreter-packet / && $NF == opcode { matched++ }
+        /event=dispatch-start / { dispatches++ }
+        /event=interpreter-dispatch / { interpreted++ }
+        /event=compile-start / { compiled++ }
+        END { exit !(matched == expected && dispatches == 1 && interpreted == 1 && !compiled) }
+    ' "$receipts/$name-aot.err"
+}
+
+check_positive "$cfinv" cfinv 45 2
+check_positive "$flagm" flagm 46 19
+
+check_reserved() {
+    name=$1
+    opcode=$2
+    shift 2
+    expect_exit 1 "$name-translated" env ARM64_METAL_INTERPRETER=0 "$runtime" launch "$reserved" "$@"
+    expect_exit 1 "$name-aot" "$runtime" launch "$reserved" "$@"
+    for mode in translated aot; do
+        test ! -s "$receipts/$name-$mode.out"
+        grep -Eq "^arm64-metal: Unsupported ARM64 instruction $opcode at __text\+0x[0-9a-f]+$" "$receipts/$name-$mode.err"
+    done
+    expect_exit 1 "$name-function" "$runtime" translate "$reserved" "reserved_$name"
+    grep -Fq "Unsupported ARM64 instruction $opcode" "$receipts/$name-function.err"
+}
+
+check_reserved rmif 0xba000410
+check_reserved setf 0x3a00080c extra
+echo 'CFINV, RMIF and SETF matched native NZCV in translated and AOT execution. Reserved encodings rejected.'

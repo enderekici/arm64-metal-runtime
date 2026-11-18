@@ -57,7 +57,25 @@
 #define ARM64METAL_STRINGIFY_INNER(value) #value
 #define ARM64METAL_STRINGIFY(value) ARM64METAL_STRINGIFY_INNER(value)
 
+// Guest NZCV is stored internally as C,V,N,Z (bits 3..0).
+#define ARM64METAL_FLAG_MANIPULATION \
+inline uint flag_manipulation_apply(ulong source, uint mask, uint shift, uint width, uint prior) { \
+  if (width == 64u) { \
+    const ulong rotated = (source >> shift) | (source << ((64u - shift) & 63u)); \
+    const uint value = uint(rotated & 15ul); \
+    const uint packedValue = ((value & 3u) << 2u) | (value >> 2u); \
+    const uint packedMask = ((mask & 3u) << 2u) | (mask >> 2u); \
+    return (prior & ~packedMask) | (packedValue & packedMask); \
+  } \
+  const uint bits = uint(source); \
+  const uint negative = (bits >> (width - 1u)) & 1u; \
+  const uint zero = uint((bits & ((1u << width) - 1u)) == 0u); \
+  const uint overflow = ((bits >> width) & 1u) ^ negative; \
+  return (prior & 8u) | zero | (negative << 1u) | (overflow << 2u); \
+}
+
 #ifdef __METAL_VERSION__
+ARM64METAL_FLAG_MANIPULATION
 inline ulong adr_apply(uint mode, ulong pc, uint immediate) {
     const long displacement = (immediate & 0x100000u) != 0u
         ? long(immediate) - 0x200000l : long(immediate);
@@ -866,6 +884,7 @@ inline constexpr std::uint64_t conditional_select_apply(
   return width == 32U ? static_cast<std::uint32_t>(selected) : selected;
 }
 inline constexpr char typed_integer_msl_source[] =
+    ARM64METAL_STRINGIFY(ARM64METAL_FLAG_MANIPULATION) "\n"
     "inline ulong adr_apply(uint mode, ulong pc, uint immediate) { "
     "long displacement = (immediate & 0x100000u) != 0u "
     "? long(immediate) - 0x200000l : long(immediate); "
@@ -1169,6 +1188,7 @@ inline constexpr char typed_integer_msl_source[] =
 
 #undef ARM64METAL_STRINGIFY
 #undef ARM64METAL_STRINGIFY_INNER
+#undef ARM64METAL_FLAG_MANIPULATION
 #undef ARM64METAL_MOVE_WIDE_VALUE
 #undef ARM64METAL_ADD_SUB_IMM_VALUE
 #undef ARM64METAL_ADD_SUB_VALUE

@@ -24,7 +24,8 @@ CACHE_CHECK := $(BUILD)/cache-rebase-check
 CACHE_ZLIB := $(BUILD)/cache-zlib
 CACHE_CONFORMANCE := $(BUILD)/cache-dyld-conformance
 CFINV_FIXTURE := $(BUILD)/cfinv
-RMIF_FIXTURE := $(BUILD)/rmif
+FLAGM_FIXTURE := $(BUILD)/flagm
+FLAGM_RESERVED_FIXTURE := $(BUILD)/flagm-reserved
 
 .PHONY: all verify verify-cfinv verify-function-stream verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
@@ -62,11 +63,11 @@ verify: all verify-cfinv
 	@! $(RUNTIME) translate "$(BUILD)/invalid.bin" update_words >"$(BUILD)/invalid.out" 2>"$(BUILD)/invalid.log"
 	@grep 'Expected a little-endian ARM64 Mach-O' "$(BUILD)/invalid.log"
 
-$(CFINV_FIXTURE) $(RMIF_FIXTURE): $(BUILD)/%: fixtures/interpreter/%-main.s | $(BUILD)
+$(CFINV_FIXTURE) $(FLAGM_FIXTURE) $(FLAGM_RESERVED_FIXTURE): $(BUILD)/%: fixtures/interpreter/%-main.s | $(BUILD)
 	xcrun clang -arch arm64 -march=armv8.5-a -nostdlib -Wl,-e,_main "$<" -lSystem -o "$@"
 
-verify-cfinv: $(RUNTIME) $(CFINV_FIXTURE) $(RMIF_FIXTURE)
-	sh tools/verify-cfinv.sh "$(RUNTIME)" "$(CFINV_FIXTURE)" "$(RMIF_FIXTURE)" "$(CPP_INTERPRETER_METALLIB)"
+verify-cfinv: $(RUNTIME) $(CFINV_FIXTURE) $(FLAGM_FIXTURE) $(FLAGM_RESERVED_FIXTURE)
+	sh tools/verify-cfinv.sh "$(RUNTIME)" "$(CFINV_FIXTURE)" "$(FLAGM_FIXTURE)" "$(FLAGM_RESERVED_FIXTURE)" "$(CPP_INTERPRETER_METALLIB)"
 
 verify-function-stream: $(RUNTIME) $(GUEST)
 	./verify-function-stream.sh "$(RUNTIME)" "$(GUEST)" "$(BUILD)/function-stream"

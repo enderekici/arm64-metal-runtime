@@ -79,17 +79,25 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 return;
             }
             const uint opcode = instruction.operation[0];
-            if (opcode == 45u) {  // CFINV
+            if (opcode == 45u || opcode == 46u) {  // CFINV, RMIF, SETF8/16
+                const uint rn = instruction.operation[2];
+                const uint mask = instruction.operation[3];
+                const uint shift = instruction.operation[4];
+                const uint width = instruction.operation[5];
+                const bool valid = opcode == 45u ? (!rn && !mask && !shift && !width) :
+                    rn <= 31u && (width == 64u ? mask <= 15u && shift <= 63u :
+                        (width == 8u || width == 16u) && !mask && !shift);
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
-                if (instruction.operation[1] || instruction.operation[2] ||
-                    instruction.operation[3] || instruction.operation[4] ||
-                    instruction.operation[5] || instruction.successorCount != (blockEnd ? 1u : 0u) ||
+                if (instruction.operation[1] || !valid ||
+                    instruction.successorCount != (blockEnd ? 1u : 0u) ||
                     (blockEnd && instruction.successor0 != pc + 4ul)) {
                     state[33] = pc;
                     state[34] = 7;
                     return;
                 }
-                state[32] ^= 8ul;
+                if (opcode == 45u) state[32] ^= 8ul;
+                else state[32] = flag_manipulation_apply(rn == 31u ? 0ul : state[rn],
+                                                         mask, shift, width, uint(state[32]));
                 pc += 4ul;
                 if (blockEnd) {
                     leftBlock = true;

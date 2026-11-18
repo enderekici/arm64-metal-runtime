@@ -10,7 +10,7 @@ the C++ launcher and native fixtures, `make verify` runs the default gates, and
 path. `make bundle-cpp` retains the separately named C++ archive. Python
 supports verification tools. The packaged runtime uses Foundation and Metal.
 
-Use `make verify-cfinv` to check carry inversion on the GPU and strict rejection of RMIF. The former development-only CFINV CPU companion has been removed. For an unchanged macOS CLI that creates and appends files, run `make verify-apps APP_VERIFY_CASES=tee APP_VERIFY_RUNTIME=<packaged-launcher>`. The measured package and receipt are recorded in `COMPATIBILITY.md`.
+Use `make verify-cfinv` to compare CFINV, RMIF and SETF8/16 on Metal against native flags and verify rejection of adjacent reserved encodings. The former development-only CFINV CPU companion has been removed. For an unchanged macOS CLI that creates and appends files, run `make verify-apps APP_VERIFY_CASES=tee APP_VERIFY_RUNTIME=<packaged-launcher>`. The measured package and receipt are recorded in `COMPATIBILITY.md`.
 
 ## Build and verify
 

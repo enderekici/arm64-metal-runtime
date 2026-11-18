@@ -103,12 +103,16 @@ Result Interpreter::dispatch(const Backend& backend,
                 operation[5] != 64) {
                 throw std::invalid_argument("Interpreter RET packet metadata is invalid");
             }
-        } else if (opcode == translate_core::Opcode::InvertCarry) {
+        } else if (opcode == translate_core::Opcode::InvertCarry ||
+                   opcode == translate_core::Opcode::FlagManipulation) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
-            if (operation[1] || operation[2] || operation[3] || operation[4] ||
-                operation[5] || packet.successorCount != (blockEnd ? 1U : 0U) ||
+            const bool valid = opcode == translate_core::Opcode::InvertCarry
+                ? !operation[2] && !operation[3] && !operation[4] && !operation[5]
+                : translate_core::valid_flag_manipulation(operation[2], operation[3],
+                                                          operation[4], operation[5]);
+            if (operation[1] || !valid || packet.successorCount != (blockEnd ? 1U : 0U) ||
                 (blockEnd && packet.successor0 != packet.pc + 4)) {
-                throw std::invalid_argument("Interpreter CFINV packet metadata is invalid");
+                throw std::invalid_argument("Interpreter flag-manipulation packet metadata is invalid");
             }
         } else if (opcode == translate_core::Opcode::AuthenticatedReturn) {
             hasAuthenticatedReturn = true;
