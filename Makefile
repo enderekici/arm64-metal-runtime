@@ -27,6 +27,8 @@ CFINV_FIXTURE := $(BUILD)/cfinv
 FLAGM_FIXTURE := $(BUILD)/flagm
 FLAGM2_FIXTURE := $(BUILD)/flagm2
 FLAGM_RESERVED_FIXTURE := $(BUILD)/flagm-reserved
+SME_NATIVE_FIXTURE := $(BUILD)/sme-smopa-oracle
+SME_DECODER_FIXTURE := $(BUILD)/sme-decoder-helper
 
 .PHONY: all verify verify-cfinv verify-function-stream verify-cache verify-apps verify-java bundle
 all: $(RUNTIME) $(GUEST) $(CONSOLE) $(STREAMS) $(INDIRECT) $(REBASED) $(UNSIGNED_CALL) $(DATA_AUTH) $(LINKED) $(REGION) $(PIPE) $(SIGNAL) $(VECTOR) $(HEAP) $(THREADS) $(MEMORY)
@@ -69,6 +71,17 @@ $(CFINV_FIXTURE) $(FLAGM_FIXTURE) $(FLAGM2_FIXTURE) $(FLAGM_RESERVED_FIXTURE): $
 
 verify-cfinv: $(RUNTIME) $(CFINV_FIXTURE) $(FLAGM_FIXTURE) $(FLAGM2_FIXTURE) $(FLAGM_RESERVED_FIXTURE)
 	sh tools/verify-cfinv.sh "$(RUNTIME)" "$(CFINV_FIXTURE)" "$(FLAGM_FIXTURE)" "$(FLAGM2_FIXTURE)" "$(FLAGM_RESERVED_FIXTURE)" "$(CPP_INTERPRETER_METALLIB)"
+
+.PHONY: verify-sme-native
+$(SME_NATIVE_FIXTURE): fixtures/handoff/sme-smopa-oracle.c | $(BUILD)
+	xcrun clang -target arm64-apple-macos26 -isysroot "$$(xcrun --show-sdk-path)" \
+		-mcpu=apple-m4 -O2 -Wall -Wextra -Werror "$<" -o "$@"
+
+verify-sme-native: $(SME_NATIVE_FIXTURE)
+	"$(SME_NATIVE_FIXTURE)"
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -pedantic -Icpp \
+		fixtures/handoff/sme-decoder-helper.cpp -o "$(SME_DECODER_FIXTURE)"
+	"$(SME_DECODER_FIXTURE)"
 
 verify-function-stream: $(RUNTIME) $(GUEST)
 	./verify-function-stream.sh "$(RUNTIME)" "$(GUEST)" "$(BUILD)/function-stream"
