@@ -58,6 +58,19 @@
 #define ARM64METAL_STRINGIFY(value) ARM64METAL_STRINGIFY_INNER(value)
 
 // Guest NZCV is stored internally as C,V,N,Z (bits 3..0).
+#define ARM64METAL_SYSTEM_FLAGS \
+inline uint system_flags_apply(uint operation, uint prior) { \
+  if (operation == 0u) return prior ^ 8u; \
+  const bool z = (prior & 1u) != 0u; \
+  const bool c = (prior & 8u) != 0u; \
+  if (operation == 1u) { \
+    return uint(z && c) | (uint(!c && !z) << 1u) | \
+           (uint(z && !c) << 2u) | (uint(c || z) << 3u); \
+  } \
+  const bool v = (prior & 4u) != 0u; \
+  return uint(z || v) | (uint(c && !v) << 3u); \
+}
+
 #define ARM64METAL_FLAG_MANIPULATION \
 inline uint flag_manipulation_apply(ulong source, uint mask, uint shift, uint width, uint prior) { \
   if (width == 64u) { \
@@ -75,6 +88,7 @@ inline uint flag_manipulation_apply(ulong source, uint mask, uint shift, uint wi
 }
 
 #ifdef __METAL_VERSION__
+ARM64METAL_SYSTEM_FLAGS
 ARM64METAL_FLAG_MANIPULATION
 inline ulong adr_apply(uint mode, ulong pc, uint immediate) {
     const long displacement = (immediate & 0x100000u) != 0u
@@ -884,6 +898,7 @@ inline constexpr std::uint64_t conditional_select_apply(
   return width == 32U ? static_cast<std::uint32_t>(selected) : selected;
 }
 inline constexpr char typed_integer_msl_source[] =
+    ARM64METAL_STRINGIFY(ARM64METAL_SYSTEM_FLAGS) "\n"
     ARM64METAL_STRINGIFY(ARM64METAL_FLAG_MANIPULATION) "\n"
     "inline ulong adr_apply(uint mode, ulong pc, uint immediate) { "
     "long displacement = (immediate & 0x100000u) != 0u "
@@ -1188,6 +1203,7 @@ inline constexpr char typed_integer_msl_source[] =
 
 #undef ARM64METAL_STRINGIFY
 #undef ARM64METAL_STRINGIFY_INNER
+#undef ARM64METAL_SYSTEM_FLAGS
 #undef ARM64METAL_FLAG_MANIPULATION
 #undef ARM64METAL_MOVE_WIDE_VALUE
 #undef ARM64METAL_ADD_SUB_IMM_VALUE

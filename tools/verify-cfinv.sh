@@ -5,8 +5,9 @@ unset ARM64_METAL_TRACE ARM64_METAL_TRACE_INTERPRETER_PACKETS
 runtime=$1
 cfinv=$2
 flagm=$3
-reserved=$4
-library=$5
+flagm2=$4
+reserved=$5
+library=$6
 receipts=$(mktemp -d "$(dirname "$cfinv")/cfinv.XXXXXX")
 echo "CFINV receipts $receipts"
 
@@ -57,6 +58,7 @@ check_positive() {
 
 check_positive "$cfinv" cfinv 45 2
 check_positive "$flagm" flagm 46 19
+check_positive "$flagm2" flagm2 45 2
 
 check_reserved() {
     name=$1
@@ -74,4 +76,5 @@ check_reserved() {
 
 check_reserved rmif 0xba000410
 check_reserved setf 0x3a00080c extra
-echo 'CFINV, RMIF and SETF matched native NZCV in translated and AOT execution. Reserved encodings rejected.'
+check_reserved axflag 0xd500405e extra extra
+echo 'FlagM and FlagM2 matched native NZCV in translated and AOT execution. Adjacent controls rejected.'

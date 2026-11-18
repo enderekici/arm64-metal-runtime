@@ -79,14 +79,14 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                 return;
             }
             const uint opcode = instruction.operation[0];
-            if (opcode == 45u || opcode == 46u) {  // CFINV, RMIF, SETF8/16
+            if (opcode == 45u || opcode == 46u) {  // CFINV/XAFLAG/AXFLAG, RMIF, SETF8/16
                 const uint rn = instruction.operation[2];
-                const uint mask = instruction.operation[3];
+                const uint immediate = instruction.operation[3];
                 const uint shift = instruction.operation[4];
                 const uint width = instruction.operation[5];
-                const bool valid = opcode == 45u ? (!rn && !mask && !shift && !width) :
-                    rn <= 31u && (width == 64u ? mask <= 15u && shift <= 63u :
-                        (width == 8u || width == 16u) && !mask && !shift);
+                const bool valid = opcode == 45u ? (!rn && immediate <= 2u && !shift && !width) :
+                    rn <= 31u && (width == 64u ? immediate <= 15u && shift <= 63u :
+                        (width == 8u || width == 16u) && !immediate && !shift);
                 const bool blockEnd = (instruction.flags & 2u) != 0u;
                 if (instruction.operation[1] || !valid ||
                     instruction.successorCount != (blockEnd ? 1u : 0u) ||
@@ -95,9 +95,9 @@ kernel void run_interpreter(device ulong *state [[buffer(0)]],
                     state[34] = 7;
                     return;
                 }
-                if (opcode == 45u) state[32] ^= 8ul;
+                if (opcode == 45u) state[32] = system_flags_apply(immediate, uint(state[32]));
                 else state[32] = flag_manipulation_apply(rn == 31u ? 0ul : state[rn],
-                                                         mask, shift, width, uint(state[32]));
+                                                         immediate, shift, width, uint(state[32]));
                 pc += 4ul;
                 if (blockEnd) {
                     leftBlock = true;

@@ -97,8 +97,8 @@ std::optional<Operation> decode_operation(std::uint32_t bits) {
     return Operation{Opcode::FlagManipulation, 0, field(bits, 5, 5), 0, 0,
                      field(bits, 14, 1) ? 16U : 8U};
   }
-  if (bits == 0xd500401fU) {  // CFINV
-    return Operation{Opcode::InvertCarry, 0, 0, 0, 0, 0};
+  if (bits == 0xd500401fU || bits == 0xd500403fU || bits == 0xd500405fU) {
+    return Operation{Opcode::SystemFlags, 0, 0, field(bits, 5, 3), 0, 0};
   }
   if (bits == 0xd65f03c0) {
     return Operation{Opcode::Return, 0, 30, 0, 0, 64};
@@ -610,26 +610,27 @@ Instruction make_operation_instruction(Operation operation,
                                        std::uint64_t guest_code_limit,
                                        std::uint64_t guest_pc) {
   std::vector<std::string> code;
-  if (operation.opcode == Opcode::InvertCarry) {
-    if (operation.destination || operation.source || operation.immediate ||
-        operation.shift || operation.width || next.size() != 1) {
-      throw std::invalid_argument("Invalid typed CFINV operation");
-    }
-    code.push_back("c = !c;");
-    if (mode == LoweringMode::Process) {
-      code.push_back("x[32] = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);");
-    }
-  } else if (operation.opcode == Opcode::FlagManipulation) {
-    if (operation.destination || next.size() != 1 ||
-        !valid_flag_manipulation(operation.source, operation.immediate,
-                                 operation.shift, operation.width)) {
-      throw std::invalid_argument("Invalid typed RMIF/SETF operation");
+  if (operation.opcode == Opcode::SystemFlags || operation.opcode == Opcode::FlagManipulation) {
+    std::string expression;
+    if (operation.opcode == Opcode::SystemFlags) {
+      if (operation.destination || operation.source || operation.immediate > 2 ||
+          operation.shift || operation.width || next.size() != 1) {
+        throw std::invalid_argument("Invalid typed system flag operation");
+      }
+      expression = "system_flags_apply(" + std::to_string(operation.immediate) + "u, prior)";
+    } else {
+      if (operation.destination || next.size() != 1 ||
+          !valid_flag_manipulation(operation.source, operation.immediate,
+                                   operation.shift, operation.width)) {
+        throw std::invalid_argument("Invalid typed RMIF/SETF operation");
+      }
+      expression = "flag_manipulation_apply(" + reg(operation.source, true) + ", " +
+          std::to_string(operation.immediate) + "u, " + std::to_string(operation.shift) +
+          "u, " + std::to_string(operation.width) + "u, prior)";
     }
     code = {"{",
             "const uint prior = uint(z) | (uint(n) << 1) | (uint(v) << 2) | (uint(c) << 3);",
-            "const uint flags = flag_manipulation_apply(" + reg(operation.source, true) + ", " +
-                std::to_string(operation.immediate) + "u, " + std::to_string(operation.shift) +
-                "u, " + std::to_string(operation.width) + "u, prior);",
+            "const uint flags = " + expression + ";",
             "z = (flags & 1u) != 0u; n = (flags & 2u) != 0u;",
             "v = (flags & 4u) != 0u; c = (flags & 8u) != 0u;"};
     if (mode == LoweringMode::Process) code.push_back("x[32] = flags;");

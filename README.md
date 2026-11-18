@@ -70,9 +70,10 @@ handlers, and externally delivered signals for the host bridge's supported
 signal set. Guest handlers run on Metal at dispatcher boundaries. Synchronous
 fault signals, alternate stacks, and full interrupted-syscall semantics remain open.
 The launcher executes guest instructions on Metal and reports unsupported
-instructions and imports when reached. `make verify-cfinv` covers CFINV, RMIF, SETF8 and
-SETF16 against native ARM64 in translated functions, translated processes, and
-typed AOT execution. Adjacent reserved encodings must report their opcode.
+instructions and imports when reached. `make verify-cfinv` covers CFINV, RMIF, SETF8,
+SETF16, AXFLAG and XAFLAG against native ARM64 in translated functions, translated
+processes, and typed AOT execution. Both FlagM2 conversions exercise all 16
+input flag combinations. Adjacent unsupported encodings must report their opcode.
 
 `./arm64-metal inspect-cache /usr/lib/libbz2.1.0.dylib _BZ2_bzBuffToBuffDecompress`
 locates a direct export in the installed ARM64e dyld cache and reads its first

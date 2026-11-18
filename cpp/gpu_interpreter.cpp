@@ -103,11 +103,11 @@ Result Interpreter::dispatch(const Backend& backend,
                 operation[5] != 64) {
                 throw std::invalid_argument("Interpreter RET packet metadata is invalid");
             }
-        } else if (opcode == translate_core::Opcode::InvertCarry ||
+        } else if (opcode == translate_core::Opcode::SystemFlags ||
                    opcode == translate_core::Opcode::FlagManipulation) {
             const bool blockEnd = (packet.flags & packetBlockEnd) != 0;
-            const bool valid = opcode == translate_core::Opcode::InvertCarry
-                ? !operation[2] && !operation[3] && !operation[4] && !operation[5]
+            const bool valid = opcode == translate_core::Opcode::SystemFlags
+                ? !operation[2] && operation[3] <= 2U && !operation[4] && !operation[5]
                 : translate_core::valid_flag_manipulation(operation[2], operation[3],
                                                           operation[4], operation[5]);
             if (operation[1] || !valid || packet.successorCount != (blockEnd ? 1U : 0U) ||

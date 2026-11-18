@@ -54,7 +54,7 @@ enum class Opcode : std::uint32_t {
   VectorReverse = 41,
   LoadVectorMemory = 43,
   StoreVectorMemory = 44,
-  InvertCarry = 45,
+  SystemFlags = 45,  // immediate selects CFINV (0), XAFLAG (1) or AXFLAG (2)
   FlagManipulation = 46,
   AuthenticatedReturn = 36,
 };
